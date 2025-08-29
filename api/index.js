@@ -40,7 +40,7 @@ app.get("/auth/start", async (req, res) => {
       return res.status(500).json({ error: "database error" });
     }
 
-    const authUrl = new URL(`${BSA_BASE}/auth/oauth2/authorize/a`);
+    const authUrl = new URL(`${BSA_BASE}/oauth2/authorize`);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("client_id", BSA_CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", BSA_REDIRECT_URI);
@@ -102,7 +102,7 @@ async function processOAuthCallback(code, state) {
     let tokenResp;
     try {
       tokenResp = await axios.post(
-        `${BSA_BASE}/auth/oauth2/token`,
+        `${BSA_BASE}/oauth2/token`,
         {
           grant_type: "authorization_code",
           client_id: BSA_CLIENT_ID,

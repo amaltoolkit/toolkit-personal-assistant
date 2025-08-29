@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.js"
+    }
+  ],
+  "env": {
+    "BSA_BASE": "@bsa_base",
+    "BSA_CLIENT_ID": "@bsa_client_id",
+    "BSA_CLIENT_SECRET": "@bsa_client_secret",
+    "BSA_REDIRECT_URI": "@bsa_redirect_uri",
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_SERVICE_ROLE_KEY": "@supabase_service_role_key",
+    "APP_BASE_URL": "@app_base_url"
+  }
+}

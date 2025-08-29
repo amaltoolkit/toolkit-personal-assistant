@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "BlueSquare Assistant",
+  "version": "1.0.0",
+  "description": "Chrome extension for BlueSquareApps integration with OAuth authentication",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://rc.bluesquareapps.com/*",
+    "https://personalassistant-seven.vercel.app/*",
+    "http://localhost:3000/*"
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "BlueSquare Assistant",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

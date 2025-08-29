@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BlueSquare Assistant</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>BlueSquare Assistant</h1>
+      <div id="connection-status" class="status-indicator"></div>
+    </header>
+
+    <main>
+      <!-- Login Section -->
+      <div id="login-section" class="section">
+        <div class="welcome-card">
+          <h2>Welcome</h2>
+          <p>Connect your BlueSquareApps account to get started.</p>
+          <button id="login-btn" class="btn btn-primary">
+            <span class="btn-icon">🔐</span>
+            Login with BlueSquareApps
+          </button>
+        </div>
+      </div>
+
+      <!-- Authenticated Section -->
+      <div id="auth-section" class="section hidden">
+        <!-- Organization Selection -->
+        <div id="org-section" class="card">
+          <h2>Select Organization</h2>
+          <div id="org-loading" class="loading hidden">Loading organizations...</div>
+          <div id="org-error" class="error-message hidden"></div>
+          <div id="org-list" class="org-list"></div>
+        </div>
+
+        <!-- Contacts Section -->
+        <div id="contacts-section" class="card hidden">
+          <div class="section-header">
+            <h2>Contacts</h2>
+            <button id="back-to-orgs" class="btn btn-secondary btn-sm">Change Organization</button>
+          </div>
+          <div id="selected-org" class="selected-org"></div>
+          <div id="contacts-loading" class="loading hidden">Loading contacts...</div>
+          <div id="contacts-error" class="error-message hidden"></div>
+          <div id="contacts-list" class="contacts-list"></div>
+        </div>
+
+        <!-- Logout Button -->
+        <div class="logout-section">
+          <button id="logout-btn" class="btn btn-outline">Logout</button>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p class="footer-text">BlueSquare Assistant v1.0.0</p>
+    </footer>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

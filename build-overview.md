@@ -6,14 +6,14 @@ Architecture
 * All endpoints on https://rc.bluesquareapps.com
 Env (Vercel)
 BSA_BASE=https://rc.bluesquareapps.com
-BSA_CLIENT_ID=assistant_4dbb13b1
-BSA_CLIENT_SECRET=5OrNpTQ_dxT4n_jr52xdfjrnBs1cahsh1ZUlNBY8hEuJRgGNlWlwRYWYelI7QSsl
-BSA_REDIRECT_URI=https://personalassistant-seven.vercel.app/auth/callback
+BSA_CLIENT_ID=YOUR_BSA_CLIENT_ID
+BSA_CLIENT_SECRET=YOUR_BSA_CLIENT_SECRET
+BSA_REDIRECT_URI=YOUR_VERCEL_URL/auth/callback
 
-SUPABASE_URL=https://fscwwerxbxzbszgdubbo.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzY3d3ZXJ4Ynh6YnN6Z2R1YmJvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjQ0MjA3OSwiZXhwIjoyMDcyMDE4MDc5fQ.pZg7v29SO5GxKs5H4fGRVsAjN_zsVckJYFA7UyLFPUA
+SUPABASE_URL=YOUR_SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
 
-APP_BASE_URL=https://personalassistant-seven.vercel.app
+APP_BASE_URL=YOUR_APP_BASE_URL
 Supabase schema
 create table oauth_sessions (
   id uuid primary key default gen_random_uuid(),
@@ -201,7 +201,7 @@ manifest.json
   "permissions": ["storage"],
   "host_permissions": [
     "https://rc.bluesquareapps.com/*",
-    "https://personalassistant-seven.vercel.app/*"
+    "YOUR_APP_BASE_URL/*"
   ],
   "side_panel": { "default_path": "sidepanel.html" },
   "action": { "default_title": "BlueSquare Assistant" }
@@ -219,7 +219,7 @@ sidepanel.html
   </body>
 </html>
 sidepanel.js
-const APP_BASE = "https://personalassistant-seven.vercel.app";
+const APP_BASE = "YOUR_APP_BASE_URL";
 const sessionIdKey = "bsa_session_id";
 
 function getSessionId() {

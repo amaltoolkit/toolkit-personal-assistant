@@ -52,12 +52,12 @@ npm install
 2. Set up environment variables in Vercel:
 ```
 BSA_BASE=https://rc.bluesquareapps.com
-BSA_CLIENT_ID=assistant_4dbb13b1
-BSA_CLIENT_SECRET=5OrNpTQ_dxT4n_jr52xdfjrnBs1cahsh1ZUlNBY8hEuJRgGNlWlwRYWYelI7QSsl
-BSA_REDIRECT_URI=https://personalassistant-seven.vercel.app/auth/callback
-SUPABASE_URL=https://fscwwerxbxzbszgdubbo.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-APP_BASE_URL=https://personalassistant-seven.vercel.app
+BSA_CLIENT_ID=YOUR_BSA_CLIENT_ID
+BSA_CLIENT_SECRET=YOUR_BSA_CLIENT_SECRET
+BSA_REDIRECT_URI=YOUR_VERCEL_URL/auth/callback
+SUPABASE_URL=YOUR_SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+APP_BASE_URL=YOUR_APP_BASE_URL
 ```
 
 3. Deploy to Vercel:

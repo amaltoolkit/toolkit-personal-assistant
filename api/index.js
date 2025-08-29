@@ -131,7 +131,7 @@ async function processOAuthCallback(code, state) {
           redirect_uri: BSA_REDIRECT_URI
         },
         { 
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
           timeout: 10000
         }
       );

@@ -25,20 +25,26 @@ const APP_BASE_URL = process.env.APP_BASE_URL;
 app.get("/auth/start", async (req, res) => {
   try {
     const sessionId = req.query.session_id;
+    console.log("[AUTH START] Session ID:", sessionId);
+    
     if (!sessionId) {
+      console.error("[AUTH START] Missing session_id");
       return res.status(400).json({ error: "missing session_id" });
     }
 
     const state = crypto.randomBytes(16).toString("hex");
+    console.log("[AUTH START] Generated state:", state);
     
     const { error } = await supabase
       .from("oauth_sessions")
       .insert({ session_id: sessionId, state });
     
     if (error) {
-      console.error("Database error:", error);
+      console.error("[AUTH START] Database error:", error);
       return res.status(500).json({ error: "database error" });
     }
+    
+    console.log("[AUTH START] Stored session in database");
 
     const authUrl = new URL(`${BSA_BASE}/oauth2/authorize`);
     authUrl.searchParams.set("response_type", "code");
@@ -47,9 +53,10 @@ app.get("/auth/start", async (req, res) => {
     authUrl.searchParams.set("scope", "openid profile email");
     authUrl.searchParams.set("state", state);
     
+    console.log("[AUTH START] Redirecting to:", authUrl.toString());
     res.redirect(authUrl.toString());
   } catch (error) {
-    console.error("Error in /auth/start:", error);
+    console.error("[AUTH START] Error:", error);
     res.status(500).json({ error: "internal server error" });
   }
 });
@@ -58,28 +65,35 @@ app.get("/auth/start", async (req, res) => {
 app.get("/auth/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
+    console.log("[AUTH CALLBACK] Received code:", code ? "present" : "missing");
+    console.log("[AUTH CALLBACK] Received state:", state);
+    
     if (!code || !state) {
+      console.error("[AUTH CALLBACK] Missing code or state parameter");
       return res.status(400).send("Missing code or state parameter");
     }
 
+    console.log("[AUTH CALLBACK] Redirecting user to BSA, processing in background");
     // Immediately redirect user to BSA while we process in the background
     res.redirect(`${BSA_BASE}`);
 
     // Continue processing asynchronously
     processOAuthCallback(code, state).catch(error => {
-      console.error("Background OAuth processing error:", error);
+      console.error("[AUTH CALLBACK] Background OAuth processing error:", error);
     });
 
   } catch (error) {
-    console.error("Error in /auth/callback:", error);
+    console.error("[AUTH CALLBACK] Error:", error);
     res.status(500).send("Internal server error");
   }
 });
 
 // Process OAuth callback in the background
 async function processOAuthCallback(code, state) {
+  console.log("[PROCESS OAUTH] Starting background processing");
   try {
     // Validate state
+    console.log("[PROCESS OAUTH] Validating state:", state);
     const { data: rows, error } = await supabase
       .from("oauth_sessions")
       .select("*")
@@ -88,21 +102,27 @@ async function processOAuthCallback(code, state) {
       .limit(1);
     
     if (error) {
-      console.error("Database error:", error);
+      console.error("[PROCESS OAUTH] Database error:", error);
       return;
     }
     
     const row = rows && rows[0];
     if (!row) {
-      console.error("Invalid or expired state");
+      console.error("[PROCESS OAUTH] Invalid or expired state");
       return;
     }
+    
+    console.log("[PROCESS OAUTH] Found session:", row.session_id);
 
     // Step 1: Exchange code for bearer token
+    console.log("[PROCESS OAUTH] Step 1: Exchanging code for bearer token");
     let tokenResp;
     try {
+      const tokenUrl = `${BSA_BASE}/oauth2/token`;
+      console.log("[PROCESS OAUTH] Token URL:", tokenUrl);
+      
       tokenResp = await axios.post(
-        `${BSA_BASE}/oauth2/token`,
+        tokenUrl,
         {
           grant_type: "authorization_code",
           client_id: BSA_CLIENT_ID,
@@ -115,22 +135,30 @@ async function processOAuthCallback(code, state) {
           timeout: 10000
         }
       );
+      console.log("[PROCESS OAUTH] Token response received, status:", tokenResp.status);
     } catch (tokenError) {
-      console.error("Token exchange error:", tokenError.response?.data || tokenError.message);
+      console.error("[PROCESS OAUTH] Token exchange error:", tokenError.response?.data || tokenError.message);
+      console.error("[PROCESS OAUTH] Token error status:", tokenError.response?.status);
       return;
     }
 
     const bearerToken = tokenResp.data.access_token;
+    console.log("[PROCESS OAUTH] Bearer token:", bearerToken ? "received" : "missing");
+    
     if (!bearerToken) {
-      console.error("No bearer token in response:", tokenResp.data);
+      console.error("[PROCESS OAUTH] No bearer token in response:", tokenResp.data);
       return;
     }
 
     // Step 2: Exchange bearer token for PassKey
+    console.log("[PROCESS OAUTH] Step 2: Exchanging bearer token for PassKey");
     let passKeyResp;
     try {
+      const passKeyUrl = `${BSA_BASE}/oauth2/passkey`;
+      console.log("[PROCESS OAUTH] PassKey URL:", passKeyUrl);
+      
       passKeyResp = await axios.post(
-        `${BSA_BASE}/oauth2/passkey`,
+        passKeyUrl,
         {},
         {
           headers: {
@@ -140,18 +168,24 @@ async function processOAuthCallback(code, state) {
           timeout: 10000
         }
       );
+      console.log("[PROCESS OAUTH] PassKey response received, status:", passKeyResp.status);
+      console.log("[PROCESS OAUTH] PassKey response data:", passKeyResp.data);
     } catch (passKeyError) {
-      console.error("PassKey exchange error:", passKeyError.response?.data || passKeyError.message);
+      console.error("[PROCESS OAUTH] PassKey exchange error:", passKeyError.response?.data || passKeyError.message);
+      console.error("[PROCESS OAUTH] PassKey error status:", passKeyError.response?.status);
       return;
     }
 
     const passKey = passKeyResp.data.passkey || passKeyResp.data.PassKey || passKeyResp.data.passKey;
+    console.log("[PROCESS OAUTH] PassKey:", passKey ? "received" : "missing");
+    
     if (!passKey) {
-      console.error("No PassKey in response:", passKeyResp.data);
+      console.error("[PROCESS OAUTH] No PassKey in response, trying all fields:", passKeyResp.data);
       return;
     }
 
     // Step 3: Store only the PassKey (expires in 1 hour)
+    console.log("[PROCESS OAUTH] Step 3: Storing PassKey in database");
     const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString(); // 1 hour expiry
 
     const { error: tokenError } = await supabase
@@ -167,9 +201,11 @@ async function processOAuthCallback(code, state) {
       });
     
     if (tokenError) {
-      console.error("Failed to store PassKey:", tokenError);
+      console.error("[PROCESS OAUTH] Failed to store PassKey:", tokenError);
       return;
     }
+    
+    console.log("[PROCESS OAUTH] PassKey stored successfully");
 
     // Mark session as used
     await supabase
@@ -177,9 +213,9 @@ async function processOAuthCallback(code, state) {
       .update({ used_at: new Date().toISOString() })
       .eq("id", row.id);
 
-    console.log("OAuth flow completed successfully for session:", row.session_id);
+    console.log("[PROCESS OAUTH] OAuth flow completed successfully for session:", row.session_id);
   } catch (error) {
-    console.error("Error in processOAuthCallback:", error);
+    console.error("[PROCESS OAUTH] Unexpected error:", error);
   }
 }
 

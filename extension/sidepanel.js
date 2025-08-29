@@ -76,7 +76,10 @@ async function handleLogin() {
     loginBtn.textContent = 'Connecting...';
     
     const sessionId = getSessionId();
+    console.log('[SIDEPANEL] Starting login with session:', sessionId);
+    
     const authUrl = `${API_BASE}/auth/start?session_id=${encodeURIComponent(sessionId)}`;
+    console.log('[SIDEPANEL] Auth URL:', authUrl);
     
     // Open OAuth window
     const authWindow = window.open(
@@ -85,17 +88,21 @@ async function handleLogin() {
       'width=500,height=700,menubar=no,toolbar=no,location=no,status=no'
     );
     
+    console.log('[SIDEPANEL] OAuth window opened, starting polling');
+    
     // Poll for authentication completion
     const authenticated = await pollAuthStatus(sessionId, 120000);  // 2 minute timeout
     
     if (authenticated) {
+      console.log('[SIDEPANEL] Authentication successful');
       showAuthenticatedView();
       await loadOrganizations();
     } else {
+      console.error('[SIDEPANEL] Authentication timeout or failed');
       showError('Authentication timeout. Please try again.');
     }
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('[SIDEPANEL] Login error:', error);
     showError('Failed to authenticate. Please try again.');
   } finally {
     loginBtn.disabled = false;
@@ -123,30 +130,40 @@ async function checkAuthStatus() {
 
 async function pollAuthStatus(sessionId, timeoutMs = 60000) {
   const startTime = Date.now();
+  let pollCount = 0;
+  
+  console.log('[SIDEPANEL] Starting auth status polling');
   
   while (Date.now() - startTime < timeoutMs) {
+    pollCount++;
     try {
-      const response = await fetch(
-        `${API_BASE}/auth/status?session_id=${encodeURIComponent(sessionId)}`
-      );
+      const statusUrl = `${API_BASE}/auth/status?session_id=${encodeURIComponent(sessionId)}`;
+      console.log(`[SIDEPANEL] Poll #${pollCount} - checking:`, statusUrl);
+      
+      const response = await fetch(statusUrl);
       const data = await response.json();
       
+      console.log(`[SIDEPANEL] Poll #${pollCount} response:`, data);
+      
       if (data.ok === true) {
+        console.log('[SIDEPANEL] Authentication confirmed!');
         return true;
       }
       
       if (data.expired) {
+        console.error('[SIDEPANEL] Session expired');
         showError('Your session has expired. Please login again.');
         return false;
       }
     } catch (error) {
-      console.error('Poll error:', error);
+      console.error(`[SIDEPANEL] Poll #${pollCount} error:`, error);
     }
     
     // Wait 1 second before next poll
     await sleep(1000);
   }
   
+  console.error('[SIDEPANEL] Polling timeout reached');
   return false;
 }
 

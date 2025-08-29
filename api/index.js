@@ -40,7 +40,7 @@ app.get("/auth/start", async (req, res) => {
       return res.status(500).json({ error: "database error" });
     }
 
-    const authUrl = new URL(`${BSA_BASE}/auth/oauth2/authorize`);
+    const authUrl = new URL(`${BSA_BASE}/auth/oauth2/authorize/a`);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("client_id", BSA_CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", BSA_REDIRECT_URI);

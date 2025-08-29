@@ -62,6 +62,24 @@ app.get("/auth/callback", async (req, res) => {
       return res.status(400).send("Missing code or state parameter");
     }
 
+    // Immediately redirect user to BSA while we process in the background
+    res.redirect(`${BSA_BASE}`);
+
+    // Continue processing asynchronously
+    processOAuthCallback(code, state).catch(error => {
+      console.error("Background OAuth processing error:", error);
+    });
+
+  } catch (error) {
+    console.error("Error in /auth/callback:", error);
+    res.status(500).send("Internal server error");
+  }
+});
+
+// Process OAuth callback in the background
+async function processOAuthCallback(code, state) {
+  try {
+    // Validate state
     const { data: rows, error } = await supabase
       .from("oauth_sessions")
       .select("*")
@@ -71,14 +89,16 @@ app.get("/auth/callback", async (req, res) => {
     
     if (error) {
       console.error("Database error:", error);
-      return res.status(500).send("Database error");
+      return;
     }
     
     const row = rows && rows[0];
     if (!row) {
-      return res.status(400).send("Invalid or expired state");
+      console.error("Invalid or expired state");
+      return;
     }
 
+    // Step 1: Exchange code for bearer token
     let tokenResp;
     try {
       tokenResp = await axios.post(
@@ -97,30 +117,49 @@ app.get("/auth/callback", async (req, res) => {
       );
     } catch (tokenError) {
       console.error("Token exchange error:", tokenError.response?.data || tokenError.message);
-      return res.status(500).send("Failed to exchange authorization code");
+      return;
     }
 
-    // Treat the returned access token as the PassKey
-    const accessToken = tokenResp.data.access_token || 
-                       tokenResp.data.token || 
-                       tokenResp.data.PassKey;
-    
-    if (!accessToken) {
-      console.error("No access token in response:", tokenResp.data);
-      return res.status(500).send("No access token received");
+    const bearerToken = tokenResp.data.access_token;
+    if (!bearerToken) {
+      console.error("No bearer token in response:", tokenResp.data);
+      return;
     }
-    
-    const refreshToken = tokenResp.data.refresh_token || null;
-    const expiresIn = tokenResp.data.expires_in || 3600;
-    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
 
-    // Store the PassKey in plain text
+    // Step 2: Exchange bearer token for PassKey
+    let passKeyResp;
+    try {
+      passKeyResp = await axios.post(
+        `${BSA_BASE}/oauth2/passkey`,
+        {},
+        {
+          headers: {
+            "Authorization": `Bearer ${bearerToken}`,
+            "Content-Type": "application/json"
+          },
+          timeout: 10000
+        }
+      );
+    } catch (passKeyError) {
+      console.error("PassKey exchange error:", passKeyError.response?.data || passKeyError.message);
+      return;
+    }
+
+    const passKey = passKeyResp.data.passkey || passKeyResp.data.PassKey || passKeyResp.data.passKey;
+    if (!passKey) {
+      console.error("No PassKey in response:", passKeyResp.data);
+      return;
+    }
+
+    // Step 3: Store only the PassKey (expires in 1 hour)
+    const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString(); // 1 hour expiry
+
     const { error: tokenError } = await supabase
       .from("bsa_tokens")
       .upsert({
         session_id: row.session_id,
-        access_token: accessToken,       // plain text storage
-        refresh_token: refreshToken,
+        access_token: passKey,  // Store PassKey as access_token for compatibility
+        refresh_token: null,    // No refresh token, we'll use PassKey to refresh
         expires_at: expiresAt,
         updated_at: new Date().toISOString()
       }, { 
@@ -128,8 +167,8 @@ app.get("/auth/callback", async (req, res) => {
       });
     
     if (tokenError) {
-      console.error("Failed to store token:", tokenError);
-      return res.status(500).send("Failed to store authentication");
+      console.error("Failed to store PassKey:", tokenError);
+      return;
     }
 
     // Mark session as used
@@ -138,61 +177,106 @@ app.get("/auth/callback", async (req, res) => {
       .update({ used_at: new Date().toISOString() })
       .eq("id", row.id);
 
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Authentication Successful</title>
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          }
-          .success-card {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            text-align: center;
-            max-width: 400px;
-          }
-          h1 { color: #10b981; margin: 0 0 1rem 0; }
-          p { color: #6b7280; margin: 0 0 1rem 0; }
-          .close-btn {
-            background: #6366f1;
-            color: white;
-            border: none;
-            padding: 0.5rem 1.5rem;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-          }
-          .close-btn:hover { background: #4f46e5; }
-        </style>
-      </head>
-      <body>
-        <div class="success-card">
-          <h1>✓ Authentication Successful</h1>
-          <p>You have been successfully authenticated with BlueSquareApps.</p>
-          <p>You can now close this window and return to the extension.</p>
-          <button class="close-btn" onclick="window.close()">Close Window</button>
-        </div>
-        <script>
-          setTimeout(() => { window.close(); }, 3000);
-        </script>
-      </body>
-      </html>
-    `);
+    console.log("OAuth flow completed successfully for session:", row.session_id);
   } catch (error) {
-    console.error("Error in /auth/callback:", error);
-    res.status(500).send("Internal server error");
+    console.error("Error in processOAuthCallback:", error);
   }
-});
+}
+
+// Helper function to refresh PassKey
+async function refreshPassKey(sessionId) {
+  try {
+    // Get current PassKey
+    const { data: rows, error } = await supabase
+      .from("bsa_tokens")
+      .select("*")
+      .eq("session_id", sessionId)
+      .limit(1);
+    
+    if (error || !rows || !rows[0]) {
+      console.error("Failed to get current PassKey:", error);
+      return null;
+    }
+    
+    const currentPassKey = rows[0].access_token;
+    
+    // Refresh PassKey using the login endpoint
+    try {
+      const refreshResp = await axios.post(
+        `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`,
+        { PassKey: currentPassKey },
+        {
+          headers: { "Content-Type": "application/json" },
+          timeout: 10000
+        }
+      );
+      
+      const newPassKey = refreshResp.data.PassKey || refreshResp.data.passKey || refreshResp.data.passkey;
+      if (!newPassKey) {
+        console.error("No new PassKey in refresh response:", refreshResp.data);
+        return null;
+      }
+      
+      // Update stored PassKey with new 1-hour expiry
+      const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+      
+      const { error: updateError } = await supabase
+        .from("bsa_tokens")
+        .update({
+          access_token: newPassKey,
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString()
+        })
+        .eq("session_id", sessionId);
+      
+      if (updateError) {
+        console.error("Failed to update PassKey:", updateError);
+        return null;
+      }
+      
+      console.log("PassKey refreshed successfully for session:", sessionId);
+      return newPassKey;
+      
+    } catch (refreshError) {
+      console.error("PassKey refresh API error:", refreshError.response?.data || refreshError.message);
+      return null;
+    }
+  } catch (error) {
+    console.error("Error in refreshPassKey:", error);
+    return null;
+  }
+}
+
+// Helper function to get valid PassKey (refreshes if needed)
+async function getValidPassKey(sessionId) {
+  const { data: rows, error } = await supabase
+    .from("bsa_tokens")
+    .select("*")
+    .eq("session_id", sessionId)
+    .limit(1);
+  
+  if (error || !rows || !rows[0]) {
+    return null;
+  }
+  
+  const token = rows[0];
+  const passKey = token.access_token;
+  
+  // Check if PassKey is about to expire (refresh if less than 5 minutes left)
+  if (token.expires_at) {
+    const expiry = new Date(token.expires_at);
+    const now = new Date();
+    const timeLeft = expiry - now;
+    
+    if (timeLeft < 5 * 60 * 1000) { // Less than 5 minutes
+      console.log("PassKey expiring soon, refreshing...");
+      const newPassKey = await refreshPassKey(sessionId);
+      return newPassKey || passKey; // Return new or fall back to current
+    }
+  }
+  
+  return passKey;
+}
 
 // 3) Auth status for polling
 app.get("/auth/status", async (req, res) => {
@@ -222,6 +306,11 @@ app.get("/auth/status", async (req, res) => {
     if (token.expires_at) {
       const expiry = new Date(token.expires_at);
       if (expiry < new Date()) {
+        // Try to refresh the PassKey
+        const newPassKey = await refreshPassKey(sessionId);
+        if (newPassKey) {
+          return res.json({ ok: true, refreshed: true });
+        }
         return res.json({ ok: false, expired: true });
       }
     }
@@ -241,22 +330,12 @@ app.get("/api/orgs", async (req, res) => {
       return res.status(400).json({ error: "missing session_id" });
     }
 
-    const { data: rows, error } = await supabase
-      .from("bsa_tokens")
-      .select("*")
-      .eq("session_id", sessionId)
-      .limit(1);
-    
-    if (error) {
-      console.error("Database error:", error);
-      return res.status(500).json({ error: "database error" });
-    }
-    
-    if (!rows || !rows[0]) {
+    // Get valid PassKey (auto-refreshes if needed)
+    const passKey = await getValidPassKey(sessionId);
+    if (!passKey) {
       return res.status(401).json({ error: "not authenticated" });
     }
 
-    const passKey = rows[0].access_token;  // use plain text PassKey
     const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json`;
     
     try {
@@ -273,6 +352,24 @@ app.get("/api/orgs", async (req, res) => {
     } catch (apiError) {
       console.error("BSA API error:", apiError.response?.data || apiError.message);
       if (apiError.response?.status === 401) {
+        // Try to refresh PassKey once more
+        const newPassKey = await refreshPassKey(sessionId);
+        if (newPassKey) {
+          // Retry with new PassKey
+          try {
+            const retryResp = await axios.post(
+              url, 
+              { PassKey: newPassKey }, 
+              { 
+                headers: { "Content-Type": "application/json" },
+                timeout: 10000
+              }
+            );
+            return res.json(retryResp.data);
+          } catch (retryError) {
+            console.error("BSA API retry error:", retryError.response?.data || retryError.message);
+          }
+        }
         return res.status(401).json({ error: "authentication expired" });
       }
       res.status(500).json({ error: "failed to fetch organizations" });
@@ -296,22 +393,12 @@ app.post("/api/orgs/:orgId/contacts", async (req, res) => {
       return res.status(400).json({ error: "missing orgId" });
     }
 
-    const { data: rows, error } = await supabase
-      .from("bsa_tokens")
-      .select("*")
-      .eq("session_id", sessionId)
-      .limit(1);
-    
-    if (error) {
-      console.error("Database error:", error);
-      return res.status(500).json({ error: "database error" });
-    }
-    
-    if (!rows || !rows[0]) {
+    // Get valid PassKey (auto-refreshes if needed)
+    const passKey = await getValidPassKey(sessionId);
+    if (!passKey) {
       return res.status(401).json({ error: "not authenticated" });
     }
 
-    const passKey = rows[0].access_token;  // use plain text PassKey
     const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
     const payload = { 
       PassKey: passKey, 
@@ -333,6 +420,25 @@ app.post("/api/orgs/:orgId/contacts", async (req, res) => {
     } catch (apiError) {
       console.error("BSA API error:", apiError.response?.data || apiError.message);
       if (apiError.response?.status === 401) {
+        // Try to refresh PassKey once more
+        const newPassKey = await refreshPassKey(sessionId);
+        if (newPassKey) {
+          // Retry with new PassKey
+          try {
+            const retryPayload = { ...payload, PassKey: newPassKey };
+            const retryResp = await axios.post(
+              url, 
+              retryPayload, 
+              { 
+                headers: { "Content-Type": "application/json" },
+                timeout: 10000
+              }
+            );
+            return res.json(retryResp.data);
+          } catch (retryError) {
+            console.error("BSA API retry error:", retryError.response?.data || retryError.message);
+          }
+        }
         return res.status(401).json({ error: "authentication expired" });
       }
       res.status(500).json({ error: "failed to fetch contacts" });
@@ -344,12 +450,12 @@ app.post("/api/orgs/:orgId/contacts", async (req, res) => {
 });
 
 // Health check endpoint
-app.get("/health", (req, res) => {
+app.get("/health", (_, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
 // Error handling middleware
-app.use((err, req, res, next) => {
+app.use((err, _, res, __) => {
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "internal server error" });
 });

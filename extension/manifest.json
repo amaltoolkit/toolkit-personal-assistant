@@ -5,7 +5,8 @@
   "description": "Chrome extension for BlueSquareApps integration with OAuth authentication",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://rc.bluesquareapps.com/*",

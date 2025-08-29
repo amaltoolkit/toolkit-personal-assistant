@@ -44,7 +44,7 @@ app.get("/auth/start", async (req, res) => {
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("client_id", BSA_CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", BSA_REDIRECT_URI);
-    authUrl.searchParams.set("scope", "basic");
+    authUrl.searchParams.set("scope", "openid profile email");
     authUrl.searchParams.set("state", state);
     
     res.redirect(authUrl.toString());

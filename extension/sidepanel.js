@@ -170,21 +170,56 @@ async function pollAuthStatus(sessionId, timeoutMs = 60000) {
 // Data Loading
 async function loadOrganizations() {
   try {
+    console.log('[SIDEPANEL] Loading organizations for session:', currentSessionId);
     showLoading('org-loading', true);
     hideError('org-error');
     
-    const response = await fetch(
-      `${API_BASE}/api/orgs?session_id=${encodeURIComponent(currentSessionId)}`
-    );
+    const url = `${API_BASE}/api/orgs?session_id=${encodeURIComponent(currentSessionId)}`;
+    console.log('[SIDEPANEL] Fetching organizations from:', url);
+    
+    const response = await fetch(url);
+    
+    console.log('[SIDEPANEL] Organizations response status:', response.status);
+    console.log('[SIDEPANEL] Organizations response headers:', response.headers);
     
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Try to get error details from response
+      let errorDetails = '';
+      try {
+        const errorData = await response.json();
+        errorDetails = JSON.stringify(errorData);
+        console.error('[SIDEPANEL] Organizations error response:', errorData);
+      } catch (e) {
+        // If not JSON, try text
+        try {
+          errorDetails = await response.text();
+          console.error('[SIDEPANEL] Organizations error text:', errorDetails);
+        } catch (e2) {
+          console.error('[SIDEPANEL] Could not parse error response');
+        }
+      }
+      throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorDetails}`);
     }
     
     const orgs = await response.json();
+    console.log('[SIDEPANEL] Organizations received:', orgs);
+    console.log('[SIDEPANEL] Organizations type:', typeof orgs);
+    console.log('[SIDEPANEL] Is array?', Array.isArray(orgs));
+    
+    if (orgs) {
+      console.log('[SIDEPANEL] Organizations keys:', Object.keys(orgs));
+      if (Array.isArray(orgs)) {
+        console.log('[SIDEPANEL] Organizations count:', orgs.length);
+        if (orgs.length > 0) {
+          console.log('[SIDEPANEL] First org structure:', orgs[0]);
+        }
+      }
+    }
+    
     displayOrganizations(orgs);
   } catch (error) {
-    console.error('Load orgs error:', error);
+    console.error('[SIDEPANEL] Load orgs error:', error);
+    console.error('[SIDEPANEL] Error stack:', error.stack);
     showError('Failed to load organizations. Please try again.', 'org-error');
   } finally {
     showLoading('org-loading', false);

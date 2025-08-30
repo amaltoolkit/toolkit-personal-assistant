@@ -202,10 +202,26 @@ async function processOAuthCallback(code, state) {
     
     if (tokenError) {
       console.error("[PROCESS OAUTH] Failed to store PassKey:", tokenError);
+      console.error("[PROCESS OAUTH] Storage error details:", JSON.stringify(tokenError));
       return;
     }
     
     console.log("[PROCESS OAUTH] PassKey stored successfully");
+    
+    // Verify storage by reading back
+    const { data: verifyRows, error: verifyError } = await supabase
+      .from("bsa_tokens")
+      .select("*")
+      .eq("session_id", row.session_id)
+      .limit(1);
+    
+    if (verifyError) {
+      console.error("[PROCESS OAUTH] Failed to verify storage:", verifyError);
+    } else if (verifyRows && verifyRows[0]) {
+      console.log("[PROCESS OAUTH] Verification - Token stored with fields:", Object.keys(verifyRows[0]));
+      console.log("[PROCESS OAUTH] Verification - PassKey exists:", !!verifyRows[0].passkey);
+      console.log("[PROCESS OAUTH] Verification - PassKey length:", verifyRows[0].passkey?.length);
+    }
 
     // Mark session as used
     await supabase
@@ -221,6 +237,8 @@ async function processOAuthCallback(code, state) {
 
 // Helper function to refresh PassKey
 async function refreshPassKey(sessionId) {
+  console.log("[REFRESH_PASSKEY] Starting refresh for session:", sessionId);
+  
   try {
     // Get current PassKey
     const { data: rows, error } = await supabase
@@ -230,16 +248,25 @@ async function refreshPassKey(sessionId) {
       .limit(1);
     
     if (error || !rows || !rows[0]) {
-      console.error("Failed to get current PassKey:", error);
+      console.error("[REFRESH_PASSKEY] Failed to get current PassKey:", error);
       return null;
     }
     
     const currentPassKey = rows[0].passkey;
+    console.log("[REFRESH_PASSKEY] Current PassKey length:", currentPassKey?.length);
+    
+    if (!currentPassKey) {
+      console.error("[REFRESH_PASSKEY] No existing PassKey to refresh");
+      return null;
+    }
     
     // Refresh PassKey using the login endpoint
+    const refreshUrl = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`;
+    console.log("[REFRESH_PASSKEY] Calling refresh endpoint:", refreshUrl);
+    
     try {
       const refreshResp = await axios.post(
-        `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`,
+        refreshUrl,
         { PassKey: currentPassKey },
         {
           headers: { "Content-Type": "application/json" },
@@ -247,14 +274,20 @@ async function refreshPassKey(sessionId) {
         }
       );
       
+      console.log("[REFRESH_PASSKEY] Refresh response status:", refreshResp.status);
+      console.log("[REFRESH_PASSKEY] Refresh response keys:", Object.keys(refreshResp.data));
+      
       const newPassKey = refreshResp.data.PassKey || refreshResp.data.passKey || refreshResp.data.passkey;
       if (!newPassKey) {
-        console.error("No new PassKey in refresh response:", refreshResp.data);
+        console.error("[REFRESH_PASSKEY] No new PassKey in refresh response:", refreshResp.data);
         return null;
       }
       
+      console.log("[REFRESH_PASSKEY] New PassKey received, length:", newPassKey.length);
+      
       // Update stored PassKey with new 1-hour expiry
       const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+      console.log("[REFRESH_PASSKEY] Setting new expiry:", expiresAt);
       
       const { error: updateError } = await supabase
         .from("bsa_tokens")
@@ -266,49 +299,81 @@ async function refreshPassKey(sessionId) {
         .eq("session_id", sessionId);
       
       if (updateError) {
-        console.error("Failed to update PassKey:", updateError);
+        console.error("[REFRESH_PASSKEY] Failed to update PassKey in database:", updateError);
         return null;
       }
       
-      console.log("PassKey refreshed successfully for session:", sessionId);
+      console.log("[REFRESH_PASSKEY] PassKey refreshed and stored successfully");
       return newPassKey;
       
     } catch (refreshError) {
-      console.error("PassKey refresh API error:", refreshError.response?.data || refreshError.message);
+      console.error("[REFRESH_PASSKEY] API error - Status:", refreshError.response?.status);
+      console.error("[REFRESH_PASSKEY] API error - Data:", refreshError.response?.data);
+      console.error("[REFRESH_PASSKEY] API error - Message:", refreshError.message);
       return null;
     }
   } catch (error) {
-    console.error("Error in refreshPassKey:", error);
+    console.error("[REFRESH_PASSKEY] Unexpected error:", error);
     return null;
   }
 }
 
 // Helper function to get valid PassKey (refreshes if needed)
 async function getValidPassKey(sessionId) {
+  console.log("[GET_PASSKEY] Querying database for session:", sessionId);
+  
   const { data: rows, error } = await supabase
     .from("bsa_tokens")
     .select("*")
     .eq("session_id", sessionId)
     .limit(1);
   
-  if (error || !rows || !rows[0]) {
+  if (error) {
+    console.error("[GET_PASSKEY] Database error:", error);
+    return null;
+  }
+  
+  if (!rows || !rows[0]) {
+    console.error("[GET_PASSKEY] No token found for session:", sessionId);
+    console.log("[GET_PASSKEY] Query returned rows:", rows);
     return null;
   }
   
   const token = rows[0];
+  console.log("[GET_PASSKEY] Token found, fields:", Object.keys(token));
+  
   const passKey = token.passkey;
+  if (!passKey) {
+    console.error("[GET_PASSKEY] Token exists but passkey field is empty");
+    console.log("[GET_PASSKEY] Token data:", JSON.stringify(token).substring(0, 200));
+    return null;
+  }
+  
+  console.log("[GET_PASSKEY] PassKey found, length:", passKey.length);
   
   // Check if PassKey is about to expire (refresh if less than 5 minutes left)
   if (token.expires_at) {
     const expiry = new Date(token.expires_at);
     const now = new Date();
     const timeLeft = expiry - now;
+    const minutesLeft = Math.floor(timeLeft / 60000);
+    
+    console.log("[GET_PASSKEY] PassKey expires at:", token.expires_at);
+    console.log("[GET_PASSKEY] Time remaining (minutes):", minutesLeft);
     
     if (timeLeft < 5 * 60 * 1000) { // Less than 5 minutes
-      console.log("PassKey expiring soon, refreshing...");
+      console.log("[GET_PASSKEY] PassKey expiring soon, attempting refresh...");
       const newPassKey = await refreshPassKey(sessionId);
-      return newPassKey || passKey; // Return new or fall back to current
+      if (newPassKey) {
+        console.log("[GET_PASSKEY] Successfully refreshed PassKey");
+        return newPassKey;
+      } else {
+        console.error("[GET_PASSKEY] Failed to refresh PassKey, using existing");
+        return passKey;
+      }
     }
+  } else {
+    console.log("[GET_PASSKEY] No expiry time set for PassKey");
   }
   
   return passKey;
@@ -362,35 +427,100 @@ app.get("/auth/status", async (req, res) => {
 app.get("/api/orgs", async (req, res) => {
   try {
     const sessionId = req.query.session_id;
+    console.log("[API/ORGS] Request received with session_id:", sessionId);
+    
     if (!sessionId) {
+      console.error("[API/ORGS] Missing session_id parameter");
       return res.status(400).json({ error: "missing session_id" });
     }
 
     // Get valid PassKey (auto-refreshes if needed)
+    console.log("[API/ORGS] Retrieving PassKey for session:", sessionId);
     const passKey = await getValidPassKey(sessionId);
+    
     if (!passKey) {
+      console.error("[API/ORGS] No PassKey found for session:", sessionId);
       return res.status(401).json({ error: "not authenticated" });
     }
+    
+    console.log("[API/ORGS] PassKey retrieved successfully, length:", passKey.length);
+    console.log("[API/ORGS] PassKey prefix:", passKey.substring(0, 10) + "...");
 
     const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json`;
+    console.log("[API/ORGS] Calling BSA API:", url);
+    
+    // Try different field name variations for PassKey
+    let payload = { PassKey: passKey };
+    console.log("[API/ORGS] Request payload structure:", Object.keys(payload));
+    console.log("[API/ORGS] Trying with field name 'PassKey':", payload);
     
     try {
       const resp = await axios.post(
         url, 
-        { PassKey: passKey }, 
+        payload, 
         { 
           headers: { "Content-Type": "application/json" },
           timeout: 10000
         }
       );
       
+      console.log("[API/ORGS] BSA API response status:", resp.status);
+      console.log("[API/ORGS] BSA API response data type:", typeof resp.data);
+      console.log("[API/ORGS] BSA API response keys:", resp.data ? Object.keys(resp.data) : "null");
+      console.log("[API/ORGS] Full response data:", JSON.stringify(resp.data));
+      
+      // Log first part of response for debugging
+      if (resp.data) {
+        const dataPreview = JSON.stringify(resp.data).substring(0, 200);
+        console.log("[API/ORGS] Response data preview:", dataPreview);
+        
+        // Check if response indicates an error
+        if (resp.data.error || resp.data.Error) {
+          console.error("[API/ORGS] BSA API returned error:", resp.data.error || resp.data.Error);
+          return res.status(500).json({ error: "BSA API error", details: resp.data.error || resp.data.Error });
+        }
+        
+        // Check if response has organizations
+        const orgsArray = resp.data.organizations || resp.data.Organizations || resp.data.items || resp.data;
+        if (Array.isArray(orgsArray)) {
+          console.log("[API/ORGS] Found organizations array with", orgsArray.length, "items");
+        } else {
+          console.log("[API/ORGS] Response structure:", JSON.stringify(resp.data).substring(0, 500));
+        }
+      }
+      
       res.json(resp.data);
     } catch (apiError) {
-      console.error("BSA API error:", apiError.response?.data || apiError.message);
+      console.error("[API/ORGS] BSA API error - Status:", apiError.response?.status);
+      console.error("[API/ORGS] BSA API error - Data:", JSON.stringify(apiError.response?.data));
+      console.error("[API/ORGS] BSA API error - Message:", apiError.message);
+      console.error("[API/ORGS] BSA API error - Headers:", apiError.response?.headers);
+      
+      // If error is not 401, try with lowercase 'passkey' field
+      if (apiError.response?.status !== 401) {
+        console.log("[API/ORGS] Retrying with lowercase 'passkey' field");
+        try {
+          const retryResp = await axios.post(
+            url,
+            { passkey: passKey },  // Try lowercase
+            {
+              headers: { "Content-Type": "application/json" },
+              timeout: 10000
+            }
+          );
+          console.log("[API/ORGS] Lowercase retry successful!");
+          return res.json(retryResp.data);
+        } catch (lcError) {
+          console.error("[API/ORGS] Lowercase retry also failed:", lcError.response?.status);
+        }
+      }
+      
       if (apiError.response?.status === 401) {
+        console.log("[API/ORGS] Got 401, attempting to refresh PassKey");
         // Try to refresh PassKey once more
         const newPassKey = await refreshPassKey(sessionId);
         if (newPassKey) {
+          console.log("[API/ORGS] PassKey refreshed, retrying API call");
           // Retry with new PassKey
           try {
             const retryResp = await axios.post(
@@ -401,17 +531,20 @@ app.get("/api/orgs", async (req, res) => {
                 timeout: 10000
               }
             );
+            console.log("[API/ORGS] Retry successful, status:", retryResp.status);
             return res.json(retryResp.data);
           } catch (retryError) {
-            console.error("BSA API retry error:", retryError.response?.data || retryError.message);
+            console.error("[API/ORGS] Retry failed - Status:", retryError.response?.status);
+            console.error("[API/ORGS] Retry failed - Data:", retryError.response?.data);
           }
         }
         return res.status(401).json({ error: "authentication expired" });
       }
-      res.status(500).json({ error: "failed to fetch organizations" });
+      res.status(500).json({ error: "failed to fetch organizations", details: apiError.message });
     }
   } catch (error) {
-    console.error("Error in /api/orgs:", error);
+    console.error("[API/ORGS] Unexpected error:", error);
+    console.error("[API/ORGS] Error stack:", error.stack);
     res.status(500).json({ error: "internal server error" });
   }
 });

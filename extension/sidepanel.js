@@ -207,19 +207,31 @@ async function loadOrganizations() {
     const orgs = await response.json();
     console.log('[SIDEPANEL] Organizations received:', orgs);
     console.log('[SIDEPANEL] Organizations type:', typeof orgs);
-    console.log('[SIDEPANEL] Is array?', Array.isArray(orgs));
+    console.log('[SIDEPANEL] Response keys:', orgs ? Object.keys(orgs) : 'null');
     
-    if (orgs) {
-      console.log('[SIDEPANEL] Organizations keys:', Object.keys(orgs));
-      if (Array.isArray(orgs)) {
-        console.log('[SIDEPANEL] Organizations count:', orgs.length);
-        if (orgs.length > 0) {
-          console.log('[SIDEPANEL] First org structure:', orgs[0]);
-        }
-      }
+    // Check if response is valid
+    if (orgs && orgs.Valid === false) {
+      console.error('[SIDEPANEL] BSA API returned Valid=false:', orgs.ResponseMessage);
+      throw new Error(orgs.ResponseMessage || 'Invalid response from server');
     }
     
-    displayOrganizations(orgs);
+    // Extract the Organizations array from the response object
+    const orgArray = orgs.Organizations || orgs.organizations || orgs;
+    console.log('[SIDEPANEL] Extracted organizations array:', orgArray);
+    console.log('[SIDEPANEL] Is array?', Array.isArray(orgArray));
+    
+    if (!Array.isArray(orgArray)) {
+      console.error('[SIDEPANEL] Expected array, got:', typeof orgArray);
+      console.error('[SIDEPANEL] Full response:', orgs);
+      throw new Error('Invalid organizations data format');
+    }
+    
+    console.log('[SIDEPANEL] Organizations count:', orgArray.length);
+    if (orgArray.length > 0) {
+      console.log('[SIDEPANEL] First org structure:', orgArray[0]);
+    }
+    
+    displayOrganizations(orgArray);
   } catch (error) {
     console.error('[SIDEPANEL] Load orgs error:', error);
     console.error('[SIDEPANEL] Error stack:', error.stack);

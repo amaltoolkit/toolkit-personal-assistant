@@ -29,7 +29,7 @@ CREATE TABLE oauth_sessions (
 CREATE TABLE bsa_tokens (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id TEXT NOT NULL UNIQUE,
-  access_token TEXT NOT NULL,     -- PassKey stored in plain text
+  passkey TEXT NOT NULL,          -- PassKey stored in plain text
   refresh_token TEXT,
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),

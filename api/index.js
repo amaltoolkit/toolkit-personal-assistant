@@ -192,7 +192,7 @@ async function processOAuthCallback(code, state) {
       .from("bsa_tokens")
       .upsert({
         session_id: row.session_id,
-        access_token: passKey,  // Store PassKey as access_token for compatibility
+        passkey: passKey,  // Store PassKey in passkey field
         refresh_token: null,    // No refresh token, we'll use PassKey to refresh
         expires_at: expiresAt,
         updated_at: new Date().toISOString()
@@ -234,7 +234,7 @@ async function refreshPassKey(sessionId) {
       return null;
     }
     
-    const currentPassKey = rows[0].access_token;
+    const currentPassKey = rows[0].passkey;
     
     // Refresh PassKey using the login endpoint
     try {
@@ -259,7 +259,7 @@ async function refreshPassKey(sessionId) {
       const { error: updateError } = await supabase
         .from("bsa_tokens")
         .update({
-          access_token: newPassKey,
+          passkey: newPassKey,
           expires_at: expiresAt,
           updated_at: new Date().toISOString()
         })
@@ -296,7 +296,7 @@ async function getValidPassKey(sessionId) {
   }
   
   const token = rows[0];
-  const passKey = token.access_token;
+  const passKey = token.passkey;
   
   // Check if PassKey is about to expire (refresh if less than 5 minutes left)
   if (token.expires_at) {

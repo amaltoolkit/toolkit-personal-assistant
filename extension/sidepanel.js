@@ -261,6 +261,8 @@ async function loadContacts(orgId, orgName) {
     }
     
     const data = await response.json();
+    console.log('[SIDEPANEL] Contacts data received:', data);
+    console.log('[SIDEPANEL] Contacts data keys:', data ? Object.keys(data) : 'null');
     displayContacts(data);
   } catch (error) {
     console.error('Load contacts error:', error);
@@ -300,13 +302,26 @@ function displayContacts(data) {
   const contactsList = document.getElementById('contacts-list');
   contactsList.innerHTML = '';
   
-  // Handle different response formats
-  const contacts = data.items || data.results || data.contacts || data;
+  // Handle different response formats - check PascalCase first (BSA API convention)
+  const contacts = data.Items || data.Contacts || data.Results || 
+                   data.items || data.results || data.contacts || data;
   
-  if (!Array.isArray(contacts) || contacts.length === 0) {
+  console.log('[SIDEPANEL] Extracted contacts:', contacts);
+  console.log('[SIDEPANEL] Is contacts array?', Array.isArray(contacts));
+  
+  if (!Array.isArray(contacts)) {
+    console.error('[SIDEPANEL] Expected contacts array, got:', typeof contacts);
+    console.error('[SIDEPANEL] Full contacts response:', data);
+    contactsList.innerHTML = '<p class="error-message">Invalid contacts data format.</p>';
+    return;
+  }
+  
+  if (contacts.length === 0) {
     contactsList.innerHTML = '<p class="error-message">No contacts found for this organization.</p>';
     return;
   }
+  
+  console.log('[SIDEPANEL] Displaying', contacts.length, 'contacts');
   
   contacts.forEach(contact => {
     const contactItem = document.createElement('div');

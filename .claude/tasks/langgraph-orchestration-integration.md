@@ -150,8 +150,10 @@ Add to `api/index.js`:
 // Note: fetchOrganizations helper is defined earlier in the file and shared with /api/orgs endpoint
 
 // Helper to normalize BSA responses (handle array wrapper format)
+// NOTE: This is for regular BSA endpoints only, NOT for /oauth2/passkey
 function normalizeBSAResponse(response) {
-  // BSA returns ALL responses in array format: [{ data }]
+  // Most BSA endpoints return responses in array format: [{ data }]
+  // Exception: /oauth2/passkey returns plain object { passkey, user_id, expires_in }
   // This helper unwraps the array and validates the response
   if (!response) {
     return { data: null, valid: false, error: 'No response data' };
@@ -1132,35 +1134,38 @@ curl -X POST https://your-preview-url.vercel.app/api/assistant/query \
 
 BSA APIs have specific response formats that must be handled correctly:
 
-#### PassKey Response Format
-BSA returns PassKeys in an **array** containing a single object:
+#### PassKey Response Format (OAuth2 Endpoint - Special Case)
+**IMPORTANT**: The `/oauth2/passkey` endpoint returns a **plain object**, NOT an array like other BSA endpoints:
 ```javascript
-// PassKey response from /oauth2/passkey endpoint
-[
-  {
-    "Valid": true,
-    "StackMessage": null,
-    "TwoFARequired": false,
-    "ResponseMessage": "Success",
-    "PassKey": "2fhO2yvvy3p3bkIhHeK2u6Ycbr6Yd1hdYP3vLLmgy7wEufZNsBoQv3JeXgzffXh3LVwLvXs0muNbXmAP2LxeH0w"
-  }
-]
+// PassKey response from /oauth2/passkey endpoint (actual format from logs)
+{
+  "passkey": "2Z-37xse5Wg1E4GFix9DCoBaoLO7PoYEXVVYhrs0bV7FW_nZnXlF36JeXgzffXh3LVwLvXs0muNbXmAP2LxeH0w",
+  "user_id": "32ad7a84-8108-404e-9ec6-47fb30e4fea6",
+  "expires_in": 3600
+}
+// Note: Field is lowercase "passkey", not "PassKey"
+// Note: No array wrapper, unlike all other BSA endpoints
 ```
 
-#### Handling Array Responses
-When working with BSA responses, always check if the response is an array:
+#### Handling Different Response Formats
+BSA endpoints have two distinct response patterns:
 ```javascript
-// Safe extraction pattern for array responses
+// Pattern 1: OAuth2 PassKey endpoint (plain object)
+const passKeyResponse = response.data; // Direct object, no array
+const passKey = passKeyResponse?.passkey; // lowercase field
+
+// Pattern 2: All other BSA endpoints (array wrapper)
 const responseData = Array.isArray(response.data) ? response.data[0] : response.data;
-const passKey = responseData?.PassKey;
+const results = responseData?.Results;
 ```
 
 #### Known Response Formats by Endpoint
 
-1. **PassKey Endpoint** (`/oauth2/passkey`)
-   - Returns: Array with single object
-   - Fields: `PassKey`, `Valid`, `ResponseMessage`, `TwoFARequired`
-   - Example: `[{ "PassKey": "...", "Valid": true }]`
+1. **PassKey Endpoint** (`/oauth2/passkey`) - **UNIQUE FORMAT**
+   - Returns: Plain object (NO array wrapper)
+   - Fields: `passkey` (lowercase), `user_id`, `expires_in`
+   - Example: `{ "passkey": "...", "user_id": "...", "expires_in": 3600 }`
+   - **Note**: This is the ONLY BSA endpoint that doesn't use array wrapper
 
 2. **Organizations Endpoint** (`/listMyOrganizations.json`)
    - Returns: **Array** with single object containing Organizations array

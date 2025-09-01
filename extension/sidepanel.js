@@ -2,6 +2,8 @@
 const APP_BASE = 'https://personalassistant-seven.vercel.app';
 const LOCAL_BASE = 'http://localhost:3000';  // For local development
 const SESSION_ID_KEY = 'bsa_session_id';
+const LAST_ORG_ID_KEY = 'bsa_last_org_id';
+const LAST_ORG_NAME_KEY = 'bsa_last_org_name';
 
 // Use local backend if in development
 const API_BASE = window.location.protocol === 'chrome-extension:' 
@@ -41,6 +43,15 @@ async function initializeApp() {
     if (isAuthenticated) {
       showAuthenticatedView();
       await loadOrganizations();
+      
+      // Restore last selected organization if available
+      const lastOrgId = localStorage.getItem(LAST_ORG_ID_KEY);
+      const lastOrgName = localStorage.getItem(LAST_ORG_NAME_KEY);
+      if (lastOrgId && lastOrgName) {
+        console.log('[SIDEPANEL] Restoring last selected org:', lastOrgId, lastOrgName);
+        // Auto-select the last used organization
+        loadContacts(lastOrgId, lastOrgName);
+      }
     } else {
       showLoginView();
     }
@@ -65,6 +76,8 @@ function generateSessionId() {
 
 function clearSession() {
   localStorage.removeItem(SESSION_ID_KEY);
+  localStorage.removeItem(LAST_ORG_ID_KEY);
+  localStorage.removeItem(LAST_ORG_NAME_KEY);
   currentSessionId = null;
   currentOrgId = null;
 }
@@ -244,6 +257,12 @@ async function loadOrganizations() {
 async function loadContacts(orgId, orgName) {
   try {
     currentOrgId = orgId;
+    
+    // Persist organization selection to localStorage
+    localStorage.setItem(LAST_ORG_ID_KEY, orgId);
+    localStorage.setItem(LAST_ORG_NAME_KEY, orgName);
+    console.log('[SIDEPANEL] Saved organization selection:', orgId, orgName);
+    
     showContactsView(orgName);
     showLoading('contacts-loading', true);
     hideError('contacts-error');

@@ -335,10 +335,12 @@ async function processOAuthCallback(code, state) {
     }
 
     // Extract PassKey from response
-    // BSA returns an array with a single object containing the PassKey
-    // Response format: [{ PassKey: "...", Valid: true, ... }]
+    // BSA may return PassKey in different formats:
+    // - Array format: [{ PassKey: "...", Valid: true, ... }]
+    // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
     const responseData = Array.isArray(passKeyResp.data) ? passKeyResp.data[0] : passKeyResp.data;
-    const passKey = responseData?.PassKey;
+    // Check both PascalCase 'PassKey' and lowercase 'passkey' field names
+    const passKey = responseData?.PassKey || responseData?.passkey;
     console.log("[PROCESS OAUTH] PassKey:", passKey ? "received" : "missing");
     
     // Validate PassKey was received
@@ -487,10 +489,12 @@ async function refreshPassKey(sessionId) {
       console.log("[REFRESH_PASSKEY] Refresh response keys:", Object.keys(refreshResp.data));
       
       // Extract new PassKey from response
-      // BSA returns an array with a single object containing the PassKey
-      // Response format: [{ PassKey: "...", Valid: true, ... }]
+      // BSA may return PassKey in different formats:
+      // - Array format: [{ PassKey: "...", Valid: true, ... }]
+      // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
       const responseData = Array.isArray(refreshResp.data) ? refreshResp.data[0] : refreshResp.data;
-      const newPassKey = responseData?.PassKey;
+      // Check both PascalCase 'PassKey' and lowercase 'passkey' field names
+      const newPassKey = responseData?.PassKey || responseData?.passkey;
       if (!newPassKey) {
         console.error("[REFRESH_PASSKEY] No new PassKey in refresh response:", refreshResp.data);
         return null;

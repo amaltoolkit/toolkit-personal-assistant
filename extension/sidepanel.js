@@ -109,7 +109,7 @@ async function handleLogin() {
     if (authenticated) {
       console.log('[SIDEPANEL] Authentication successful');
       currentSessionId = sessionId;  // Store the session ID globally
-      storeSessionId(sessionId);     // Persist to localStorage
+      localStorage.setItem(SESSION_ID_KEY, sessionId);     // Persist to localStorage
       console.log('[SIDEPANEL] Session ID stored:', sessionId);
       showAuthenticatedView();
       await loadOrganizations();

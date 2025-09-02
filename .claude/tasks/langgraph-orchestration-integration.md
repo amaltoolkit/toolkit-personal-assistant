@@ -3,10 +3,11 @@
 ## Project: BlueSquare Assistant - AI Agent Orchestration Layer
 
 **Date Created**: 2025-01-31  
-**Last Updated**: 2025-02-01 (v6.0 - Phase 2 revised: Build Task Agent first, then add orchestration)  
-**Status**: Ready for Implementation  
+**Last Updated**: 2025-09-02 (v7.0 - Phase 1 COMPLETE with critical implementation fixes)  
+**Status**: Phase 1 Complete, Phase 2 Ready  
 **Complexity**: Medium (pragmatic approach)  
 **Estimated Time**: 8-9 hours (phased implementation)  
+**Phase 1 Actual Time**: 4 hours (including debugging)  
 
 ---
 
@@ -69,14 +70,89 @@ User Query → Chrome Extension → Express Backend → LangGraph Supervisor
 
 ## Implementation Plan
 
-### Phase 1: Calendar Agent with LangChain Tools (3-4 hours)
+### Phase 1: Calendar Agent with LangChain Tools (COMPLETE ✅)
 
-#### 1.1 Install Dependencies
+#### 1.1 Install Dependencies (COMPLETE)
 ```bash
-npm install @langchain/openai
-# Note: @langchain/core may be needed for tool definitions
-# Note: zod only if adding request validation (optional for MVP)
-# Note: @langchain/langgraph will be added in Phase 2 for orchestration
+npm install @langchain/openai @langchain/core langchain zod
+# Critical: All packages installed and version-aligned
+# langchain: 0.3.31
+# @langchain/core: 0.3.72 (with overrides to force alignment)
+# @langchain/openai: 0.6.9
+# zod: 3.x (for tool schemas)
+```
+
+#### CRITICAL IMPLEMENTATION FIXES APPLIED
+
+##### Issue 1: Tool Execution Failure (FIXED)
+**Problem**: Agent identified tools but didn't execute them (empty responses)
+**Root Cause**: `createOpenAIFunctionsAgent` is deprecated
+**Solution**: Replaced with `createToolCallingAgent`
+```javascript
+// WRONG (causes empty responses):
+const { createOpenAIFunctionsAgent } = await import("langchain/agents");
+
+// CORRECT:
+const { createToolCallingAgent } = await import("langchain/agents");
+```
+
+##### Issue 2: Tool Input Schema Mismatch (FIXED)
+**Problem**: "Received tool input did not match expected schema"
+**Root Cause**: `DynamicTool` expects string input, but modern agents pass objects
+**Solution**: Use `tool()` function with Zod schemas
+```javascript
+// WRONG (expects string, gets object):
+new DynamicTool({
+  name: "search_appointments_by_date",
+  func: async (input) => { // input is string, needs parsing
+    const parsed = JSON.parse(input);
+  }
+})
+
+// CORRECT (accepts objects directly):
+tool(
+  async ({ startDate, endDate }) => { // destructured object input
+    // Direct use, no parsing needed
+  },
+  {
+    name: "search_appointments_by_date",
+    schema: z.object({
+      startDate: z.string(),
+      endDate: z.string()
+    })
+  }
+)
+```
+
+##### Issue 3: Tool Initialization Error (FIXED)
+**Problem**: "Cannot read properties of undefined (reading 'toLowerCase')"
+**Root Cause**: Incorrect use of `StructuredTool` constructor
+**Solution**: Use `tool()` function instead
+```javascript
+// WRONG (causes toLowerCase error):
+new StructuredTool({
+  name: "get_appointments",
+  schema: z.object({...}),
+  func: async (input) => {...}
+})
+
+// CORRECT:
+tool(
+  async (input) => {...},
+  {
+    name: "get_appointments",
+    schema: z.object({...})
+  }
+)
+```
+
+##### Issue 4: Version Conflicts (FIXED)
+**Problem**: Module resolution errors between LangChain packages
+**Solution**: Force version alignment with npm overrides
+```json
+"overrides": {
+  "@langchain/core": "0.3.72"
+}
 ```
 
 #### 1.2 Package.json Configuration
@@ -1320,16 +1396,29 @@ This agent-first approach prioritizes:
 
 **Implementation Checklist**:
 
-Phase 1 - Calendar Agent with Tools:
-- [ ] Install `@langchain/openai` and `@langchain/core` dependencies
-- [ ] Add OPENAI_API_KEY to Vercel environment variables
-- [ ] Add performance optimizations to api/index.js (keep-alive, module caching)
-- [ ] Create Calendar Agent with tool definitions (get_appointments, search_by_date, etc.)
-- [ ] Implement `/api/assistant/query` endpoint with agent executor
-- [ ] Add AI Assistant UI section to sidepanel.html
-- [ ] Implement chat functionality in sidepanel.js
-- [ ] Deploy to Vercel preview environment
-- [ ] Test queries: "What meetings do I have today?", "Who am I meeting tomorrow?"
+Phase 1 - Calendar Agent with Tools (COMPLETE ✅):
+- [x] Install `@langchain/openai` and `@langchain/core` dependencies
+- [x] Add OPENAI_API_KEY to Vercel environment variables
+- [x] Add performance optimizations to api/index.js (keep-alive, module caching)
+- [x] Create Calendar Agent with tool definitions (5 tools implemented)
+- [x] Implement `/api/assistant/query` endpoint with agent executor
+- [x] Add AI Assistant UI section to sidepanel.html
+- [x] Implement chat functionality in sidepanel.js
+- [x] Deploy to Vercel production environment
+- [x] Test queries: Successfully handling date-based appointment queries
+
+**Phase 1 Implementation Summary**:
+- **Tools Created**: 5 functional tools using `tool()` with Zod schemas
+  - get_appointments (with optional limit/offset)
+  - search_appointments_by_date (date range filtering)
+  - get_appointment_details (by ID)
+  - get_appointment_contacts (linked contacts)
+  - get_organizations (list available orgs)
+- **Agent Type**: createToolCallingAgent (not deprecated Functions agent)
+- **Model**: gpt-4o-mini for efficiency
+- **Response Format**: JSON with proper BSA data formatting
+- **Error Handling**: Comprehensive with helpful error messages
+- **Security**: PassKey validation, org_id requirement, session checks
 
 Phase 2 - Task Agent and Orchestration:
 - [ ] Create Task Agent with tool definitions (get_tasks, create_task, update_task)

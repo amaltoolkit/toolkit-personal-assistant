@@ -127,3 +127,49 @@ When working with the database, use the Supabase MCP tools:
 Project IDs:
 - Primary: `fscwwerxbxzbszgdubbo`
 - Secondary: `wpghmnfuywvrwwhnzfcn`
+
+## LangChain Integration Notes (Phase 1 Complete)
+
+### Critical Implementation Learnings
+
+#### Tool Implementation Pattern
+- **USE**: `tool()` function from `@langchain/core/tools`
+- **AVOID**: `StructuredTool` class constructor (causes initialization errors)
+- **AVOID**: `DynamicTool` with string inputs (incompatible with modern agents)
+
+#### Correct Tool Pattern
+```javascript
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
+
+const myTool = tool(
+  async (input) => {
+    // Tool implementation
+    return JSON.stringify(result);
+  },
+  {
+    name: "tool_name",
+    description: "Tool description",
+    schema: z.object({
+      param: z.string()
+    })
+  }
+);
+```
+
+#### Agent Creation
+- **USE**: `createToolCallingAgent` (modern, supports tool calling)
+- **AVOID**: `createOpenAIFunctionsAgent` (deprecated, causes empty responses)
+
+#### Version Alignment
+Keep these packages aligned to avoid compatibility issues:
+- `langchain`: 0.3.x
+- `@langchain/core`: 0.3.x  
+- `@langchain/openai`: 0.6.x
+- `zod`: Required for tool schemas
+
+#### Common Pitfalls Resolved
+1. **"toLowerCase" error**: Caused by incorrect tool initialization
+2. **Empty agent responses**: Caused by deprecated agent types
+3. **Tool input schema mismatch**: Tools must accept objects, not strings
+4. **Version conflicts**: Use npm overrides if needed to force alignment

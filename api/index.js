@@ -1231,18 +1231,12 @@ function parseToolInput(input, schema = {}) {
   }
 }
 
-// Define Calendar Agent Tools using StructuredTool with Zod
-function createCalendarTools(StructuredTool, z, passKey, orgId) {
+// Define Calendar Agent Tools using tool function with Zod
+function createCalendarTools(tool, z, passKey, orgId) {
   return [
     // Tool 1: Get appointments
-    new StructuredTool({
-      name: "get_appointments",
-      description: "Fetch calendar appointments. Use when user asks about meetings, appointments, or calendar events.",
-      schema: z.object({
-        limit: z.number().optional().describe("Maximum number of appointments to return"),
-        offset: z.number().optional().describe("Number of appointments to skip")
-      }),
-      func: async (input) => {
+    tool(
+      async (input) => {
         try {
           const limit = input.limit || 100;
           const offset = input.offset || 0;
@@ -1259,18 +1253,20 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
             error: `Failed to fetch appointments: ${error.message}` 
           });
         }
+      },
+      {
+        name: "get_appointments",
+        description: "Fetch calendar appointments. Use when user asks about meetings, appointments, or calendar events.",
+        schema: z.object({
+          limit: z.number().optional().describe("Maximum number of appointments to return"),
+          offset: z.number().optional().describe("Number of appointments to skip")
+        })
       }
-    }),
+    ),
     
     // Tool 2: Search appointments by date range
-    new StructuredTool({
-      name: "search_appointments_by_date",
-      description: "Search appointments by date range. Use for queries about specific dates or time periods.",
-      schema: z.object({
-        startDate: z.string().describe("Start date in YYYY-MM-DD format"),
-        endDate: z.string().describe("End date in YYYY-MM-DD format")
-      }),
-      func: async ({ startDate, endDate }) => {
+    tool(
+      async ({ startDate, endDate }) => {
         try {
           // Validate date formats
           const startDateObj = new Date(startDate);
@@ -1299,17 +1295,20 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
             error: `Failed to search appointments: ${error.message}` 
           });
         }
+      },
+      {
+        name: "search_appointments_by_date",
+        description: "Search appointments by date range. Use for queries about specific dates or time periods.",
+        schema: z.object({
+          startDate: z.string().describe("Start date in YYYY-MM-DD format"),
+          endDate: z.string().describe("End date in YYYY-MM-DD format")
+        })
       }
-    }),
+    ),
     
     // Tool 3: Get appointment contacts
-    new StructuredTool({
-      name: "get_appointment_contacts",
-      description: "Get contacts linked to a specific appointment. Use when user asks who is attending a meeting.",
-      schema: z.object({
-        appointmentId: z.string().describe("The appointment ID to get contacts for")
-      }),
-      func: async ({ appointmentId }) => {
+    tool(
+      async ({ appointmentId }) => {
         try {
           const contacts = await getAppointmentContacts(passKey, orgId, appointmentId);
           return JSON.stringify({
@@ -1322,17 +1321,19 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
             error: `Failed to fetch appointment contacts: ${error.message}` 
           });
         }
+      },
+      {
+        name: "get_appointment_contacts",
+        description: "Get contacts linked to a specific appointment. Use when user asks who is attending a meeting.",
+        schema: z.object({
+          appointmentId: z.string().describe("The appointment ID to get contacts for")
+        })
       }
-    }),
+    ),
     
     // Tool 4: Get appointment details
-    new StructuredTool({
-      name: "get_appointment_details",
-      description: "Get detailed information about a specific appointment by ID.",
-      schema: z.object({
-        appointmentId: z.string().describe("The appointment ID to get details for")
-      }),
-      func: async ({ appointmentId }) => {
+    tool(
+      async ({ appointmentId }) => {
         try {
           const response = await getAppointments(passKey, orgId);
           const appointment = response.appointments?.find(apt => apt.Id === appointmentId);
@@ -1354,15 +1355,19 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
             error: `Failed to fetch appointment details: ${error.message}` 
           });
         }
+      },
+      {
+        name: "get_appointment_details",
+        description: "Get detailed information about a specific appointment by ID.",
+        schema: z.object({
+          appointmentId: z.string().describe("The appointment ID to get details for")
+        })
       }
-    }),
+    ),
     
     // Tool 5: Get organizations
-    new StructuredTool({
-      name: "get_organizations",
-      description: "List available organizations. Use when user needs to select an organization.",
-      schema: z.object({}), // No input required
-      func: async (input) => {
+    tool(
+      async (input) => {
         try {
           const orgs = await fetchOrganizations(passKey);
           return JSON.stringify({
@@ -1374,8 +1379,13 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
             error: `Failed to fetch organizations: ${error.message}` 
           });
         }
+      },
+      {
+        name: "get_organizations",
+        description: "List available organizations. Use when user needs to select an organization.",
+        schema: z.object({})
       }
-    })
+    )
   ];
 }
 
@@ -1383,7 +1393,7 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
 async function createCalendarAgent(passKey, orgId) {
   // Dynamic imports for LangChain and Zod
   const { z } = await import("zod");
-  const { StructuredTool } = await import("@langchain/core/tools");
+  const { tool } = await import("@langchain/core/tools");
   const { ChatOpenAI } = await import("@langchain/openai");
   const { AgentExecutor, createToolCallingAgent } = await import("langchain/agents");
   const { ChatPromptTemplate } = await import("@langchain/core/prompts");
@@ -1393,7 +1403,15 @@ async function createCalendarAgent(passKey, orgId) {
     temperature: 0
   });
   
-  const tools = createCalendarTools(StructuredTool, z, passKey, orgId);
+  const tools = createCalendarTools(tool, z, passKey, orgId);
+  
+  // Debug: Log tools to verify they're created correctly
+  console.log("[DEBUG] Tools created:", tools.map(t => ({ 
+    name: t.name, 
+    description: t.description?.substring(0, 50),
+    hasFunc: !!t.func,
+    type: typeof t
+  })));
   
   const prompt = ChatPromptTemplate.fromMessages([
     ["system", "You are a helpful calendar assistant. Use the available tools to answer questions about appointments, meetings, and schedules. Be concise and informative."],

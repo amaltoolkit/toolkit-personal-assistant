@@ -1239,11 +1239,13 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
       name: "get_appointments",
       description: "Fetch calendar appointments. Use when user asks about meetings, appointments, or calendar events.",
       schema: z.object({
-        limit: z.number().optional().default(100).describe("Maximum number of appointments to return"),
-        offset: z.number().optional().default(0).describe("Number of appointments to skip")
+        limit: z.number().optional().describe("Maximum number of appointments to return"),
+        offset: z.number().optional().describe("Number of appointments to skip")
       }),
-      func: async ({ limit, offset }) => {
+      func: async (input) => {
         try {
+          const limit = input.limit || 100;
+          const offset = input.offset || 0;
           const data = await getAppointments(passKey, orgId, { limit, offset });
           
           return JSON.stringify({
@@ -1360,7 +1362,7 @@ function createCalendarTools(StructuredTool, z, passKey, orgId) {
       name: "get_organizations",
       description: "List available organizations. Use when user needs to select an organization.",
       schema: z.object({}), // No input required
-      func: async () => {
+      func: async (input) => {
         try {
           const orgs = await fetchOrganizations(passKey);
           return JSON.stringify({

@@ -238,7 +238,7 @@ async function loadOrganizations() {
     }
     
     const data = await response.json();
-    organizations = data.organizations || data || [];
+    organizations = data.Organizations || data.organizations || data || [];
     
     displayOrganizations();
     populateOrgDropdown();

@@ -1405,14 +1405,6 @@ async function createCalendarAgent(passKey, orgId) {
   
   const tools = createCalendarTools(tool, z, passKey, orgId);
   
-  // Debug: Log tools to verify they're created correctly
-  console.log("[DEBUG] Tools created:", tools.map(t => ({ 
-    name: t.name, 
-    description: t.description?.substring(0, 50),
-    hasFunc: !!t.func,
-    type: typeof t
-  })));
-  
   const prompt = ChatPromptTemplate.fromMessages([
     ["system", "You are a helpful calendar assistant. Use the available tools to answer questions about appointments, meetings, and schedules. Be concise and informative."],
     ["human", "{input}"],

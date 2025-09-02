@@ -442,3 +442,126 @@ function escapeHtml(text) {
   };
   return String(text).replace(/[&<>"']/g, m => map[m]);
 }
+
+// ============================================
+// AI ASSISTANT FUNCTIONALITY
+// ============================================
+function initAssistant() {
+  const queryInput = document.getElementById('query-input');
+  const querySubmit = document.getElementById('query-submit');
+  const responseContainer = document.getElementById('response-container');
+  const responseContent = document.getElementById('response-content');
+  const responseLoading = document.getElementById('response-loading');
+  
+  if (!queryInput || !querySubmit) {
+    console.log('[ASSISTANT] Elements not found, skipping initialization');
+    return;
+  }
+  
+  querySubmit.addEventListener('click', handleAssistantQuery);
+  queryInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      handleAssistantQuery();
+    }
+  });
+  
+  async function handleAssistantQuery() {
+    const query = queryInput.value.trim();
+    if (!query) return;
+    
+    const sessionId = getSessionId();
+    const orgId = currentOrgId;
+    
+    if (!sessionId) {
+      showError('Please login first');
+      return;
+    }
+    
+    // Check if organization is selected
+    if (!orgId) {
+      showError('Please select an organization first', 'response-content');
+      responseContainer.classList.remove('hidden');
+      // Optionally show the org selection UI
+      if (orgSection) {
+        orgSection.classList.remove('hidden');
+      }
+      return;
+    }
+    
+    responseContainer.classList.remove('hidden');
+    showLoading('response-loading', true);
+    responseContent.innerHTML = '';
+    
+    try {
+      console.log('[ASSISTANT] Sending query:', query);
+      const response = await fetch(`${API_BASE}/api/assistant/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query,
+          session_id: sessionId,
+          org_id: orgId
+        })
+      });
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          showError('Session expired. Please login again.', 'response-content');
+          return;
+        }
+        if (response.status === 400) {
+          const errorData = await response.json();
+          if (errorData.error === 'Please select an organization first') {
+            showError('Please select an organization first', 'response-content');
+            if (orgSection) {
+              orgSection.classList.remove('hidden');
+            }
+            return;
+          }
+          showError(errorData.error || 'Invalid request', 'response-content');
+          return;
+        }
+        if (response.status === 429) {
+          showError('Rate limit exceeded. Please wait a minute and try again.', 'response-content');
+          return;
+        }
+        throw new Error('Request failed');
+      }
+      
+      const data = await response.json();
+      console.log('[ASSISTANT] Response received:', data);
+      
+      responseContent.innerHTML = `
+        <div class="assistant-response">
+          ${formatAssistantResult(data)}
+        </div>
+      `;
+      
+    } catch (error) {
+      console.error('[ASSISTANT] Error:', error);
+      showError('Failed to process request. Please try again.', 'response-content');
+    } finally {
+      showLoading('response-loading', false);
+      queryInput.value = '';
+    }
+  }
+  
+  function formatAssistantResult(data) {
+    if (data.error) {
+      return `<span class="error">${escapeHtml(data.error)}</span>`;
+    }
+    if (data.response) {
+      // Agent response is already formatted
+      return escapeHtml(data.response);
+    }
+    // Fallback for raw data
+    return `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+  }
+}
+
+// Initialize assistant on DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initAssistant);
+} else {
+  initAssistant();
+}

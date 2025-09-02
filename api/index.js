@@ -25,6 +25,51 @@ const cookieParser = require("cookie-parser");
 // Used to store OAuth sessions and PassKeys securely
 const { createClient } = require("@supabase/supabase-js");
 
+// HTTP/HTTPS modules for keep-alive agents
+const http = require('http');
+const https = require('https');
+
+// ============================================
+// PERFORMANCE OPTIMIZATIONS
+// ============================================
+// Keep-alive agents for connection reuse
+const keepAliveAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 10
+});
+const keepAliveHttpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 10
+});
+
+// Module caching to prevent duplicate imports
+const modulePromises = {};
+const moduleCache = {};
+
+// Enhanced axios config
+const axiosConfig = {
+  httpAgent: keepAliveAgent,
+  httpsAgent: keepAliveHttpsAgent,
+  timeout: 10000
+};
+
+// Cached LLM client getter
+async function getLLMClient() {
+  if (!moduleCache.llm) {
+    if (!modulePromises.llm) {
+      modulePromises.llm = import("@langchain/openai").then(({ ChatOpenAI }) => {
+        moduleCache.llm = new ChatOpenAI({
+          model: "gpt-4o-mini",
+          temperature: 0
+        });
+        return moduleCache.llm;
+      });
+    }
+    return modulePromises.llm;
+  }
+  return moduleCache.llm;
+}
+
 // ============================================
 // EXPRESS APP INITIALIZATION
 // ============================================
@@ -1068,6 +1113,406 @@ app.post("/api/orgs/:orgId/contacts", async (req, res) => {
     // Unexpected errors
     console.error("Error in /api/orgs/:orgId/contacts:", error);
     res.status(500).json({ error: "internal server error" });
+  }
+});
+
+// ============================================
+// LANGCHAIN CALENDAR AGENT IMPLEMENTATION
+// ============================================
+// Helper functions for BSA API calls and Calendar Agent with tools
+
+// Helper to normalize BSA responses (handle array wrapper format)
+// NOTE: This is for regular BSA endpoints only, NOT for /oauth2/passkey
+function normalizeBSAResponse(response) {
+  // Most BSA endpoints return responses in array format: [{ data }]
+  // Exception: /oauth2/passkey returns plain object { passkey, user_id, expires_in }
+  // This helper unwraps the array and validates the response
+  if (!response) {
+    return { data: null, valid: false, error: 'No response data' };
+  }
+  
+  // Unwrap array wrapper
+  const responseData = Array.isArray(response) ? response[0] : response;
+  
+  // Check Valid field for errors
+  if (responseData?.Valid === false) {
+    return {
+      data: responseData,
+      valid: false,
+      error: responseData.ResponseMessage || responseData.StackMessage || 'BSA API error'
+    };
+  }
+  
+  return {
+    data: responseData,
+    valid: true,
+    error: null
+  };
+}
+
+// Fetch appointments from BSA
+async function getAppointments(passKey, orgId, options = {}) {
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
+  const payload = {
+    PassKey: passKey,
+    OrganizationId: orgId,
+    ObjectName: "appointment",
+    IncludeExtendedProperties: true,
+    ResultsPerPage: options.limit || 100,
+    PageOffset: options.offset || 0
+  };
+  
+  const resp = await axios.post(url, payload, axiosConfig);
+  // Handle array wrapper format: [{ Results: [...], Valid: true }]
+  const normalized = normalizeBSAResponse(resp.data);
+  
+  if (!normalized.valid) {
+    throw new Error(normalized.error || 'Invalid BSA response');
+  }
+  
+  return {
+    appointments: normalized.data?.Results || [],
+    totalResults: normalized.data?.TotalResults || 0,
+    valid: true
+  };
+}
+
+// Get contacts linked to an appointment
+async function getAppointmentContacts(passKey, orgId, appointmentId) {
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/listLinked.json`;
+  const payload = {
+    PassKey: passKey,
+    OrganizationId: orgId,
+    ObjectName: "linker_appointments_contacts",
+    ListObjectName: "contact",
+    LinkParentId: appointmentId
+  };
+  
+  const resp = await axios.post(url, payload, axiosConfig);
+  // Handle array wrapper format: [{ Results: [...], Valid: true }]
+  const normalized = normalizeBSAResponse(resp.data);
+  
+  if (!normalized.valid) {
+    throw new Error(normalized.error || 'Invalid BSA response');
+  }
+  
+  return normalized.data?.Results || [];
+}
+
+// Helper function for safe JSON parsing in tools
+function parseToolInput(input, schema = {}) {
+  try {
+    const parsed = JSON.parse(input || '{}');
+    
+    // Validate required fields if schema provided
+    if (schema.required && Array.isArray(schema.required)) {
+      for (const field of schema.required) {
+        if (parsed[field] === undefined || parsed[field] === null) {
+          return { 
+            error: `Missing required field: '${field}'`, 
+            isError: true 
+          };
+        }
+      }
+    }
+    
+    return { data: parsed, isError: false };
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return { 
+        error: `Invalid JSON format: ${error.message}`, 
+        isError: true 
+      };
+    }
+    return { 
+      error: `Error parsing input: ${error.message}`, 
+      isError: true 
+    };
+  }
+}
+
+// Define Calendar Agent Tools using tool function with Zod
+function createCalendarTools(tool, z, passKey, orgId) {
+  return [
+    // Tool 1: Get appointments
+    tool(
+      async (input) => {
+        try {
+          const limit = input.limit || 100;
+          const offset = input.offset || 0;
+          const data = await getAppointments(passKey, orgId, { limit, offset });
+          
+          return JSON.stringify({
+            count: data.appointments?.length || 0,
+            appointments: data.appointments?.slice(0, 5), // Limit for readability
+            total: data.totalResults || 0
+          });
+        } catch (error) {
+          console.error("[Calendar Tool] Error fetching appointments:", error);
+          return JSON.stringify({ 
+            error: `Failed to fetch appointments: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "get_appointments",
+        description: "Fetch calendar appointments. Use when user asks about meetings, appointments, or calendar events.",
+        schema: z.object({
+          limit: z.number().optional().describe("Maximum number of appointments to return"),
+          offset: z.number().optional().describe("Number of appointments to skip")
+        })
+      }
+    ),
+    
+    // Tool 2: Search appointments by date range
+    tool(
+      async ({ startDate, endDate }) => {
+        try {
+          // Validate date formats
+          const startDateObj = new Date(startDate);
+          const endDateObj = new Date(endDate);
+          if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
+            return JSON.stringify({ 
+              error: "Invalid date format. Please use YYYY-MM-DD format.",
+              example: "startDate: '2025-09-01', endDate: '2025-09-30'"
+            });
+          }
+          
+          // Fetch and filter appointments by date
+          const response = await getAppointments(passKey, orgId);
+          const filtered = response.appointments?.filter(apt => {
+            const aptDate = new Date(apt.StartTime);
+            return aptDate >= startDateObj && aptDate <= endDateObj;
+          });
+          
+          return JSON.stringify({
+            dateRange: { startDate, endDate },
+            count: filtered?.length || 0,
+            appointments: filtered?.slice(0, 10)
+          });
+        } catch (error) {
+          return JSON.stringify({ 
+            error: `Failed to search appointments: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "search_appointments_by_date",
+        description: "Search appointments by date range. Use for queries about specific dates or time periods.",
+        schema: z.object({
+          startDate: z.string().describe("Start date in YYYY-MM-DD format"),
+          endDate: z.string().describe("End date in YYYY-MM-DD format")
+        })
+      }
+    ),
+    
+    // Tool 3: Get appointment contacts
+    tool(
+      async ({ appointmentId }) => {
+        try {
+          const contacts = await getAppointmentContacts(passKey, orgId, appointmentId);
+          return JSON.stringify({
+            appointmentId,
+            contacts,
+            count: contacts.length
+          });
+        } catch (error) {
+          return JSON.stringify({ 
+            error: `Failed to fetch appointment contacts: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "get_appointment_contacts",
+        description: "Get contacts linked to a specific appointment. Use when user asks who is attending a meeting.",
+        schema: z.object({
+          appointmentId: z.string().describe("The appointment ID to get contacts for")
+        })
+      }
+    ),
+    
+    // Tool 4: Get appointment details
+    tool(
+      async ({ appointmentId }) => {
+        try {
+          const response = await getAppointments(passKey, orgId);
+          const appointment = response.appointments?.find(apt => apt.Id === appointmentId);
+          
+          if (!appointment) {
+            return JSON.stringify({ 
+              error: "Appointment not found",
+              appointmentId 
+            });
+          }
+          
+          return JSON.stringify({
+            appointment,
+            formattedDate: new Date(appointment.StartTime).toLocaleString(),
+            formattedEndDate: new Date(appointment.EndTime).toLocaleString()
+          });
+        } catch (error) {
+          return JSON.stringify({ 
+            error: `Failed to fetch appointment details: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "get_appointment_details",
+        description: "Get detailed information about a specific appointment by ID.",
+        schema: z.object({
+          appointmentId: z.string().describe("The appointment ID to get details for")
+        })
+      }
+    ),
+    
+    // Tool 5: Get organizations
+    tool(
+      async (input) => {
+        try {
+          const orgs = await fetchOrganizations(passKey);
+          return JSON.stringify({
+            organizations: orgs,
+            count: orgs.length
+          });
+        } catch (error) {
+          return JSON.stringify({ 
+            error: `Failed to fetch organizations: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "get_organizations",
+        description: "List available organizations. Use when user needs to select an organization.",
+        schema: z.object({})
+      }
+    )
+  ];
+}
+
+// Create Calendar Agent
+async function createCalendarAgent(passKey, orgId) {
+  // Dynamic imports for LangChain and Zod
+  const { z } = await import("zod");
+  const { tool } = await import("@langchain/core/tools");
+  const { ChatOpenAI } = await import("@langchain/openai");
+  const { AgentExecutor, createToolCallingAgent } = await import("langchain/agents");
+  const { ChatPromptTemplate } = await import("@langchain/core/prompts");
+  
+  const llm = new ChatOpenAI({
+    model: "gpt-4o-mini",
+    temperature: 0
+  });
+  
+  const tools = createCalendarTools(tool, z, passKey, orgId);
+  
+  const prompt = ChatPromptTemplate.fromMessages([
+    ["system", "You are a helpful calendar assistant. Use the available tools to answer questions about appointments, meetings, and schedules. Be concise and informative."],
+    ["human", "{input}"],
+    ["placeholder", "{agent_scratchpad}"]
+  ]);
+  
+  const agent = await createToolCallingAgent({
+    llm,
+    tools,
+    prompt
+  });
+  
+  return new AgentExecutor({
+    agent,
+    tools,
+    verbose: true // Set to false in production
+  });
+}
+
+// ============================================
+// RATE LIMITING IMPLEMENTATION
+// ============================================
+// In-memory rate limiting (per-instance)
+const rateLimitWindows = new Map();
+
+function checkRateLimit(sessionId) {
+  const now = Date.now();
+  const limit = 10; // 10 requests
+  const window = 60000; // per minute
+  
+  // Periodic cleanup to prevent memory leaks (1% chance)
+  if (Math.random() < 0.01) {
+    for (const [key, timestamps] of rateLimitWindows.entries()) {
+      const valid = timestamps.filter(t => now - t < window);
+      if (valid.length === 0) {
+        rateLimitWindows.delete(key);
+      } else {
+        rateLimitWindows.set(key, valid);
+      }
+    }
+  }
+  
+  const timestamps = rateLimitWindows.get(sessionId) || [];
+  const recentRequests = timestamps.filter(t => now - t < window);
+  
+  if (recentRequests.length >= limit) {
+    return false;
+  }
+  
+  recentRequests.push(now);
+  rateLimitWindows.set(sessionId, recentRequests);
+  return true;
+}
+
+// ============================================
+// ASSISTANT API ENDPOINT
+// ============================================
+// Endpoint for AI assistant queries using Calendar Agent
+app.post("/api/assistant/query", async (req, res) => {
+  const requestId = crypto.randomBytes(8).toString('hex');
+  
+  try {
+    const { query, session_id, org_id } = req.body;
+    console.log(`[ASSISTANT:${requestId}] Query: "${query}"`);
+    
+    // Input validation
+    if (!query || query.length > 500) {
+      return res.status(400).json({ 
+        error: "Query must be between 1 and 500 characters" 
+      });
+    }
+    
+    // Rate limiting
+    if (!checkRateLimit(session_id)) {
+      return res.status(429).json({ 
+        error: "Rate limit exceeded",
+        retryAfter: 60 
+      });
+    }
+    
+    // Validate session
+    const passKey = await getValidPassKey(session_id);
+    if (!passKey) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    
+    if (!org_id) {
+      return res.status(400).json({ 
+        error: "Please select an organization first" 
+      });
+    }
+    
+    // Create and execute Calendar Agent
+    const agent = await createCalendarAgent(passKey, org_id);
+    const result = await agent.invoke({ input: query });
+    
+    res.json({ 
+      query,
+      response: result.output,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`[ASSISTANT:${requestId}] Error:`, error);
+    res.status(500).json({ 
+      error: "Failed to process query",
+      details: error.message 
+    });
   }
 });
 

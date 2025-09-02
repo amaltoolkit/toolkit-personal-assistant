@@ -28,6 +28,25 @@
 
       <!-- Authenticated Section -->
       <div id="auth-section" class="section hidden">
+        <!-- AI Assistant Section -->
+        <div id="assistant-section" class="card">
+          <h3>AI Assistant</h3>
+          <div class="query-container">
+            <input type="text" id="query-input" 
+                   placeholder="Ask about calendar events, contacts, or organizations..."
+                   class="query-input">
+            <button id="query-submit" class="btn btn-primary">
+              <span class="btn-icon">🤖</span> Ask
+            </button>
+          </div>
+          <div id="response-container" class="hidden">
+            <div id="response-loading" class="loading hidden">
+              Processing your request...
+            </div>
+            <div id="response-content" class="response-content"></div>
+          </div>
+        </div>
+
         <!-- Organization Selection -->
         <div id="org-section" class="card">
           <h2>Select Organization</h2>

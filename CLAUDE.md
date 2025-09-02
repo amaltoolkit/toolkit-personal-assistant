@@ -79,7 +79,6 @@ Two tables in Supabase:
 
 ### Data Endpoints (require session_id)
 - `GET /api/orgs?session_id=...` - List organizations
-- `POST /api/orgs/:orgId/contacts?session_id=...` - List contacts
 
 ## Testing the OAuth Flow
 

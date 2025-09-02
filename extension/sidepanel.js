@@ -1,66 +1,504 @@
 // Configuration
 const APP_BASE = 'https://personalassistant-seven.vercel.app';
-const LOCAL_BASE = 'http://localhost:3000';  // For local development
-const SESSION_ID_KEY = 'bsa_session_id';
-const LAST_ORG_ID_KEY = 'bsa_last_org_id';
-const LAST_ORG_NAME_KEY = 'bsa_last_org_name';
+const LOCAL_BASE = 'http://localhost:3000';
 
 // Use local backend if in development
 const API_BASE = window.location.protocol === 'chrome-extension:' 
   ? APP_BASE 
   : LOCAL_BASE;
 
-// DOM Elements
-const loginSection = document.getElementById('login-section');
-const authSection = document.getElementById('auth-section');
-const orgSection = document.getElementById('org-section');
-const contactsSection = document.getElementById('contacts-section');
-const loginBtn = document.getElementById('login-btn');
-const logoutBtn = document.getElementById('logout-btn');
-const backToOrgsBtn = document.getElementById('back-to-orgs');
-const statusIndicator = document.getElementById('connection-status');
+// Storage Keys
+const SESSION_ID_KEY = 'bsa_session_id';
+const LAST_ORG_ID_KEY = 'bsa_last_org_id';
+const LAST_ORG_NAME_KEY = 'bsa_last_org_name';
+const ONBOARDING_COMPLETED_KEY = 'bsa_onboarding_completed';
 
-// State
+// State Management
 let currentSessionId = null;
 let currentOrgId = null;
+let currentOrgName = null;
+let organizations = [];
+let chatMessages = [];
+let isProcessing = false;
 
-// Initialize
+// DOM Elements - Cache references
+let elements = {};
+
+// Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
+  cacheElements();
   initializeApp();
 });
 
-// Event Listeners
-loginBtn.addEventListener('click', handleLogin);
-logoutBtn.addEventListener('click', handleLogout);
-backToOrgsBtn.addEventListener('click', showOrganizations);
+// Cache DOM elements for performance
+function cacheElements() {
+  elements = {
+    // Containers
+    onboardingContainer: document.getElementById('onboarding-container'),
+    chatContainer: document.getElementById('chat-container'),
+    loadingOverlay: document.getElementById('loading-overlay'),
+    
+    // Onboarding screens
+    welcomeScreen: document.getElementById('welcome-screen'),
+    orgSelectionScreen: document.getElementById('org-selection-screen'),
+    
+    // Buttons
+    getStartedBtn: document.getElementById('get-started-btn'),
+    continueBtn: document.getElementById('continue-btn'),
+    logoutBtn: document.getElementById('logout-btn'),
+    sendBtn: document.getElementById('send-btn'),
+    
+    // Chat elements
+    chatMessages: document.getElementById('chat-messages'),
+    chatInput: document.getElementById('chat-input'),
+    
+    // Organization elements
+    orgList: document.getElementById('org-list'),
+    orgDropdownBtn: document.getElementById('org-dropdown-btn'),
+    orgDropdownMenu: document.getElementById('org-dropdown-menu'),
+    orgDropdownList: document.getElementById('org-dropdown-list'),
+    selectedOrgName: document.getElementById('selected-org-name'),
+    
+    // Loading and error elements
+    orgLoading: document.getElementById('org-loading'),
+    orgError: document.getElementById('org-error')
+  };
+  
+  // Add event listeners
+  setupEventListeners();
+}
 
-// Initialization
+// Set up all event listeners
+function setupEventListeners() {
+  // Onboarding events
+  elements.getStartedBtn?.addEventListener('click', handleGetStarted);
+  elements.continueBtn?.addEventListener('click', handleContinue);
+  
+  // Chat events
+  elements.sendBtn?.addEventListener('click', handleSendMessage);
+  elements.chatInput?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  });
+  
+  // Organization dropdown
+  elements.orgDropdownBtn?.addEventListener('click', toggleOrgDropdown);
+  document.addEventListener('click', handleOutsideClick);
+  
+  // Logout
+  elements.logoutBtn?.addEventListener('click', handleLogout);
+}
+
+// Initialize the application
 async function initializeApp() {
   currentSessionId = getSessionId();
+  const hasCompletedOnboarding = localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true';
   
+  // Check authentication status
   if (currentSessionId) {
     const isAuthenticated = await checkAuthStatus();
+    
     if (isAuthenticated) {
-      showAuthenticatedView();
-      await loadOrganizations();
-      
-      // Restore last selected organization if available
+      // User is authenticated
       const lastOrgId = localStorage.getItem(LAST_ORG_ID_KEY);
       const lastOrgName = localStorage.getItem(LAST_ORG_NAME_KEY);
+      
       if (lastOrgId && lastOrgName) {
-        console.log('[SIDEPANEL] Restoring last selected org:', lastOrgId, lastOrgName);
-        // Auto-select the last used organization
-        loadContacts(lastOrgId, lastOrgName);
+        // Has organization selected
+        currentOrgId = lastOrgId;
+        currentOrgName = lastOrgName;
+        showChatInterface();
+      } else {
+        // Needs to select organization
+        showOrgSelectionScreen();
+        await loadOrganizations();
       }
     } else {
-      showLoginView();
+      // Not authenticated
+      if (hasCompletedOnboarding) {
+        // Show login directly for returning users
+        handleGetStarted();
+      } else {
+        showWelcomeScreen();
+      }
     }
   } else {
-    showLoginView();
+    // First time user
+    showWelcomeScreen();
   }
 }
 
-// Session Management
+// ============================================
+// SCREEN NAVIGATION
+// ============================================
+
+function showWelcomeScreen() {
+  hideAllScreens();
+  elements.onboardingContainer.classList.remove('hidden');
+  elements.welcomeScreen.classList.remove('hidden');
+}
+
+function showOrgSelectionScreen() {
+  hideAllScreens();
+  elements.onboardingContainer.classList.remove('hidden');
+  elements.welcomeScreen.classList.add('hidden');
+  elements.orgSelectionScreen.classList.remove('hidden');
+}
+
+function showChatInterface() {
+  hideAllScreens();
+  elements.chatContainer.classList.remove('hidden');
+  updateOrgDisplay();
+  
+  // Focus on input
+  setTimeout(() => {
+    elements.chatInput?.focus();
+  }, 100);
+}
+
+function hideAllScreens() {
+  elements.onboardingContainer?.classList.add('hidden');
+  elements.chatContainer?.classList.add('hidden');
+}
+
+// ============================================
+// ONBOARDING FLOW
+// ============================================
+
+async function handleGetStarted() {
+  try {
+    showLoading(true);
+    
+    const sessionId = getSessionId();
+    console.log('[ONBOARDING] Starting OAuth with session:', sessionId);
+    
+    const authUrl = `${API_BASE}/auth/start?session_id=${encodeURIComponent(sessionId)}`;
+    
+    // Open OAuth window
+    const authWindow = window.open(
+      authUrl,
+      'BSA_Auth',
+      'width=500,height=700,menubar=no,toolbar=no,location=no,status=no'
+    );
+    
+    // Poll for authentication
+    const authenticated = await pollAuthStatus(sessionId, 120000);
+    
+    if (authenticated) {
+      console.log('[ONBOARDING] Authentication successful');
+      currentSessionId = sessionId;
+      localStorage.setItem(SESSION_ID_KEY, sessionId);
+      localStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
+      
+      // Move to organization selection
+      showOrgSelectionScreen();
+      await loadOrganizations();
+    } else {
+      showError('Authentication failed. Please try again.');
+    }
+  } catch (error) {
+    console.error('[ONBOARDING] Error:', error);
+    showError('Failed to authenticate. Please try again.');
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function handleContinue() {
+  if (!currentOrgId || !currentOrgName) {
+    showError('Please select an organization');
+    return;
+  }
+  
+  // Save organization selection
+  localStorage.setItem(LAST_ORG_ID_KEY, currentOrgId);
+  localStorage.setItem(LAST_ORG_NAME_KEY, currentOrgName);
+  
+  // Show chat interface
+  showChatInterface();
+}
+
+// ============================================
+// ORGANIZATION MANAGEMENT
+// ============================================
+
+async function loadOrganizations() {
+  try {
+    showLoading(true, 'org-loading');
+    hideError('org-error');
+    
+    const response = await fetch(
+      `${API_BASE}/api/orgs?session_id=${encodeURIComponent(currentSessionId)}`
+    );
+    
+    if (!response.ok) {
+      throw new Error('Failed to load organizations');
+    }
+    
+    const data = await response.json();
+    organizations = data.Organizations || data.organizations || data || [];
+    
+    displayOrganizations();
+    populateOrgDropdown();
+  } catch (error) {
+    console.error('[ORGS] Error loading organizations:', error);
+    showError('Failed to load organizations', 'org-error');
+  } finally {
+    showLoading(false, 'org-loading');
+  }
+}
+
+function displayOrganizations() {
+  const orgList = elements.orgList;
+  if (!orgList) return;
+  
+  orgList.innerHTML = '';
+  
+  if (organizations.length === 0) {
+    orgList.innerHTML = '<p class="error-message">No organizations found.</p>';
+    return;
+  }
+  
+  organizations.forEach(org => {
+    const orgId = org.OrganizationId || org.Id || org.id;
+    const orgName = org.Name || org.name || 'Unnamed Organization';
+    
+    const orgItem = document.createElement('div');
+    orgItem.className = 'org-item-onboarding';
+    orgItem.innerHTML = `
+      <span class="org-name">${escapeHtml(orgName)}</span>
+      <span class="org-id">ID: ${escapeHtml(orgId)}</span>
+    `;
+    
+    orgItem.addEventListener('click', () => selectOrganization(orgId, orgName, orgItem));
+    orgList.appendChild(orgItem);
+  });
+}
+
+function selectOrganization(orgId, orgName, element) {
+  // Update selection state
+  currentOrgId = orgId;
+  currentOrgName = orgName;
+  
+  // Update UI
+  document.querySelectorAll('.org-item-onboarding').forEach(item => {
+    item.classList.remove('selected');
+  });
+  
+  if (element) {
+    element.classList.add('selected');
+  }
+  
+  // Enable continue button
+  if (elements.continueBtn) {
+    elements.continueBtn.classList.remove('hidden');
+    elements.continueBtn.disabled = false;
+  }
+  
+  // Update dropdown if in chat interface
+  updateOrgDisplay();
+}
+
+function populateOrgDropdown() {
+  const dropdownList = elements.orgDropdownList;
+  if (!dropdownList) return;
+  
+  dropdownList.innerHTML = '';
+  
+  organizations.forEach(org => {
+    const orgId = org.OrganizationId || org.Id || org.id;
+    const orgName = org.Name || org.name || 'Unnamed Organization';
+    
+    const item = document.createElement('div');
+    item.className = 'org-dropdown-item';
+    if (orgId === currentOrgId) {
+      item.classList.add('selected');
+    }
+    
+    item.innerHTML = `
+      <span class="org-dropdown-item-name">${escapeHtml(orgName)}</span>
+      <span class="org-dropdown-item-id">ID: ${escapeHtml(orgId)}</span>
+    `;
+    
+    item.addEventListener('click', () => {
+      selectOrganization(orgId, orgName);
+      toggleOrgDropdown();
+      localStorage.setItem(LAST_ORG_ID_KEY, orgId);
+      localStorage.setItem(LAST_ORG_NAME_KEY, orgName);
+    });
+    
+    dropdownList.appendChild(item);
+  });
+}
+
+function updateOrgDisplay() {
+  if (elements.selectedOrgName && currentOrgName) {
+    elements.selectedOrgName.textContent = currentOrgName;
+  }
+}
+
+function toggleOrgDropdown() {
+  const menu = elements.orgDropdownMenu;
+  const btn = elements.orgDropdownBtn;
+  
+  if (menu.classList.contains('hidden')) {
+    menu.classList.remove('hidden');
+    btn.classList.add('active');
+    
+    // Load organizations if needed
+    if (organizations.length === 0) {
+      loadOrganizations();
+    }
+  } else {
+    menu.classList.add('hidden');
+    btn.classList.remove('active');
+  }
+}
+
+function handleOutsideClick(event) {
+  const container = elements.orgDropdownBtn?.parentElement;
+  if (container && !container.contains(event.target)) {
+    elements.orgDropdownMenu?.classList.add('hidden');
+    elements.orgDropdownBtn?.classList.remove('active');
+  }
+}
+
+// ============================================
+// CHAT FUNCTIONALITY
+// ============================================
+
+async function handleSendMessage() {
+  const message = elements.chatInput?.value.trim();
+  if (!message || isProcessing) return;
+  
+  // Check prerequisites
+  if (!currentSessionId) {
+    showError('Please login first');
+    return;
+  }
+  
+  if (!currentOrgId) {
+    addMessageToChat('Please select an organization first to continue.', false);
+    return;
+  }
+  
+  // Add user message to chat
+  addMessageToChat(message, true);
+  
+  // Clear input
+  elements.chatInput.value = '';
+  
+  // Show typing indicator
+  const typingId = showTypingIndicator();
+  
+  try {
+    isProcessing = true;
+    elements.sendBtn.disabled = true;
+    
+    const response = await fetch(`${API_BASE}/api/assistant/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: message,
+        session_id: currentSessionId,
+        org_id: currentOrgId
+      })
+    });
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Session expired. Please login again.');
+      }
+      if (response.status === 429) {
+        throw new Error('Rate limit exceeded. Please wait a moment.');
+      }
+      throw new Error('Failed to process request');
+    }
+    
+    const data = await response.json();
+    
+    // Remove typing indicator
+    removeTypingIndicator(typingId);
+    
+    // Add assistant response
+    const responseText = data.response || data.error || 'I couldn\'t process that request.';
+    addMessageToChat(responseText, false);
+    
+  } catch (error) {
+    console.error('[CHAT] Error:', error);
+    removeTypingIndicator(typingId);
+    addMessageToChat(error.message || 'Failed to process request. Please try again.', false);
+  } finally {
+    isProcessing = false;
+    elements.sendBtn.disabled = false;
+    elements.chatInput?.focus();
+  }
+}
+
+function addMessageToChat(text, isUser = false) {
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
+  
+  const bubbleDiv = document.createElement('div');
+  bubbleDiv.className = 'message-bubble';
+  
+  // Process text for display
+  if (!isUser && text.includes('\n')) {
+    // Format multi-line responses
+    bubbleDiv.innerHTML = text
+      .split('\n')
+      .map(line => `<p>${escapeHtml(line)}</p>`)
+      .join('');
+  } else {
+    bubbleDiv.textContent = text;
+  }
+  
+  messageDiv.appendChild(bubbleDiv);
+  elements.chatMessages?.appendChild(messageDiv);
+  
+  // Store in memory
+  chatMessages.push({ text, isUser, timestamp: new Date() });
+  
+  // Scroll to bottom
+  scrollToBottom();
+}
+
+function showTypingIndicator() {
+  const id = 'typing-' + Date.now();
+  const typingDiv = document.createElement('div');
+  typingDiv.id = id;
+  typingDiv.className = 'message assistant-message';
+  typingDiv.innerHTML = `
+    <div class="typing-indicator">
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+    </div>
+  `;
+  
+  elements.chatMessages?.appendChild(typingDiv);
+  scrollToBottom();
+  
+  return id;
+}
+
+function removeTypingIndicator(id) {
+  const element = document.getElementById(id);
+  element?.remove();
+}
+
+function scrollToBottom() {
+  if (elements.chatMessages) {
+    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+  }
+}
+
+// ============================================
+// AUTHENTICATION HELPERS
+// ============================================
+
 function getSessionId() {
   let sessionId = localStorage.getItem(SESSION_ID_KEY);
   if (!sessionId) {
@@ -74,63 +512,6 @@ function generateSessionId() {
   return 'sid_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
-function clearSession() {
-  localStorage.removeItem(SESSION_ID_KEY);
-  localStorage.removeItem(LAST_ORG_ID_KEY);
-  localStorage.removeItem(LAST_ORG_NAME_KEY);
-  currentSessionId = null;
-  currentOrgId = null;
-}
-
-// Authentication
-async function handleLogin() {
-  try {
-    loginBtn.disabled = true;
-    loginBtn.textContent = 'Connecting...';
-    
-    const sessionId = getSessionId();
-    console.log('[SIDEPANEL] Starting login with session:', sessionId);
-    
-    const authUrl = `${API_BASE}/auth/start?session_id=${encodeURIComponent(sessionId)}`;
-    console.log('[SIDEPANEL] Auth URL:', authUrl);
-    
-    // Open OAuth window
-    const authWindow = window.open(
-      authUrl,
-      'BSA_Auth',
-      'width=500,height=700,menubar=no,toolbar=no,location=no,status=no'
-    );
-    
-    console.log('[SIDEPANEL] OAuth window opened, starting polling');
-    
-    // Poll for authentication completion
-    const authenticated = await pollAuthStatus(sessionId, 120000);  // 2 minute timeout
-    
-    if (authenticated) {
-      console.log('[SIDEPANEL] Authentication successful');
-      currentSessionId = sessionId;  // Store the session ID globally
-      localStorage.setItem(SESSION_ID_KEY, sessionId);     // Persist to localStorage
-      console.log('[SIDEPANEL] Session ID stored:', sessionId);
-      showAuthenticatedView();
-      await loadOrganizations();
-    } else {
-      console.error('[SIDEPANEL] Authentication timeout or failed');
-      showError('Authentication timeout. Please try again.');
-    }
-  } catch (error) {
-    console.error('[SIDEPANEL] Login error:', error);
-    showError('Failed to authenticate. Please try again.');
-  } finally {
-    loginBtn.disabled = false;
-    loginBtn.innerHTML = '<span class="btn-icon">🔐</span>Login with BlueSquareApps';
-  }
-}
-
-async function handleLogout() {
-  clearSession();
-  showLoginView();
-}
-
 async function checkAuthStatus() {
   try {
     const response = await fetch(
@@ -139,271 +520,74 @@ async function checkAuthStatus() {
     const data = await response.json();
     return data.ok === true;
   } catch (error) {
-    console.error('Auth check error:', error);
+    console.error('[AUTH] Check failed:', error);
     return false;
   }
 }
 
 async function pollAuthStatus(sessionId, timeoutMs = 60000) {
   const startTime = Date.now();
-  let pollCount = 0;
-  
-  console.log('[SIDEPANEL] Starting auth status polling');
   
   while (Date.now() - startTime < timeoutMs) {
-    pollCount++;
     try {
-      const statusUrl = `${API_BASE}/auth/status?session_id=${encodeURIComponent(sessionId)}`;
-      console.log(`[SIDEPANEL] Poll #${pollCount} - checking:`, statusUrl);
-      
-      const response = await fetch(statusUrl);
+      const response = await fetch(
+        `${API_BASE}/auth/status?session_id=${encodeURIComponent(sessionId)}`
+      );
       const data = await response.json();
       
-      console.log(`[SIDEPANEL] Poll #${pollCount} response:`, data);
-      
       if (data.ok === true) {
-        console.log('[SIDEPANEL] Authentication confirmed!');
         return true;
       }
       
       if (data.expired) {
-        console.error('[SIDEPANEL] Session expired');
-        showError('Your session has expired. Please login again.');
         return false;
       }
     } catch (error) {
-      console.error(`[SIDEPANEL] Poll #${pollCount} error:`, error);
+      console.error('[AUTH] Poll error:', error);
     }
     
-    // Wait 1 second before next poll
     await sleep(1000);
   }
   
-  console.error('[SIDEPANEL] Polling timeout reached');
   return false;
 }
 
-// Data Loading
-async function loadOrganizations() {
-  try {
-    console.log('[SIDEPANEL] Loading organizations for session:', currentSessionId);
-    showLoading('org-loading', true);
-    hideError('org-error');
-    
-    const url = `${API_BASE}/api/orgs?session_id=${encodeURIComponent(currentSessionId)}`;
-    console.log('[SIDEPANEL] Fetching organizations from:', url);
-    
-    const response = await fetch(url);
-    
-    console.log('[SIDEPANEL] Organizations response status:', response.status);
-    console.log('[SIDEPANEL] Organizations response headers:', response.headers);
-    
-    if (!response.ok) {
-      // Try to get error details from response
-      let errorDetails = '';
-      try {
-        const errorData = await response.json();
-        errorDetails = JSON.stringify(errorData);
-        console.error('[SIDEPANEL] Organizations error response:', errorData);
-      } catch (e) {
-        // If not JSON, try text
-        try {
-          errorDetails = await response.text();
-          console.error('[SIDEPANEL] Organizations error text:', errorDetails);
-        } catch (e2) {
-          console.error('[SIDEPANEL] Could not parse error response');
-        }
-      }
-      throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorDetails}`);
-    }
-    
-    const orgs = await response.json();
-    console.log('[SIDEPANEL] Organizations received:', orgs);
-    console.log('[SIDEPANEL] Organizations type:', typeof orgs);
-    console.log('[SIDEPANEL] Response keys:', orgs ? Object.keys(orgs) : 'null');
-    
-    // Check if response is valid
-    if (orgs && orgs.Valid === false) {
-      console.error('[SIDEPANEL] BSA API returned Valid=false:', orgs.ResponseMessage);
-      throw new Error(orgs.ResponseMessage || 'Invalid response from server');
-    }
-    
-    // Extract the Organizations array from the response object
-    const orgArray = orgs.Organizations || orgs.organizations || orgs;
-    console.log('[SIDEPANEL] Extracted organizations array:', orgArray);
-    console.log('[SIDEPANEL] Is array?', Array.isArray(orgArray));
-    
-    if (!Array.isArray(orgArray)) {
-      console.error('[SIDEPANEL] Expected array, got:', typeof orgArray);
-      console.error('[SIDEPANEL] Full response:', orgs);
-      throw new Error('Invalid organizations data format');
-    }
-    
-    console.log('[SIDEPANEL] Organizations count:', orgArray.length);
-    if (orgArray.length > 0) {
-      console.log('[SIDEPANEL] First org structure:', orgArray[0]);
-    }
-    
-    displayOrganizations(orgArray);
-  } catch (error) {
-    console.error('[SIDEPANEL] Load orgs error:', error);
-    console.error('[SIDEPANEL] Error stack:', error.stack);
-    showError('Failed to load organizations. Please try again.', 'org-error');
-  } finally {
-    showLoading('org-loading', false);
-  }
-}
-
-async function loadContacts(orgId, orgName) {
-  try {
-    currentOrgId = orgId;
-    
-    // Persist organization selection to localStorage
-    localStorage.setItem(LAST_ORG_ID_KEY, orgId);
-    localStorage.setItem(LAST_ORG_NAME_KEY, orgName);
-    console.log('[SIDEPANEL] Saved organization selection:', orgId, orgName);
-    
-    showContactsView(orgName);
-    showLoading('contacts-loading', true);
-    hideError('contacts-error');
-    
-    const response = await fetch(
-      `${API_BASE}/api/orgs/${encodeURIComponent(orgId)}/contacts?session_id=${encodeURIComponent(currentSessionId)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log('[SIDEPANEL] Contacts data received:', data);
-    console.log('[SIDEPANEL] Contacts data keys:', data ? Object.keys(data) : 'null');
-    displayContacts(data);
-  } catch (error) {
-    console.error('Load contacts error:', error);
-    showError('Failed to load contacts. Please try again.', 'contacts-error');
-  } finally {
-    showLoading('contacts-loading', false);
-  }
-}
-
-// Display Functions
-function displayOrganizations(orgs) {
-  const orgList = document.getElementById('org-list');
-  orgList.innerHTML = '';
+async function handleLogout() {
+  // Clear all data
+  localStorage.removeItem(SESSION_ID_KEY);
+  localStorage.removeItem(LAST_ORG_ID_KEY);
+  localStorage.removeItem(LAST_ORG_NAME_KEY);
   
-  if (!orgs || orgs.length === 0) {
-    orgList.innerHTML = '<p class="error-message">No organizations found.</p>';
-    return;
-  }
-  
-  orgs.forEach(org => {
-    const orgId = org.Id || org.id || org.ID;
-    const orgName = org.Name || org.name || org.title || 'Unnamed Organization';
-    
-    const orgItem = document.createElement('div');
-    orgItem.className = 'org-item';
-    orgItem.innerHTML = `
-      <div class="org-name">${escapeHtml(orgName)}</div>
-      <div class="org-id">ID: ${escapeHtml(orgId)}</div>
-    `;
-    orgItem.addEventListener('click', () => loadContacts(orgId, orgName));
-    
-    orgList.appendChild(orgItem);
-  });
-}
-
-function displayContacts(data) {
-  const contactsList = document.getElementById('contacts-list');
-  contactsList.innerHTML = '';
-  
-  // Handle different response formats - check PascalCase first (BSA API convention)
-  const contacts = data.Items || data.Contacts || data.Results || 
-                   data.items || data.results || data.contacts || data;
-  
-  console.log('[SIDEPANEL] Extracted contacts:', contacts);
-  console.log('[SIDEPANEL] Is contacts array?', Array.isArray(contacts));
-  
-  if (!Array.isArray(contacts)) {
-    console.error('[SIDEPANEL] Expected contacts array, got:', typeof contacts);
-    console.error('[SIDEPANEL] Full contacts response:', data);
-    contactsList.innerHTML = '<p class="error-message">Invalid contacts data format.</p>';
-    return;
-  }
-  
-  if (contacts.length === 0) {
-    contactsList.innerHTML = '<p class="error-message">No contacts found for this organization.</p>';
-    return;
-  }
-  
-  console.log('[SIDEPANEL] Displaying', contacts.length, 'contacts');
-  
-  contacts.forEach(contact => {
-    const contactItem = document.createElement('div');
-    contactItem.className = 'contact-item';
-    
-    // Extract contact details with multiple fallbacks
-    const name = contact.Name || contact.name || 
-                 `${contact.FirstName || contact.firstName || ''} ${contact.LastName || contact.lastName || ''}`.trim() ||
-                 'Unnamed Contact';
-    const email = contact.Email || contact.email || contact.EmailAddress || '';
-    const phone = contact.Phone || contact.phone || contact.PhoneNumber || '';
-    const company = contact.Company || contact.company || contact.Organization || '';
-    
-    let detailsHtml = '';
-    if (email) detailsHtml += `<span class="contact-email">📧 ${escapeHtml(email)}</span>`;
-    if (phone) detailsHtml += `<span class="contact-phone">📱 ${escapeHtml(phone)}</span>`;
-    if (company) detailsHtml += `<span class="contact-company">🏢 ${escapeHtml(company)}</span>`;
-    
-    contactItem.innerHTML = `
-      <div class="contact-name">${escapeHtml(name)}</div>
-      ${detailsHtml ? `<div class="contact-details">${detailsHtml}</div>` : ''}
-    `;
-    
-    contactsList.appendChild(contactItem);
-  });
-}
-
-// View Management
-function showLoginView() {
-  loginSection.classList.remove('hidden');
-  authSection.classList.add('hidden');
-  statusIndicator.classList.add('offline');
-}
-
-function showAuthenticatedView() {
-  loginSection.classList.add('hidden');
-  authSection.classList.remove('hidden');
-  statusIndicator.classList.remove('offline');
-  showOrganizations();
-}
-
-function showOrganizations() {
-  orgSection.classList.remove('hidden');
-  contactsSection.classList.add('hidden');
+  currentSessionId = null;
   currentOrgId = null;
-}
-
-function showContactsView(orgName) {
-  orgSection.classList.add('hidden');
-  contactsSection.classList.remove('hidden');
+  currentOrgName = null;
+  organizations = [];
+  chatMessages = [];
   
-  const selectedOrg = document.getElementById('selected-org');
-  selectedOrg.innerHTML = `<strong>Organization:</strong> ${escapeHtml(orgName)}`;
+  // Reset UI
+  showWelcomeScreen();
 }
 
-// UI Helpers
-function showLoading(elementId, show) {
-  const element = document.getElementById(elementId);
-  if (element) {
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+
+function showLoading(show, elementId = null) {
+  if (elementId) {
+    const element = document.getElementById(elementId);
+    if (element) {
+      if (show) {
+        element.classList.remove('hidden');
+      } else {
+        element.classList.add('hidden');
+      }
+    }
+  } else {
+    // Use overlay
     if (show) {
-      element.classList.remove('hidden');
+      elements.loadingOverlay?.classList.remove('hidden');
     } else {
-      element.classList.add('hidden');
+      elements.loadingOverlay?.classList.add('hidden');
     }
   }
 }
@@ -416,152 +600,26 @@ function showError(message, elementId = null) {
       element.classList.remove('hidden');
     }
   } else {
-    alert(message);
+    // Add to chat if in chat interface
+    if (!elements.chatContainer?.classList.contains('hidden')) {
+      addMessageToChat(`Error: ${message}`, false);
+    } else {
+      alert(message);
+    }
   }
 }
 
 function hideError(elementId) {
   const element = document.getElementById(elementId);
-  if (element) {
-    element.classList.add('hidden');
-  }
-}
-
-// Utility Functions
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  element?.classList.add('hidden');
 }
 
 function escapeHtml(text) {
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
-  };
-  return String(text).replace(/[&<>"']/g, m => map[m]);
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
-// ============================================
-// AI ASSISTANT FUNCTIONALITY
-// ============================================
-function initAssistant() {
-  const queryInput = document.getElementById('query-input');
-  const querySubmit = document.getElementById('query-submit');
-  const responseContainer = document.getElementById('response-container');
-  const responseContent = document.getElementById('response-content');
-  const responseLoading = document.getElementById('response-loading');
-  
-  if (!queryInput || !querySubmit) {
-    console.log('[ASSISTANT] Elements not found, skipping initialization');
-    return;
-  }
-  
-  querySubmit.addEventListener('click', handleAssistantQuery);
-  queryInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      handleAssistantQuery();
-    }
-  });
-  
-  async function handleAssistantQuery() {
-    const query = queryInput.value.trim();
-    if (!query) return;
-    
-    const sessionId = getSessionId();
-    const orgId = currentOrgId;
-    
-    if (!sessionId) {
-      showError('Please login first');
-      return;
-    }
-    
-    // Check if organization is selected
-    if (!orgId) {
-      showError('Please select an organization first', 'response-content');
-      responseContainer.classList.remove('hidden');
-      // Optionally show the org selection UI
-      if (orgSection) {
-        orgSection.classList.remove('hidden');
-      }
-      return;
-    }
-    
-    responseContainer.classList.remove('hidden');
-    showLoading('response-loading', true);
-    responseContent.innerHTML = '';
-    
-    try {
-      console.log('[ASSISTANT] Sending query:', query);
-      const response = await fetch(`${API_BASE}/api/assistant/query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query,
-          session_id: sessionId,
-          org_id: orgId
-        })
-      });
-      
-      if (!response.ok) {
-        if (response.status === 401) {
-          showError('Session expired. Please login again.', 'response-content');
-          return;
-        }
-        if (response.status === 400) {
-          const errorData = await response.json();
-          if (errorData.error === 'Please select an organization first') {
-            showError('Please select an organization first', 'response-content');
-            if (orgSection) {
-              orgSection.classList.remove('hidden');
-            }
-            return;
-          }
-          showError(errorData.error || 'Invalid request', 'response-content');
-          return;
-        }
-        if (response.status === 429) {
-          showError('Rate limit exceeded. Please wait a minute and try again.', 'response-content');
-          return;
-        }
-        throw new Error('Request failed');
-      }
-      
-      const data = await response.json();
-      console.log('[ASSISTANT] Response received:', data);
-      
-      responseContent.innerHTML = `
-        <div class="assistant-response">
-          ${formatAssistantResult(data)}
-        </div>
-      `;
-      
-    } catch (error) {
-      console.error('[ASSISTANT] Error:', error);
-      showError('Failed to process request. Please try again.', 'response-content');
-    } finally {
-      showLoading('response-loading', false);
-      queryInput.value = '';
-    }
-  }
-  
-  function formatAssistantResult(data) {
-    if (data.error) {
-      return `<span class="error">${escapeHtml(data.error)}</span>`;
-    }
-    if (data.response) {
-      // Agent response is already formatted
-      return escapeHtml(data.response);
-    }
-    // Fallback for raw data
-    return `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
-  }
-}
-
-// Initialize assistant on DOM ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initAssistant);
-} else {
-  initAssistant();
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

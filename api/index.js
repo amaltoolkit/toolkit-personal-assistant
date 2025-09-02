@@ -124,9 +124,7 @@ const BSA_CLIENT_SECRET = process.env.BSA_CLIENT_SECRET;
 // Example: https://yourapp.vercel.app/auth/callback
 const BSA_REDIRECT_URI = process.env.BSA_REDIRECT_URI;
 
-// Base URL of this application (used for redirects)
-// Example: https://yourapp.vercel.app
-const APP_BASE_URL = process.env.APP_BASE_URL;
+// [REMOVED: APP_BASE_URL - Not used in code, kept in docs for deployment reference]
 
 // ============================================
 // OAUTH ENDPOINT 1: START AUTHENTICATION FLOW
@@ -958,197 +956,16 @@ app.get("/api/orgs", async (req, res) => {
   }
 });
 
-// ============================================
-// API ENDPOINT: LIST CONTACTS FOR ORGANIZATION
-// ============================================
-// Returns a list of contacts for a specific organization
-// Called by the Chrome extension when user selects an organization
-//
-// Request: POST /api/orgs/:orgId/contacts?session_id=...
-// Response: { items: [...contacts...], ... }
-//
-// Each contact contains:
-// - ContactId: Unique identifier
-// - FirstName, LastName: Name fields
-// - Email, Phone: Contact information
-// - Other fields from BSA
-//
-// Note: This is a POST endpoint because BSA's API requires POST
-// even though it's fetching data (not RESTful)
-app.post("/api/orgs/:orgId/contacts", async (req, res) => {
-  try {
-    // Extract parameters
-    const sessionId = req.query.session_id;      // From query string
-    const orgId = req.params.orgId;              // From URL path
-    
-    // ========================================
-    // VALIDATE REQUIRED PARAMETERS
-    // ========================================
-    if (!sessionId) {
-      return res.status(400).json({ error: "missing session_id" });
-    }
-    if (!orgId) {
-      return res.status(400).json({ error: "missing orgId" });
-    }
-
-    // ========================================
-    // RETRIEVE AND VALIDATE PASSKEY
-    // ========================================
-    // Get valid PassKey (auto-refreshes if needed)
-    const passKey = await getValidPassKey(sessionId);
-    if (!passKey) {
-      return res.status(401).json({ error: "not authenticated" });
-    }
-
-    // ========================================
-    // PREPARE BSA API REQUEST
-    // ========================================
-    // BSA endpoint for listing objects within an organization
-    const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
-    
-    // Request payload specifying we want contacts
-    const payload = { 
-      PassKey: passKey,              // Authentication
-      OrganizationId: orgId,         // Which organization
-      ObjectName: "contact"          // Type of objects to retrieve
-    };
-    
-    try {
-      // ========================================
-      // MAKE API CALL TO BSA
-      // ========================================
-      const resp = await axios.post(
-        url, 
-        payload, 
-        { 
-          headers: { "Content-Type": "application/json" },
-          timeout: 10000  // 10 second timeout
-        }
-      );
-      
-      // ========================================
-      // NORMALIZE AND EXTRACT CONTACTS
-      // ========================================
-      // BSA returns: [{ Results: [...], Valid: true, TotalResults: n, ... }]
-      const normalized = normalizeBSAResponse(resp.data);
-      
-      // Check if response is valid
-      if (!normalized.valid) {
-        console.error("[API/CONTACTS] BSA returned invalid response:", normalized.error);
-        return res.status(500).json({ error: normalized.error || 'Invalid response from BSA' });
-      }
-      
-      // Extract Results array and return in format expected by sidepanel.js
-      // The sidepanel expects Items field for contacts (see sidepanel.js:325)
-      const contacts = normalized.data?.Results || [];
-      
-      // Return contacts in the format expected by the extension
-      res.json({
-        Items: contacts,                          // Use Items field for compatibility with sidepanel.js
-        TotalResults: normalized.data?.TotalResults || contacts.length,
-        Valid: true
-      });
-      
-    } catch (apiError) {
-      console.error("BSA API error:", apiError.response?.data || apiError.message);
-      
-      // ========================================
-      // HANDLE 401 UNAUTHORIZED - RETRY LOGIC
-      // ========================================
-      // If authentication failed, try refreshing PassKey once
-      if (apiError.response?.status === 401) {
-        console.log("[API/CONTACTS] Got 401, attempting to refresh PassKey");
-        
-        // Attempt to refresh the PassKey
-        const newPassKey = await refreshPassKey(sessionId);
-        
-        if (newPassKey) {
-          // Refresh successful - retry with new PassKey
-          console.log("[API/CONTACTS] PassKey refreshed, retrying");
-          try {
-            // Update payload with new PassKey
-            const retryPayload = { ...payload, PassKey: newPassKey };
-            
-            // Retry the API call
-            const retryResp = await axios.post(
-              url, 
-              retryPayload, 
-              { 
-                headers: { "Content-Type": "application/json" },
-                timeout: 10000
-              }
-            );
-            
-            // Normalize and extract contacts from retry response
-            const retryNormalized = normalizeBSAResponse(retryResp.data);
-            
-            if (!retryNormalized.valid) {
-              console.error("[API/CONTACTS] Retry BSA returned invalid response:", retryNormalized.error);
-              return res.status(500).json({ error: retryNormalized.error || 'Invalid response from BSA' });
-            }
-            
-            const retryContacts = retryNormalized.data?.Results || [];
-            
-            // Return successful retry response in expected format
-            return res.json({
-              Items: retryContacts,
-              TotalResults: retryNormalized.data?.TotalResults || retryContacts.length,
-              Valid: true
-            });
-            
-          } catch (retryError) {
-            // Retry also failed
-            console.error("BSA API retry error:", retryError.response?.data || retryError.message);
-          }
-        }
-        
-        // PassKey refresh failed or retry failed
-        return res.status(401).json({ error: "authentication expired" });
-      }
-      
-      // Other API errors (not authentication related)
-      res.status(500).json({ error: "failed to fetch contacts" });
-    }
-  } catch (error) {
-    // Unexpected errors
-    console.error("Error in /api/orgs/:orgId/contacts:", error);
-    res.status(500).json({ error: "internal server error" });
-  }
-});
+// [REMOVED: Contacts endpoint - Users now query contacts through AI assistant]
+// The standalone contacts display feature has been deprecated in favor of
+// the unified chat interface where users can ask about contacts naturally.
 
 // ============================================
 // LANGCHAIN CALENDAR AGENT IMPLEMENTATION
 // ============================================
 // Helper functions for BSA API calls and Calendar Agent with tools
 
-// Helper to normalize BSA responses (handle array wrapper format)
-// NOTE: This is for regular BSA endpoints only, NOT for /oauth2/passkey
-function normalizeBSAResponse(response) {
-  // Most BSA endpoints return responses in array format: [{ data }]
-  // Exception: /oauth2/passkey returns plain object { passkey, user_id, expires_in }
-  // This helper unwraps the array and validates the response
-  if (!response) {
-    return { data: null, valid: false, error: 'No response data' };
-  }
-  
-  // Unwrap array wrapper
-  const responseData = Array.isArray(response) ? response[0] : response;
-  
-  // Check Valid field for errors
-  if (responseData?.Valid === false) {
-    return {
-      data: responseData,
-      valid: false,
-      error: responseData.ResponseMessage || responseData.StackMessage || 'BSA API error'
-    };
-  }
-  
-  return {
-    data: responseData,
-    valid: true,
-    error: null
-  };
-}
+// [REMOVED: Duplicate normalizeBSAResponse - Using the first instance at line 766]
 
 // Fetch appointments from BSA
 async function getAppointments(passKey, orgId, options = {}) {
@@ -1199,37 +1016,7 @@ async function getAppointmentContacts(passKey, orgId, appointmentId) {
   return normalized.data?.Results || [];
 }
 
-// Helper function for safe JSON parsing in tools
-function parseToolInput(input, schema = {}) {
-  try {
-    const parsed = JSON.parse(input || '{}');
-    
-    // Validate required fields if schema provided
-    if (schema.required && Array.isArray(schema.required)) {
-      for (const field of schema.required) {
-        if (parsed[field] === undefined || parsed[field] === null) {
-          return { 
-            error: `Missing required field: '${field}'`, 
-            isError: true 
-          };
-        }
-      }
-    }
-    
-    return { data: parsed, isError: false };
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return { 
-        error: `Invalid JSON format: ${error.message}`, 
-        isError: true 
-      };
-    }
-    return { 
-      error: `Error parsing input: ${error.message}`, 
-      isError: true 
-    };
-  }
-}
+// [REMOVED: parseToolInput function - Unused after migrating to Zod-based tool schemas]
 
 // Define Calendar Agent Tools using tool function with Zod
 function createCalendarTools(tool, z, passKey, orgId) {
@@ -1367,7 +1154,7 @@ function createCalendarTools(tool, z, passKey, orgId) {
     
     // Tool 5: Get organizations
     tool(
-      async (input) => {
+      async () => {
         try {
           const orgs = await fetchOrganizations(passKey);
           return JSON.stringify({
@@ -1394,14 +1181,11 @@ async function createCalendarAgent(passKey, orgId) {
   // Dynamic imports for LangChain and Zod
   const { z } = await import("zod");
   const { tool } = await import("@langchain/core/tools");
-  const { ChatOpenAI } = await import("@langchain/openai");
   const { AgentExecutor, createToolCallingAgent } = await import("langchain/agents");
   const { ChatPromptTemplate } = await import("@langchain/core/prompts");
   
-  const llm = new ChatOpenAI({
-    model: "gpt-4o-mini",
-    temperature: 0
-  });
+  // Use cached LLM client for better performance
+  const llm = await getLLMClient();
   
   const tools = createCalendarTools(tool, z, passKey, orgId);
   
@@ -1411,7 +1195,7 @@ async function createCalendarAgent(passKey, orgId) {
     ["placeholder", "{agent_scratchpad}"]
   ]);
   
-  const agent = await createToolCallingAgent({
+  const agent = createToolCallingAgent({
     llm,
     tools,
     prompt

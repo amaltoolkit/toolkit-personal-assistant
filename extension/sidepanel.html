@@ -7,65 +7,100 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>BlueSquare Assistant</h1>
-      <div id="connection-status" class="status-indicator"></div>
-    </header>
-
-    <main>
-      <!-- Login Section -->
-      <div id="login-section" class="section">
-        <div class="welcome-card">
-          <h2>Welcome</h2>
-          <p>Connect your BlueSquareApps account to get started.</p>
-          <button id="login-btn" class="btn btn-primary">
-            <span class="btn-icon">🔐</span>
-            Login with BlueSquareApps
+  <div class="app-container">
+    <!-- Onboarding Screens -->
+    <div id="onboarding-container" class="onboarding-container hidden">
+      <!-- Welcome Screen -->
+      <div id="welcome-screen" class="onboarding-screen">
+        <div class="welcome-content">
+          <div class="app-logo">
+            <span class="logo-icon">💬</span>
+          </div>
+          <h1>BlueSquare Assistant</h1>
+          <p class="welcome-subtitle">Your AI-powered assistant for BlueSquareApps</p>
+          <button id="get-started-btn" class="btn btn-primary btn-large">
+            Get Started
           </button>
         </div>
       </div>
 
-      <!-- Authenticated Section -->
-      <div id="auth-section" class="section hidden">
-        <!-- AI Assistant Section -->
-        <div id="assistant-section" class="card">
-          <h3>AI Assistant</h3>
-          <div class="query-container">
-            <input type="text" id="query-input" 
-                   placeholder="Ask about calendar events, contacts, or organizations..."
-                   class="query-input">
-            <button id="query-submit" class="btn btn-primary">
-              <span class="btn-icon">🤖</span> Ask
-            </button>
-          </div>
-          <div id="response-container" class="hidden">
-            <div id="response-loading" class="loading hidden">
-              Processing your request...
-            </div>
-            <div id="response-content" class="response-content"></div>
-          </div>
-        </div>
-
-        <!-- Organization Selection -->
-        <div id="org-section" class="card">
-          <h2>Select Organization</h2>
-          <div id="selected-org-indicator" class="selected-indicator hidden"></div>
+      <!-- Organization Selection Screen -->
+      <div id="org-selection-screen" class="onboarding-screen hidden">
+        <div class="org-selection-content">
+          <h2>Select Your Organization</h2>
+          <p class="org-selection-subtitle">Choose an organization to continue</p>
           <div id="org-loading" class="loading hidden">Loading organizations...</div>
           <div id="org-error" class="error-message hidden"></div>
-          <div id="org-list" class="org-list"></div>
-        </div>
-
-        <!-- Logout Button -->
-        <div class="logout-section">
-          <button id="logout-btn" class="btn btn-outline">Logout</button>
+          <div id="org-list" class="org-list-onboarding"></div>
+          <button id="continue-btn" class="btn btn-primary btn-large hidden" disabled>
+            Continue
+          </button>
         </div>
       </div>
-    </main>
+    </div>
 
-    <footer>
-      <p class="footer-text">BlueSquare Assistant v1.0.0</p>
-    </footer>
+    <!-- Main Chat Interface -->
+    <div id="chat-container" class="chat-container hidden">
+      <!-- Sticky Header -->
+      <header class="chat-header">
+        <div class="header-left">
+          <h1 class="header-title">BlueSquare Assistant</h1>
+        </div>
+        <div class="header-right">
+          <!-- Organization Dropdown -->
+          <div class="org-dropdown-container">
+            <button id="org-dropdown-btn" class="org-dropdown-btn">
+              <span id="selected-org-name">Select Organization</span>
+              <span class="dropdown-arrow">▼</span>
+            </button>
+            <div id="org-dropdown-menu" class="org-dropdown-menu hidden">
+              <div id="org-dropdown-list"></div>
+            </div>
+          </div>
+          <!-- Logout Button -->
+          <button id="logout-btn" class="btn-icon-header" title="Logout">
+            <span>🚪</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat Messages Area -->
+      <div id="chat-messages" class="chat-messages">
+        <!-- Welcome message -->
+        <div class="message assistant-message">
+          <div class="message-bubble">
+            <p>Hello! I'm your BlueSquare Assistant. I can help you with:</p>
+            <ul>
+              <li>📅 Calendar events and appointments</li>
+              <li>👥 Contact information</li>
+              <li>🏢 Organization details</li>
+            </ul>
+            <p>What would you like to know?</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat Input Area -->
+      <div class="chat-input-container">
+        <div class="chat-input-wrapper">
+          <input 
+            type="text" 
+            id="chat-input" 
+            class="chat-input" 
+            placeholder="Type your message..."
+            autocomplete="off"
+          />
+          <button id="send-btn" class="send-btn" title="Send message">
+            <span>➤</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+      <div class="spinner"></div>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>

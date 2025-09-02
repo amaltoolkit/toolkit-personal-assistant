@@ -14,10 +14,10 @@ const API_BASE = window.location.protocol === 'chrome-extension:'
 const loginSection = document.getElementById('login-section');
 const authSection = document.getElementById('auth-section');
 const orgSection = document.getElementById('org-section');
-const contactsSection = document.getElementById('contacts-section');
+// Removed: contactsSection - deprecated with contacts feature
 const loginBtn = document.getElementById('login-btn');
 const logoutBtn = document.getElementById('logout-btn');
-const backToOrgsBtn = document.getElementById('back-to-orgs');
+// Removed: backToOrgsBtn - deprecated with contacts feature
 const statusIndicator = document.getElementById('connection-status');
 
 // State
@@ -32,7 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // Event Listeners
 loginBtn.addEventListener('click', handleLogin);
 logoutBtn.addEventListener('click', handleLogout);
-backToOrgsBtn.addEventListener('click', showOrganizations);
+// Removed: backToOrgsBtn listener - deprecated with contacts feature
 
 // Initialization
 async function initializeApp() {
@@ -49,8 +49,24 @@ async function initializeApp() {
       const lastOrgName = localStorage.getItem(LAST_ORG_NAME_KEY);
       if (lastOrgId && lastOrgName) {
         console.log('[SIDEPANEL] Restoring last selected org:', lastOrgId, lastOrgName);
-        // Auto-select the last used organization
-        loadContacts(lastOrgId, lastOrgName);
+        // Restore the organization selection for AI assistant
+        currentOrgId = lastOrgId;
+        
+        // After organizations load, update UI for restored selection
+        setTimeout(() => {
+          const orgItems = document.querySelectorAll('.org-item');
+          const selectedItem = Array.from(orgItems).find(item => 
+            item.dataset.orgId === lastOrgId
+          );
+          if (selectedItem) {
+            selectedItem.classList.add('selected');
+          }
+          const selectedIndicator = document.getElementById('selected-org-indicator');
+          if (selectedIndicator) {
+            selectedIndicator.textContent = `Selected: ${lastOrgName}`;
+            selectedIndicator.classList.remove('hidden');
+          }
+        }, 100);
       }
     } else {
       showLoginView();
@@ -254,40 +270,32 @@ async function loadOrganizations() {
   }
 }
 
-async function loadContacts(orgId, orgName) {
-  try {
-    currentOrgId = orgId;
-    
-    // Persist organization selection to localStorage
-    localStorage.setItem(LAST_ORG_ID_KEY, orgId);
-    localStorage.setItem(LAST_ORG_NAME_KEY, orgName);
-    console.log('[SIDEPANEL] Saved organization selection:', orgId, orgName);
-    
-    showContactsView(orgName);
-    showLoading('contacts-loading', true);
-    hideError('contacts-error');
-    
-    const response = await fetch(
-      `${API_BASE}/api/orgs/${encodeURIComponent(orgId)}/contacts?session_id=${encodeURIComponent(currentSessionId)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log('[SIDEPANEL] Contacts data received:', data);
-    console.log('[SIDEPANEL] Contacts data keys:', data ? Object.keys(data) : 'null');
-    displayContacts(data);
-  } catch (error) {
-    console.error('Load contacts error:', error);
-    showError('Failed to load contacts. Please try again.', 'contacts-error');
-  } finally {
-    showLoading('contacts-loading', false);
+// Function to select an organization for AI assistant
+function selectOrganization(orgId, orgName) {
+  currentOrgId = orgId;
+  
+  // Persist organization selection to localStorage
+  localStorage.setItem(LAST_ORG_ID_KEY, orgId);
+  localStorage.setItem(LAST_ORG_NAME_KEY, orgName);
+  console.log('[SIDEPANEL] Selected organization:', orgId, orgName);
+  
+  // Update UI to show selected org
+  const orgItems = document.querySelectorAll('.org-item');
+  orgItems.forEach(item => item.classList.remove('selected'));
+  
+  // Find and highlight the selected item
+  const selectedItem = Array.from(orgItems).find(item => 
+    item.dataset.orgId === orgId
+  );
+  if (selectedItem) {
+    selectedItem.classList.add('selected');
+  }
+  
+  // Show selection feedback
+  const selectedIndicator = document.getElementById('selected-org-indicator');
+  if (selectedIndicator) {
+    selectedIndicator.textContent = `Selected: ${orgName}`;
+    selectedIndicator.classList.remove('hidden');
   }
 }
 
@@ -311,62 +319,15 @@ function displayOrganizations(orgs) {
       <div class="org-name">${escapeHtml(orgName)}</div>
       <div class="org-id">ID: ${escapeHtml(orgId)}</div>
     `;
-    orgItem.addEventListener('click', () => loadContacts(orgId, orgName));
+    orgItem.dataset.orgId = orgId; // Store orgId for selection
+    orgItem.addEventListener('click', () => selectOrganization(orgId, orgName));
     
     orgList.appendChild(orgItem);
   });
 }
 
-function displayContacts(data) {
-  const contactsList = document.getElementById('contacts-list');
-  contactsList.innerHTML = '';
-  
-  // Handle different response formats - check PascalCase first (BSA API convention)
-  const contacts = data.Items || data.Contacts || data.Results || 
-                   data.items || data.results || data.contacts || data;
-  
-  console.log('[SIDEPANEL] Extracted contacts:', contacts);
-  console.log('[SIDEPANEL] Is contacts array?', Array.isArray(contacts));
-  
-  if (!Array.isArray(contacts)) {
-    console.error('[SIDEPANEL] Expected contacts array, got:', typeof contacts);
-    console.error('[SIDEPANEL] Full contacts response:', data);
-    contactsList.innerHTML = '<p class="error-message">Invalid contacts data format.</p>';
-    return;
-  }
-  
-  if (contacts.length === 0) {
-    contactsList.innerHTML = '<p class="error-message">No contacts found for this organization.</p>';
-    return;
-  }
-  
-  console.log('[SIDEPANEL] Displaying', contacts.length, 'contacts');
-  
-  contacts.forEach(contact => {
-    const contactItem = document.createElement('div');
-    contactItem.className = 'contact-item';
-    
-    // Extract contact details with multiple fallbacks
-    const name = contact.Name || contact.name || 
-                 `${contact.FirstName || contact.firstName || ''} ${contact.LastName || contact.lastName || ''}`.trim() ||
-                 'Unnamed Contact';
-    const email = contact.Email || contact.email || contact.EmailAddress || '';
-    const phone = contact.Phone || contact.phone || contact.PhoneNumber || '';
-    const company = contact.Company || contact.company || contact.Organization || '';
-    
-    let detailsHtml = '';
-    if (email) detailsHtml += `<span class="contact-email">📧 ${escapeHtml(email)}</span>`;
-    if (phone) detailsHtml += `<span class="contact-phone">📱 ${escapeHtml(phone)}</span>`;
-    if (company) detailsHtml += `<span class="contact-company">🏢 ${escapeHtml(company)}</span>`;
-    
-    contactItem.innerHTML = `
-      <div class="contact-name">${escapeHtml(name)}</div>
-      ${detailsHtml ? `<div class="contact-details">${detailsHtml}</div>` : ''}
-    `;
-    
-    contactsList.appendChild(contactItem);
-  });
-}
+// [REMOVED: displayContacts function - deprecated with contacts feature]
+// Users can now query contacts through the AI assistant chat interface
 
 // View Management
 function showLoginView() {
@@ -384,17 +345,10 @@ function showAuthenticatedView() {
 
 function showOrganizations() {
   orgSection.classList.remove('hidden');
-  contactsSection.classList.add('hidden');
-  currentOrgId = null;
+  // Keep currentOrgId if already selected
 }
 
-function showContactsView(orgName) {
-  orgSection.classList.add('hidden');
-  contactsSection.classList.remove('hidden');
-  
-  const selectedOrg = document.getElementById('selected-org');
-  selectedOrg.innerHTML = `<strong>Organization:</strong> ${escapeHtml(orgName)}`;
-}
+// [REMOVED: showContactsView function - deprecated with contacts feature]
 
 // UI Helpers
 function showLoading(elementId, show) {

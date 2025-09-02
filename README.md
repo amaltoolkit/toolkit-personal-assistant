@@ -112,7 +112,7 @@ npm run dev
 
 ### Data Access
 - `GET /api/orgs?session_id=...` - List user organizations
-- `POST /api/orgs/:orgId/contacts?session_id=...` - List contacts for organization
+- `POST /api/assistant/query` - AI assistant for calendar/contact queries (LangChain-powered)
 
 ## Security Considerations
 
@@ -128,7 +128,7 @@ npm run dev
 2. Click "Login with BlueSquareApps"
 3. Complete OAuth authentication in the popup window
 4. Select an organization from the list
-5. View contacts for the selected organization
+5. Use the AI assistant to query about calendar events, contacts, and appointments
 
 ## Project Structure
 

@@ -5,57 +5,139 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Plan & Review
 
 ### Before starting work
-- Always in plan mode to make a plan
-- After getting the plan, make sure you Write the plan to. .claude/tasks/TASK_NAME.md.
-- The plan should be a detailed implementation plan and the reasoning behind them, as well as tasks broken down.
-- If the task require external knowledge or certain package, also research to get latest knowledge (Use Task tool for research)
-- Once you write the plan, firstly ask me to review it. Do not continue until I approve the plan.
+- Always start in plan mode to make a plan
+- After getting the plan, make sure you write the plan to `.claude/tasks/TASK_NAME.md`
+- The plan should be a detailed implementation plan with reasoning and tasks broken down
+- If the task requires external knowledge or certain packages, research to get latest knowledge (Use Task tool for research)
+- Once you write the plan, ask for review. Do not continue until the plan is approved
 
 ### While implementing
-- You should update the plan as you work.
-- After you complete tasks in the plan, you should update and append detailed descriptions of the changes you made, so following tasks can be easily hand over to other engineers.
+- Update the plan as you work
+- After you complete tasks in the plan, update and append detailed descriptions of the changes made
+- This ensures following tasks can be easily handed over to other engineers
 
 ## Project Overview
 
-This is a Chrome Extension with a Node.js/Express backend that authenticates with BlueSquareApps (BSA) via OAuth 2.0. The system exchanges OAuth tokens for PassKeys, which are stored in Supabase and used for all BSA API calls.
+BlueSquare Assistant - A secure Chrome Extension with AI-powered assistant capabilities for BlueSquare Apps (BSA) integration.
+
+### Core Functionality
+- OAuth 2.0 authentication with BSA
+- AI assistant for calendar management using LangChain
+- Natural language date parsing for queries like "this week" or "next month"
+- Secure PassKey management with automatic refresh
+- Real-time chat interface with markdown rendering
 
 ## Architecture
 
-### Three-Tier System
-1. **Chrome Extension (MV3)** - Side panel UI that never sees PassKeys
+### Three-Tier Security Architecture
+1. **Chrome Extension (MV3)** - Side panel UI that NEVER sees PassKeys
 2. **Express Backend on Vercel** - Handles OAuth flow and proxies all API calls
 3. **Supabase Database** - Stores PassKeys and session data
+
+### Technology Stack
+- **Frontend**: Vanilla JS, Marked.js, DOMPurify (Chrome Extension Manifest V3)
+- **Backend**: Node.js, Express 4.x, CommonJS modules
+- **AI/LLM**: LangChain 0.3.x, OpenAI GPT-4o-mini, Zod schemas
+- **Date Handling**: Day.js with timezone/quarter/week plugins
+- **Database**: Supabase (PostgreSQL)
+- **Deployment**: Vercel (serverless functions)
 
 ### Authentication Flow
 1. Extension generates session ID → opens OAuth window
 2. Backend exchanges OAuth code → bearer token → PassKey (two-step exchange)
 3. PassKey stored in `bsa_tokens.passkey` field (plain text, 1-hour expiry)
 4. All BSA API calls use PassKey from Supabase (auto-refreshes when <5 min remaining)
+5. Background processing for better UX (immediate redirect, async token exchange)
 
-### Key Security Design
+### Key Security Principles
 - PassKeys NEVER sent to extension (only session IDs)
 - Backend is the ONLY entity with database access (service role key)
 - PassKey refresh uses `/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`
+- Session-based authentication with CSRF protection
+- Input sanitization for markdown rendering (DOMPurify)
 
-## Development Commands
+## Critical Implementation Patterns
 
-```bash
-# Local Development
-npm run dev              # Run backend locally on port 3000
-npm install             # Install dependencies
+### LangChain Tool Implementation (MUST USE)
+```javascript
+// CORRECT - Use tool() function with Zod schemas
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 
-# Deployment
-vercel                  # Deploy to Vercel (production)
-vercel --prod          # Force production deployment
+const myTool = tool(
+  async (input) => {
+    // Tool implementation - input is already parsed object
+    return JSON.stringify(result);
+  },
+  {
+    name: "tool_name",
+    description: "Tool description",
+    schema: z.object({
+      param: z.string()
+    })
+  }
+);
 
-# Chrome Extension
-# Load unpacked from /extension directory in Chrome
-# No build step required - vanilla JS
+// WRONG - These patterns cause errors
+// ❌ StructuredTool class - causes toLowerCase error
+// ❌ DynamicTool with string input - incompatible with modern agents
+// ❌ createOpenAIFunctionsAgent - deprecated, causes empty responses
+```
+
+### Agent Creation Pattern (MUST USE)
+```javascript
+// CORRECT - Modern tool-calling agent
+const { createToolCallingAgent } = await import("langchain/agents");
+
+// WRONG - Deprecated patterns
+// ❌ createOpenAIFunctionsAgent - returns empty responses
+```
+
+### Natural Language Date Support
+```javascript
+// Import the reusable date parser
+const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
+
+// Use in any agent's tools
+if (dateQuery && !startDate && !endDate) {
+  const parsed = parseDateQuery(dateQuery, userTimezone);
+  if (parsed) {
+    startDate = parsed.startDate;
+    endDate = parsed.endDate;
+  }
+}
+```
+
+## API Endpoints
+
+### OAuth Flow Endpoints
+- `GET /auth/start?session_id=...` - Initiates OAuth with CSRF protection
+- `GET /auth/callback?code=...&state=...` - Handles OAuth callback (async processing)
+- `GET /auth/status?session_id=...` - Polling endpoint for auth status
+
+### Data Endpoints (require session_id)
+- `GET /api/orgs?session_id=...` - List organizations
+- `POST /api/assistant/query` - AI assistant queries with natural language support
+  - Body: `{ query, session_id, org_id, time_zone }`
+  - Rate limited: 10 requests/minute
+  - Input validation: 1-500 characters
+
+### BSA API Integration Patterns
+```javascript
+// BSA responses have two formats:
+// 1. Most endpoints: Array wrapper [{ Results: [...], Valid: true }]
+// 2. PassKey endpoint: Plain object { passkey: "...", expires_in: 3600 }
+
+// Use normalizeBSAResponse() helper for array-wrapped responses
+const normalized = normalizeBSAResponse(resp.data);
+if (!normalized.valid) {
+  throw new Error(normalized.error);
+}
 ```
 
 ## Environment Variables
 
-Required in Vercel (or .env for local):
+Required in Vercel:
 - `BSA_BASE` - https://rc.bluesquareapps.com
 - `BSA_CLIENT_ID` - OAuth client ID
 - `BSA_CLIENT_SECRET` - OAuth client secret  
@@ -63,58 +145,15 @@ Required in Vercel (or .env for local):
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` - Full access key (keep secure)
 - `APP_BASE_URL` - Your deployed app URL
+- `OPENAI_API_KEY` - For LangChain AI assistant
 
 ## Database Schema
 
 Two tables in Supabase:
-- `oauth_sessions` - Temporary OAuth state tracking
-- `bsa_tokens` - PassKey storage (passkey field, not access_token)
-
-## API Endpoints
-
-### OAuth Flow
-- `GET /auth/start?session_id=...` - Initiates OAuth
-- `GET /auth/callback?code=...&state=...` - Handles OAuth callback
-- `GET /auth/status?session_id=...` - Polling endpoint
-
-### Data Endpoints (require session_id)
-- `GET /api/orgs?session_id=...` - List organizations
-
-## Testing the OAuth Flow
-
-1. Open Chrome extension side panel
-2. Click "Login with BlueSquareApps"
-3. Complete OAuth in popup window
-4. Extension polls until PassKey is stored
-5. Select organization → view contacts
-
-## Common Issues & Solutions
-
-### PassKey Expiration
-PassKeys expire in 1 hour. The system auto-refreshes when <5 minutes remain. If expired, the refresh mechanism in `refreshPassKey()` obtains a new one.
-
-### Local Development
-Extension automatically switches between localhost:3000 (dev) and production URL based on protocol.
-
-### Debugging
-Enable Chrome DevTools to see detailed logs prefixed with:
-- `[AUTH START]` - OAuth initiation
-- `[PROCESS OAUTH]` - Background OAuth processing  
-- `[SIDEPANEL]` - Extension client operations
-
-## Important Implementation Details
-
-### PassKey vs OAuth Token
-- OAuth bearer token from `/oauth2/token` is temporary and discarded
-- Only PassKey from `/oauth2/passkey` is stored and used
-- Database field is named `passkey` (was `access_token` historically)
-
-### Background Processing
-OAuth callback immediately redirects user while processing continues asynchronously to improve UX.
-
-### Content-Type Headers
-- Token exchange uses `application/x-www-form-urlencoded`
-- PassKey exchange and API calls use `application/json`
+- `oauth_sessions` - Temporary OAuth state tracking (CSRF protection)
+  - Fields: `id`, `session_id`, `state`, `used_at`, `created_at`
+- `bsa_tokens` - PassKey storage
+  - Fields: `session_id`, `passkey`, `refresh_token`, `expires_at`, `updated_at`
 
 ## Supabase MCP Tools Available
 
@@ -127,48 +166,134 @@ Project IDs:
 - Primary: `fscwwerxbxzbszgdubbo`
 - Secondary: `wpghmnfuywvrwwhnzfcn`
 
-## LangChain Integration Notes (Phase 1 Complete)
+## Performance Optimizations
 
-### Critical Implementation Learnings
+### Backend Optimizations
+- HTTP Keep-Alive agents for connection reuse
+- Module caching to prevent duplicate imports
+- Lazy loading of LangChain modules
+- Request ID tracking for debugging
+- 10-second timeout for all BSA API calls
 
-#### Tool Implementation Pattern
-- **USE**: `tool()` function from `@langchain/core/tools`
-- **AVOID**: `StructuredTool` class constructor (causes initialization errors)
-- **AVOID**: `DynamicTool` with string inputs (incompatible with modern agents)
+### Frontend Optimizations
+- Debounced input handling
+- Efficient DOM updates
+- Lazy loading of markdown renderer
+- Session caching in localStorage
 
-#### Correct Tool Pattern
-```javascript
-import { tool } from "@langchain/core/tools";
-import { z } from "zod";
+## Code Style & Conventions
 
-const myTool = tool(
-  async (input) => {
-    // Tool implementation
-    return JSON.stringify(result);
-  },
-  {
-    name: "tool_name",
-    description: "Tool description",
-    schema: z.object({
-      param: z.string()
-    })
-  }
-);
+### JavaScript/Node.js
+- CommonJS modules for backend (no ESM)
+- Dynamic imports for LangChain modules
+- Async/await over promises
+- Comprehensive error handling with try/catch
+- Descriptive console.log prefixes: `[COMPONENT:ACTION]`
+
+### Chrome Extension
+- Manifest V3 compliance
+- Service worker for background tasks
+- Content Security Policy compliance
+- No inline scripts or styles
+
+### Error Handling
+- Always return meaningful error messages
+- Log full errors to console for debugging
+- User-friendly error messages in UI
+- Automatic retry for PassKey refresh
+
+## Deployment Commands
+
+```bash
+# Install dependencies
+npm install
+
+# Deploy to Vercel
+vercel                  # Deploy to preview
+vercel --prod          # Deploy to production
+
+# Chrome Extension
+# Load unpacked from /extension directory
+# No build step required - vanilla JS
 ```
 
-#### Agent Creation
-- **USE**: `createToolCallingAgent` (modern, supports tool calling)
-- **AVOID**: `createOpenAIFunctionsAgent` (deprecated, causes empty responses)
+## Common Issues & Solutions
 
-#### Version Alignment
-Keep these packages aligned to avoid compatibility issues:
-- `langchain`: 0.3.x
-- `@langchain/core`: 0.3.x  
-- `@langchain/openai`: 0.6.x
-- `zod`: Required for tool schemas
+### PassKey Expiration
+- PassKeys expire in 1 hour
+- System auto-refreshes when <5 minutes remain
+- If expired, `refreshPassKey()` obtains a new one using existing PassKey
 
-#### Common Pitfalls Resolved
-1. **"toLowerCase" error**: Caused by incorrect tool initialization
-2. **Empty agent responses**: Caused by deprecated agent types
-3. **Tool input schema mismatch**: Tools must accept objects, not strings
-4. **Version conflicts**: Use npm overrides if needed to force alignment
+### Extension Development
+- Extension automatically detects environment based on protocol
+- Use Chrome DevTools for debugging
+- Check console for prefixed debug logs
+
+### LangChain Issues
+1. **"toLowerCase" error**: Use `tool()` function, not StructuredTool class
+2. **Empty agent responses**: Use `createToolCallingAgent`, not deprecated functions
+3. **Tool input mismatch**: Tools must accept objects, not strings
+4. **Version conflicts**: Check package.json overrides section
+
+### Content-Type Headers
+- Token exchange: `application/x-www-form-urlencoded`
+- PassKey exchange and API calls: `application/json`
+
+## Project Structure
+
+```
+/
+├── api/
+│   ├── index.js          # Main Express server with all endpoints
+│   └── lib/
+│       └── dateParser.js # Reusable date parsing module (Day.js)
+├── extension/
+│   ├── manifest.json     # Chrome Extension Manifest V3
+│   ├── sidepanel.html    # Main UI
+│   ├── sidepanel.js      # Frontend logic
+│   ├── sidepanel.css     # Styles
+│   └── icons/           # Extension icons
+├── .claude/
+│   └── tasks/           # Task documentation
+├── package.json         # Dependencies and scripts
+└── vercel.json         # Deployment configuration
+```
+
+## Current Implementation Status
+
+### Phase 1 Complete ✅
+- OAuth 2.0 flow with PassKey management
+- Calendar Agent with natural language date support
+- AI assistant with markdown chat interface
+- Organization selection and data fetching
+- Rate limiting and input validation
+- Production deployment on Vercel
+
+### Phase 2 Ready (Not Started)
+- Task Agent for todo management
+- LangGraph orchestration for multi-agent coordination
+- Contact Agent for advanced contact search
+- Cross-agent data sharing
+
+## Testing Considerations
+
+- OAuth flow requires production URLs (BSA redirects)
+- Use Vercel preview deployments for testing
+- Get real session_id from authenticated Chrome extension
+- Check browser console for detailed debug logs
+- Test PassKey refresh by waiting >55 minutes
+
+## Important Notes
+
+### Do NOT Modify
+- Authentication flow (security critical)
+- PassKey handling logic
+- Database field names
+- CORS configuration
+
+### Always Remember
+- PassKeys are sensitive - never log or expose them
+- All BSA API calls require valid PassKey
+- Organization selection is required for data endpoints
+- Rate limiting is per session (10 req/min)
+- Use modular patterns for new features (like dateParser.js)

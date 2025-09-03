@@ -3,11 +3,11 @@
 ## Project: BlueSquare Assistant - AI Agent Orchestration Layer
 
 **Date Created**: 2025-01-31  
-**Last Updated**: 2025-09-02 (v7.0 - Phase 1 COMPLETE with critical implementation fixes)  
-**Status**: Phase 1 Complete, Phase 2 Ready  
+**Last Updated**: 2025-09-03 (v8.0 - Phase 1 Enhanced with Natural Language Date Support)  
+**Status**: Phase 1 Complete with Date Parsing, Phase 2 Ready  
 **Complexity**: Medium (pragmatic approach)  
 **Estimated Time**: 8-9 hours (phased implementation)  
-**Phase 1 Actual Time**: 4 hours (including debugging)  
+**Phase 1 Actual Time**: 5 hours (including debugging and date parsing)  
 
 ---
 
@@ -74,12 +74,13 @@ User Query → Chrome Extension → Express Backend → LangGraph Supervisor
 
 #### 1.1 Install Dependencies (COMPLETE)
 ```bash
-npm install @langchain/openai @langchain/core langchain zod
+npm install @langchain/openai @langchain/core langchain zod dayjs
 # Critical: All packages installed and version-aligned
 # langchain: 0.3.31
 # @langchain/core: 0.3.72 (with overrides to force alignment)
 # @langchain/openai: 0.6.9
 # zod: 3.x (for tool schemas)
+# dayjs: 1.11.x (for natural language date parsing)
 ```
 
 #### CRITICAL IMPLEMENTATION FIXES APPLIED
@@ -172,6 +173,48 @@ LANGCHAIN_PROJECT="BSA Assistant"
 
 #### 1.4 Backend Implementation - Calendar Agent with Tools
 Create a proper agent with tool-calling capabilities:
+
+##### 1.4.0 Date Parser Module (NEW - Reusable Across Agents)
+Create `api/lib/dateParser.js` for natural language date support:
+```javascript
+// Day.js configuration with plugins
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+const weekOfYear = require('dayjs/plugin/weekOfYear');
+const quarterOfYear = require('dayjs/plugin/quarterOfYear');
+const customParseFormat = require('dayjs/plugin/customParseFormat');
+const isoWeek = require('dayjs/plugin/isoWeek');
+
+// Load plugins
+dayjs.extend(utc);
+dayjs.extend(timezone);
+dayjs.extend(weekOfYear);
+dayjs.extend(quarterOfYear);
+dayjs.extend(customParseFormat);
+dayjs.extend(isoWeek);
+
+/**
+ * Parse natural language date queries into date ranges
+ * @param {string} query - The natural language date query
+ * @param {string} userTimezone - User's timezone (e.g., 'America/New_York')
+ * @returns {Object|null} - { startDate: 'YYYY-MM-DD', endDate: 'YYYY-MM-DD', interpreted: string }
+ */
+function parseDateQuery(query, userTimezone = 'UTC') {
+  // Handles patterns like:
+  // - Single days: "today", "tomorrow", "yesterday"
+  // - Weeks: "this week", "last week", "next week" (Monday-Sunday)
+  // - Months: "this month", "last month", "next month"
+  // - Quarters: "this quarter", "last quarter", "next quarter"
+  // - Years: "this year", "last year", "next year"
+  // - Relative: "next 7 days", "past 3 days"
+  // - Weekends: "this weekend", "next weekend"
+  // - Weekdays: "this Monday", "next Friday", "last Tuesday"
+  // Implementation details in full module...
+}
+
+module.exports = { parseDateQuery, extractDateFromQuery };
+```
 
 ##### 1.4.1 Performance Optimizations
 Add to top of `api/index.js`:
@@ -1400,25 +1443,31 @@ Phase 1 - Calendar Agent with Tools (COMPLETE ✅):
 - [x] Install `@langchain/openai` and `@langchain/core` dependencies
 - [x] Add OPENAI_API_KEY to Vercel environment variables
 - [x] Add performance optimizations to api/index.js (keep-alive, module caching)
-- [x] Create Calendar Agent with tool definitions (5 tools implemented)
+- [x] Create Calendar Agent with tool definitions (2 tools implemented with enhanced capabilities)
 - [x] Implement `/api/assistant/query` endpoint with agent executor
 - [x] Add AI Assistant UI section to sidepanel.html
 - [x] Implement chat functionality in sidepanel.js
+- [x] Install Day.js for date parsing (6KB minimal footprint)
+- [x] Create reusable date parser module in `api/lib/dateParser.js`
+- [x] Enhance calendar tool with natural language date support
+- [x] Update agent prompt with date parsing capabilities
 - [x] Deploy to Vercel production environment
-- [x] Test queries: Successfully handling date-based appointment queries
+- [x] Test queries: Successfully handling natural language date queries like "this week", "next month"
 
 **Phase 1 Implementation Summary**:
-- **Tools Created**: 5 functional tools using `tool()` with Zod schemas
-  - get_appointments (with optional limit/offset)
-  - search_appointments_by_date (date range filtering)
-  - get_appointment_details (by ID)
-  - get_appointment_contacts (linked contacts)
-  - get_organizations (list available orgs)
-- **Agent Type**: createToolCallingAgent (not deprecated Functions agent)
+- **Tools Created**: 2 primary tools using `tool()` with Zod schemas
+  - get_calendar_activities (with natural language date support via dateQuery parameter)
+  - get_contact_details (batch fetch contact information by IDs)
+- **Date Enhancement**: 
+  - Modular date parser in `api/lib/dateParser.js` (reusable across all agents)
+  - Day.js integration for robust timezone-aware date handling
+  - Support for 20+ natural language date patterns
+- **Agent Type**: createToolCallingAgent (modern approach)
 - **Model**: gpt-4o-mini for efficiency
-- **Response Format**: JSON with proper BSA data formatting
+- **Response Format**: Markdown-formatted responses with proper structure
 - **Error Handling**: Comprehensive with helpful error messages
 - **Security**: PassKey validation, org_id requirement, session checks
+- **Architecture**: Modular design with shared utilities for future agents
 
 Phase 2 - Task Agent and Orchestration:
 - [ ] Create Task Agent with tool definitions (get_tasks, create_task, update_task)

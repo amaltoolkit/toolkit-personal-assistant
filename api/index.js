@@ -627,8 +627,8 @@ app.get("/api/orgs", async (req, res) => {
 // Import date parser for natural language date queries
 const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
 
-// Import Calendar Agent module
-const { createCalendarAgent } = require('./lib/agents/calendarAgent');
+// Import Activities Agent module (unified calendar + tasks)
+const { createActivitiesAgent } = require('./lib/agents/activitiesAgent');
 
 // LangChain Calendar Agent implementation
 
@@ -698,7 +698,7 @@ app.post("/api/assistant/query", async (req, res) => {
       });
     }
     
-    // Create and execute Calendar Agent with dependencies
+    // Create and execute Activities Agent with dependencies
     const dependencies = {
       axios,
       axiosConfig,
@@ -708,7 +708,7 @@ app.post("/api/assistant/query", async (req, res) => {
       getLLMClient
     };
     
-    const agent = await createCalendarAgent(passKey, org_id, time_zone || "UTC", dependencies);
+    const agent = await createActivitiesAgent(passKey, org_id, time_zone || "UTC", dependencies);
     const result = await agent.invoke({ input: query });
     
     res.json({ 

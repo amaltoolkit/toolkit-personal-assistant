@@ -114,6 +114,14 @@ npm run dev
 - `GET /api/orgs?session_id=...` - List user organizations
 - `POST /api/assistant/query` - AI assistant for calendar/contact queries (LangChain-powered)
 
+### BlueSquareApps API Usage (Updated)
+- Calendar Activities: `POST /endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json`
+  - Use `From`/`To` (YYYY-MM-DD) for server-side date filtering
+  - Set `IncludeAppointments: true`, `IncludeAttendees: true`
+- Batch Contacts: `POST /endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/getMultiple.json`
+  - Supply attendee `ContactIds` in `References`
+  - Set `IncludeExtendedProperties` as needed
+
 ## Security Considerations
 
 - **PassKey Storage**: The PassKey is stored in plain text in Supabase to be used directly in API calls

@@ -445,21 +445,11 @@ function addMessageToChat(text, isUser = false) {
   bubbleDiv.className = 'message-bubble';
   
   // Process text for display
-  if (!isUser) {
-    // Parse markdown for assistant messages
-    const formatted = parseMarkdown(text);
-    // Split by newlines and wrap non-list/header items in paragraphs
-    bubbleDiv.innerHTML = formatted
+  if (!isUser && text.includes('\n')) {
+    // Format multi-line responses
+    bubbleDiv.innerHTML = text
       .split('\n')
-      .map(line => {
-        // Don't wrap headers, lists, or empty lines in <p> tags
-        if (line.startsWith('<h') || line.startsWith('<ul') || line.startsWith('</ul') || 
-            line.startsWith('<ol') || line.startsWith('</ol') ||
-            line.startsWith('<li') || line.trim() === '') {
-          return line;
-        }
-        return `<p>${line}</p>`;
-      })
+      .map(line => `<p>${escapeHtml(line)}</p>`)
       .join('');
   } else {
     bubbleDiv.textContent = text;
@@ -628,72 +618,6 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
-}
-
-function parseMarkdown(text) {
-  // First escape HTML to prevent XSS
-  let safe = escapeHtml(text);
-  
-  // Convert markdown to HTML
-  // Headers
-  safe = safe.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  safe = safe.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  safe = safe.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  
-  // Bold
-  safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  
-  // Handle lists - process line by line
-  const lines = safe.split('\n');
-  let currentListType = null; // 'ul', 'ol', or null
-  let result = [];
-  
-  for (let line of lines) {
-    if (line.startsWith('- ')) {
-      // Unordered list item
-      if (currentListType !== 'ul') {
-        if (currentListType === 'ol') {
-          result.push('</ol>');
-        }
-        result.push('<ul>');
-        currentListType = 'ul';
-      }
-      result.push('<li>' + line.substring(2) + '</li>');
-    } else if (line.match(/^\d+\.\s/)) {
-      // Numbered list item
-      if (currentListType !== 'ol') {
-        if (currentListType === 'ul') {
-          result.push('</ul>');
-        }
-        result.push('<ol>');
-        currentListType = 'ol';
-      }
-      result.push('<li>' + line.replace(/^\d+\.\s/, '') + '</li>');
-    } else {
-      // Not a list item - close any open list
-      if (currentListType === 'ul') {
-        result.push('</ul>');
-        currentListType = null;
-      } else if (currentListType === 'ol') {
-        result.push('</ol>');
-        currentListType = null;
-      }
-      result.push(line);
-    }
-  }
-  // Close any remaining open list
-  if (currentListType === 'ul') {
-    result.push('</ul>');
-  } else if (currentListType === 'ol') {
-    result.push('</ol>');
-  }
-  
-  safe = result.join('\n');
-  
-  // Links
-  safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-  
-  return safe;
 }
 
 function sleep(ms) {

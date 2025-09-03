@@ -403,7 +403,8 @@ async function handleSendMessage() {
       body: JSON.stringify({
         query: message,
         session_id: currentSessionId,
-        org_id: currentOrgId
+        org_id: currentOrgId,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
       })
     });
     

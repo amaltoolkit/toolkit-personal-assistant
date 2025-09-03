@@ -711,9 +711,36 @@ function createCalendarTools(tool, z, passKey, orgId) {
     tool(
       async ({ startDate, endDate, includeAttendees }) => {
         try {
+          // Normalize and expand single-day queries to a +/- 1 day window to match BSA API behavior
+          const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+          const addDays = (ymd, days) => {
+            const d = new Date(ymd + 'T00:00:00Z');
+            d.setUTCDate(d.getUTCDate() + days);
+            return d.toISOString().slice(0, 10);
+          };
+
+          let effectiveFrom = isDate(startDate) ? startDate : undefined;
+          let effectiveTo = isDate(endDate) ? endDate : undefined;
+
+          if (effectiveFrom && effectiveTo && effectiveFrom === effectiveTo) {
+            // exact single day -> expand window
+            effectiveFrom = addDays(effectiveFrom, -1);
+            effectiveTo = addDays(effectiveTo, +1);
+          } else if (effectiveFrom && !effectiveTo) {
+            // only start provided -> assume single day
+            effectiveTo = addDays(effectiveFrom, +1);
+            effectiveFrom = addDays(effectiveFrom, -1);
+          } else if (!effectiveFrom && effectiveTo) {
+            // only end provided -> assume single day
+            effectiveFrom = addDays(effectiveTo, -1);
+            effectiveTo = addDays(effectiveTo, +1);
+          }
+
+          console.log("[Calendar Tool] get_calendar_activities args:", { startDate, endDate, includeAttendees, effectiveFrom, effectiveTo });
+
           const data = await getCalendarActivities(passKey, orgId, {
-            from: startDate,
-            to: endDate,
+            from: effectiveFrom,
+            to: effectiveTo,
             includeAttendees: includeAttendees !== false
           });
           
@@ -784,20 +811,53 @@ function createCalendarTools(tool, z, passKey, orgId) {
 }
 
 // Create Calendar Agent
-async function createCalendarAgent(passKey, orgId) {
+async function createCalendarAgent(passKey, orgId, timeZone = "UTC") {
   // Dynamic imports for LangChain and Zod
   const { z } = await import("zod");
   const { tool } = await import("@langchain/core/tools");
   const { AgentExecutor, createToolCallingAgent } = await import("langchain/agents");
-  const { ChatPromptTemplate } = await import("@langchain/core/prompts");
+  const { ChatPromptTemplate, MessagesPlaceholder } = await import("@langchain/core/prompts");
   
   // Use cached LLM client for better performance
   const llm = await getLLMClient();
   
   const tools = createCalendarTools(tool, z, passKey, orgId);
   
+  // Get current date/time for context
+  const now = new Date();
+  const currentDate = now.toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    timeZone: timeZone
+  });
+  const currentTime = now.toLocaleTimeString('en-US', { 
+    hour: '2-digit', 
+    minute: '2-digit',
+    timeZone: timeZone,
+    hour12: true 
+  });
+
+  // Debug log to confirm agent time context in server logs
+  console.log(`[Agent] Time context: Today is ${currentDate} at ${currentTime} ${timeZone}`);
+
   const prompt = ChatPromptTemplate.fromMessages([
-    ["system", `You are a helpful calendar assistant. Use the available tools to answer questions about calendar activities, appointments, meetings, and schedules.
+    ["system", `Today is ${currentDate} at ${currentTime} ${timeZone}.
+
+You are a helpful calendar assistant. Use the available tools to answer questions about calendar activities, appointments, meetings, and schedules.
+
+IMPORTANT: Use the current date and time provided above to correctly interpret relative date references like "today", "tomorrow", "next week", etc. Always interpret dates in the user's time zone (${timeZone}).
+
+CRITICAL RULES FOR DATE QUERIES:
+- When the user references a specific day (e.g., "today", "tomorrow", "next Friday"), compute the exact YYYY-MM-DD for that day in ${timeZone}.
+- Then call get_calendar_activities with startDate and endDate set to that day (same YYYY-MM-DD for both) unless the user asked for a range.
+ - Then call get_calendar_activities with startDate and endDate set to that day (same YYYY-MM-DD for both). Internally, the tool will expand this to a +/- 1 day window to ensure the BSA API returns the day’s appointments.
+- Do not answer from memory. Always use get_calendar_activities to verify appointments.
+- Present times to the user in ${timeZone}.
+ - If the question includes both a relative term (e.g., "tomorrow") and an explicit calendar date (e.g., "September 4th"), treat the explicit calendar date as authoritative and ignore the relative term if they conflict.
+ - In your response, clearly state the resolved date (YYYY-MM-DD) and ensure the heading and the tool call use the same date.
+ - If the intent is ambiguous after applying the above rule, ask a brief clarifying question before calling tools.
 
 When working with calendar data:
 - Activities are returned in an array with each item containing:
@@ -849,7 +909,7 @@ Example of good formatting:
 
 Be concise and informative in your responses.`],
     ["human", "{input}"],
-    ["placeholder", "{agent_scratchpad}"]
+    new MessagesPlaceholder("agent_scratchpad")
   ]);
   
   const agent = createToolCallingAgent({
@@ -900,7 +960,7 @@ function checkRateLimit(sessionId) {
 // Assistant API endpoint
 app.post("/api/assistant/query", async (req, res) => {
   try {
-    const { query, session_id, org_id } = req.body;
+    const { query, session_id, org_id, time_zone } = req.body;
     
     // Input validation
     if (!query || query.length > 500) {
@@ -930,7 +990,7 @@ app.post("/api/assistant/query", async (req, res) => {
     }
     
     // Create and execute Calendar Agent
-    const agent = await createCalendarAgent(passKey, org_id);
+    const agent = await createCalendarAgent(passKey, org_id, time_zone || "UTC");
     const result = await agent.invoke({ input: query });
     
     res.json({ 

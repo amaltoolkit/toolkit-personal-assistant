@@ -824,6 +824,26 @@ Examples for get_contact_details:
 - Single contact: contactIds: ["40071328-2515-47da-8f17-c13d0c9b3162"]
 - Multiple contacts: contactIds: ["id1", "id2", "id3"]
 
+IMPORTANT OUTPUT FORMATTING:
+- Use PLAIN TEXT only - no markdown syntax
+- DO NOT use ** for bold, ### for headers, or - for bullet points
+- Use simple formatting:
+  * For headers, just use capital letters or write "APPOINTMENT DETAILS:"
+  * For lists, use numbers (1. 2. 3.) or simple dashes
+  * For emphasis, just use CAPS or write normally
+  * Separate sections with blank lines for readability
+
+Example of good formatting:
+APPOINTMENT DETAILS
+Subject: Team Meeting
+Date: March 15, 2024
+Time: 2:00 PM
+Location: Conference Room A
+
+ATTENDEES
+1. John Smith - john@example.com - (555) 123-4567
+2. Jane Doe - jane@example.com - (555) 987-6543
+
 Be concise and informative in your responses.`],
     ["human", "{input}"],
     ["placeholder", "{agent_scratchpad}"]

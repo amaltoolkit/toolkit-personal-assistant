@@ -259,9 +259,9 @@ body {
 }
 
 .assistant-message .message-bubble {
-  background: white;
-  color: #1f2937;
-  border: 1px solid #e5e7eb;
+  background: #374151;
+  color: white;
+  border: 1px solid #4b5563;
   border-bottom-left-radius: 4px;
 }
 
@@ -270,8 +270,19 @@ body {
 .message-bubble h3 {
   margin: 0.75rem 0 0.5rem 0;
   font-weight: 600;
-  color: #1f2937;
   line-height: 1.3;
+}
+
+.assistant-message .message-bubble h1,
+.assistant-message .message-bubble h2,
+.assistant-message .message-bubble h3 {
+  color: white;
+}
+
+.user-message .message-bubble h1,
+.user-message .message-bubble h2,
+.user-message .message-bubble h3 {
+  color: white;
 }
 
 .message-bubble h1 {
@@ -307,7 +318,10 @@ body {
 
 .message-bubble strong {
   font-weight: 600;
-  color: #111827;
+}
+
+.assistant-message .message-bubble strong {
+  color: #f3f4f6;
 }
 
 .message-bubble p {
@@ -734,9 +748,9 @@ body {
 }
 
 .assistant-message .message-bubble {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: #374151 !important;
+  border: 1px solid #4b5563 !important;
+  color: white !important;
 }
 
 .assistant-message .message-bubble p + p {

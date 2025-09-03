@@ -645,32 +645,48 @@ function parseMarkdown(text) {
   
   // Handle lists - process line by line
   const lines = safe.split('\n');
-  let inList = false;
+  let currentListType = null; // 'ul', 'ol', or null
   let result = [];
   
   for (let line of lines) {
     if (line.startsWith('- ')) {
-      if (!inList) {
+      // Unordered list item
+      if (currentListType !== 'ul') {
+        if (currentListType === 'ol') {
+          result.push('</ol>');
+        }
         result.push('<ul>');
-        inList = true;
+        currentListType = 'ul';
       }
       result.push('<li>' + line.substring(2) + '</li>');
     } else if (line.match(/^\d+\.\s/)) {
-      // Numbered lists
-      if (!inList) {
+      // Numbered list item
+      if (currentListType !== 'ol') {
+        if (currentListType === 'ul') {
+          result.push('</ul>');
+        }
         result.push('<ol>');
-        inList = true;
+        currentListType = 'ol';
       }
       result.push('<li>' + line.replace(/^\d+\.\s/, '') + '</li>');
     } else {
-      if (inList) {
-        result.push(inList === true ? '</ul>' : '</ol>');
-        inList = false;
+      // Not a list item - close any open list
+      if (currentListType === 'ul') {
+        result.push('</ul>');
+        currentListType = null;
+      } else if (currentListType === 'ol') {
+        result.push('</ol>');
+        currentListType = null;
       }
       result.push(line);
     }
   }
-  if (inList) result.push(inList === true ? '</ul>' : '</ol>');
+  // Close any remaining open list
+  if (currentListType === 'ul') {
+    result.push('</ul>');
+  } else if (currentListType === 'ol') {
+    result.push('</ol>');
+  }
   
   safe = result.join('\n');
   

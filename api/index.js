@@ -967,52 +967,116 @@ app.get("/api/orgs", async (req, res) => {
 
 // [REMOVED: Duplicate normalizeBSAResponse - Using the first instance at line 766]
 
-// Fetch appointments from BSA
-async function getAppointments(passKey, orgId, options = {}) {
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
-  const payload = {
-    PassKey: passKey,
-    OrganizationId: orgId,
-    ObjectName: "appointment",
-    IncludeExtendedProperties: true,
-    ResultsPerPage: options.limit || 100,
-    PageOffset: options.offset || 0
+// Fetch calendar activities (appointments) using recommended calendar endpoint
+async function getCalendarActivities(passKey, orgId, options = {}) {
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json`;
+
+  // Helper: ensure YYYY-MM-DD format
+  const toDateString = (d) => {
+    if (!d) return undefined;
+    const date = typeof d === 'string' ? new Date(d) : d;
+    if (isNaN(date.getTime())) return undefined;
+    return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
+      .toISOString()
+      .slice(0, 10);
   };
-  
+
+  // Defaults: current month window
+  const now = new Date();
+  const defaultFrom = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const defaultTo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
+
+  const payload = {
+    IncludeAppointments: true,
+    IncludeExtendedProperties: !!options.includeExtendedProperties,
+    IncludeTasks: false,
+    From: toDateString(options.from) || toDateString(defaultFrom),
+    To: toDateString(options.to) || toDateString(defaultTo),
+    IncludeAttendees: options.includeAttendees !== false,
+    OrganizationId: orgId,
+    PassKey: passKey,
+    ObjectName: "appointment"
+  };
+
   const resp = await axios.post(url, payload, axiosConfig);
-  // Handle array wrapper format: [{ Results: [...], Valid: true }]
   const normalized = normalizeBSAResponse(resp.data);
-  
+
   if (!normalized.valid) {
     throw new Error(normalized.error || 'Invalid BSA response');
   }
-  
+
+  const activities = Array.isArray(normalized.data?.Activities) ? normalized.data.Activities : [];
   return {
-    appointments: normalized.data?.Results || [],
-    totalResults: normalized.data?.TotalResults || 0,
-    valid: true
+    activities,
+    valid: true,
+    from: payload.From,
+    to: payload.To,
+    count: Array.isArray(activities) ? activities.length : 0
   };
 }
 
-// Get contacts linked to an appointment
-async function getAppointmentContacts(passKey, orgId, appointmentId) {
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/listLinked.json`;
+
+// Helper function to build search windows for finding activities by ID
+function buildSearchWindows(startDate, endDate) {
+  const windows = [];
+  const toDateStr = (d) => d.toISOString().slice(0, 10);
+  const firstOf = (y, m) => new Date(Date.UTC(y, m, 1));
+  const endOf = (y, m) => new Date(Date.UTC(y, m + 1, 0));
+  const now = new Date();
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth();
+  
+  // Add user-provided window if both dates given
+  if (startDate && endDate) {
+    windows.push({ from: startDate, to: endDate });
+  }
+  
+  // Add current month
+  windows.push({ 
+    from: toDateStr(firstOf(currentYear, currentMonth)), 
+    to: toDateStr(endOf(currentYear, currentMonth)) 
+  });
+  
+  // Add surrounding months (±3 months)
+  for (let delta = -3; delta <= 3; delta++) {
+    if (delta === 0) continue; // Skip current month (already added)
+    const targetMonth = currentMonth + delta;
+    const targetYear = currentYear + Math.floor(targetMonth / 12);
+    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
+    windows.push({ 
+      from: toDateStr(firstOf(targetYear, normalizedMonth)), 
+      to: toDateStr(endOf(targetYear, normalizedMonth)) 
+    });
+  }
+  
+  return windows;
+}
+
+// Batch fetch contacts by IDs using getMultiple.json
+async function getContactsByIds(passKey, orgId, contactIds = [], includeExtendedProperties = false) {
+  if (!Array.isArray(contactIds) || contactIds.length === 0) return [];
+
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/getMultiple.json`;
   const payload = {
-    PassKey: passKey,
+    IncludeExtendedProperties: !!includeExtendedProperties,
+    References: contactIds.map((id) => ({
+      Fields: [],
+      Id: id,
+      OrganizationId: orgId,
+      PassKey: passKey,
+      ObjectName: "contact"
+    })),
     OrganizationId: orgId,
-    ObjectName: "linker_appointments_contacts",
-    ListObjectName: "contact",
-    LinkParentId: appointmentId
+    PassKey: passKey,
+    ObjectName: "contact"
   };
-  
+
   const resp = await axios.post(url, payload, axiosConfig);
-  // Handle array wrapper format: [{ Results: [...], Valid: true }]
   const normalized = normalizeBSAResponse(resp.data);
-  
   if (!normalized.valid) {
     throw new Error(normalized.error || 'Invalid BSA response');
   }
-  
+
   return normalized.data?.Results || [];
 }
 
@@ -1021,156 +1085,147 @@ async function getAppointmentContacts(passKey, orgId, appointmentId) {
 // Define Calendar Agent Tools using tool function with Zod
 function createCalendarTools(tool, z, passKey, orgId) {
   return [
-    // Tool 1: Get appointments
+    // Tool 1: Get calendar activities with optional date filtering
     tool(
-      async (input) => {
+      async ({ startDate, endDate, includeAttendees }) => {
         try {
-          const limit = input.limit || 100;
-          const offset = input.offset || 0;
-          const data = await getAppointments(passKey, orgId, { limit, offset });
+          const data = await getCalendarActivities(passKey, orgId, {
+            from: startDate,
+            to: endDate,
+            includeAttendees: includeAttendees !== false
+          });
           
           return JSON.stringify({
-            count: data.appointments?.length || 0,
-            appointments: data.appointments?.slice(0, 5), // Limit for readability
-            total: data.totalResults || 0
+            activities: data.activities,
+            dateRange: { from: data.from, to: data.to },
+            count: data.count
           });
         } catch (error) {
-          console.error("[Calendar Tool] Error fetching appointments:", error);
+          console.error("[Calendar Tool] Error fetching activities:", error);
           return JSON.stringify({ 
-            error: `Failed to fetch appointments: ${error.message}` 
+            error: `Failed to fetch calendar activities: ${error.message}` 
           });
         }
       },
       {
-        name: "get_appointments",
-        description: "Fetch calendar appointments. Use when user asks about meetings, appointments, or calendar events.",
+        name: "get_calendar_activities",
+        description: "Fetch calendar activities (appointments, meetings, events) with optional date range filtering. Returns activities in native BSA format with Type, Activity, and Attendees objects.",
         schema: z.object({
-          limit: z.number().optional().describe("Maximum number of appointments to return"),
-          offset: z.number().optional().describe("Number of appointments to skip")
+          startDate: z.string().optional().describe("Start date in YYYY-MM-DD format (defaults to current month)"),
+          endDate: z.string().optional().describe("End date in YYYY-MM-DD format (defaults to current month)"),
+          includeAttendees: z.boolean().optional().describe("Whether to include attendees in response (default true)")
         })
       }
     ),
     
-    // Tool 2: Search appointments by date range
+    // Tool 2: Get activity attendees with optional contact details
     tool(
-      async ({ startDate, endDate }) => {
+      async ({ activityId, startDate, endDate, withContactDetails }) => {
         try {
-          // Validate date formats
-          const startDateObj = new Date(startDate);
-          const endDateObj = new Date(endDate);
-          if (isNaN(startDateObj.getTime()) || isNaN(endDateObj.getTime())) {
+          // Build search windows: provided dates, current month, then +/- 3 months
+          const searchWindows = buildSearchWindows(startDate, endDate);
+          
+          let activity = null;
+          for (const window of searchWindows) {
+            const data = await getCalendarActivities(passKey, orgId, {
+              from: window.from,
+              to: window.to,
+              includeAttendees: true
+            });
+            activity = (data.activities || []).find(a => a?.Activity?.Id === activityId);
+            if (activity) break;
+          }
+          
+          if (!activity) {
             return JSON.stringify({ 
-              error: "Invalid date format. Please use YYYY-MM-DD format.",
-              example: "startDate: '2025-09-01', endDate: '2025-09-30'"
+              error: "Activity not found in searched date ranges",
+              activityId,
+              searchedWindows: searchWindows.length
+            });
+          }
+
+          const attendees = activity.Attendees || {};
+          const result = {
+            activityId,
+            attendees: {
+              ContactIds: attendees.ContactIds || [],
+              UserIds: attendees.UserIds || [],
+              CompanyIds: attendees.CompanyIds || []
+            }
+          };
+
+          if (withContactDetails && attendees.ContactIds?.length > 0) {
+            const contacts = await getContactsByIds(passKey, orgId, attendees.ContactIds, false);
+            result.contacts = contacts;
+          }
+
+          return JSON.stringify(result);
+        } catch (error) {
+          return JSON.stringify({ 
+            error: `Failed to fetch activity attendees: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "get_activity_attendees",
+        description: "Get attendees for a specific calendar activity. Returns ContactIds, UserIds, and CompanyIds. Optionally fetches full contact details.",
+        schema: z.object({
+          activityId: z.string().describe("The activity/appointment ID"),
+          startDate: z.string().optional().describe("Start date in YYYY-MM-DD for search window"),
+          endDate: z.string().optional().describe("End date in YYYY-MM-DD for search window"),
+          withContactDetails: z.boolean().optional().describe("Fetch full contact details (default false)")
+        })
+      }
+    ),
+    
+    // Tool 3: Get activity details by ID
+    tool(
+      async ({ activityId, startDate, endDate }) => {
+        try {
+          // Build search windows: provided dates, current month, then +/- 3 months
+          const searchWindows = buildSearchWindows(startDate, endDate);
+          
+          let activity = null;
+          for (const window of searchWindows) {
+            const data = await getCalendarActivities(passKey, orgId, {
+              from: window.from,
+              to: window.to,
+              includeAttendees: true
+            });
+            activity = (data.activities || []).find(a => a?.Activity?.Id === activityId);
+            if (activity) break;
+          }
+          
+          if (!activity) {
+            return JSON.stringify({ 
+              error: "Activity not found in searched date ranges",
+              activityId,
+              searchedWindows: searchWindows.length
             });
           }
           
-          // Fetch and filter appointments by date
-          const response = await getAppointments(passKey, orgId);
-          const filtered = response.appointments?.filter(apt => {
-            const aptDate = new Date(apt.StartTime);
-            return aptDate >= startDateObj && aptDate <= endDateObj;
-          });
-          
+          // Return the full activity in native BSA format
           return JSON.stringify({
-            dateRange: { startDate, endDate },
-            count: filtered?.length || 0,
-            appointments: filtered?.slice(0, 10)
+            activity,
+            formattedDates: {
+              start: activity.Activity?.StartTime ? new Date(activity.Activity.StartTime).toLocaleString() : null,
+              end: activity.Activity?.EndTime ? new Date(activity.Activity.EndTime).toLocaleString() : null
+            }
           });
         } catch (error) {
           return JSON.stringify({ 
-            error: `Failed to search appointments: ${error.message}` 
+            error: `Failed to fetch activity details: ${error.message}` 
           });
         }
       },
       {
-        name: "search_appointments_by_date",
-        description: "Search appointments by date range. Use for queries about specific dates or time periods.",
+        name: "get_activity_details",
+        description: "Get detailed information about a specific calendar activity by ID. Returns the full activity object with Type, Activity, and Attendees.",
         schema: z.object({
-          startDate: z.string().describe("Start date in YYYY-MM-DD format"),
-          endDate: z.string().describe("End date in YYYY-MM-DD format")
+          activityId: z.string().describe("The activity/appointment ID"),
+          startDate: z.string().optional().describe("Start date in YYYY-MM-DD for search window"),
+          endDate: z.string().optional().describe("End date in YYYY-MM-DD for search window")
         })
-      }
-    ),
-    
-    // Tool 3: Get appointment contacts
-    tool(
-      async ({ appointmentId }) => {
-        try {
-          const contacts = await getAppointmentContacts(passKey, orgId, appointmentId);
-          return JSON.stringify({
-            appointmentId,
-            contacts,
-            count: contacts.length
-          });
-        } catch (error) {
-          return JSON.stringify({ 
-            error: `Failed to fetch appointment contacts: ${error.message}` 
-          });
-        }
-      },
-      {
-        name: "get_appointment_contacts",
-        description: "Get contacts linked to a specific appointment. Use when user asks who is attending a meeting.",
-        schema: z.object({
-          appointmentId: z.string().describe("The appointment ID to get contacts for")
-        })
-      }
-    ),
-    
-    // Tool 4: Get appointment details
-    tool(
-      async ({ appointmentId }) => {
-        try {
-          const response = await getAppointments(passKey, orgId);
-          const appointment = response.appointments?.find(apt => apt.Id === appointmentId);
-          
-          if (!appointment) {
-            return JSON.stringify({ 
-              error: "Appointment not found",
-              appointmentId 
-            });
-          }
-          
-          return JSON.stringify({
-            appointment,
-            formattedDate: new Date(appointment.StartTime).toLocaleString(),
-            formattedEndDate: new Date(appointment.EndTime).toLocaleString()
-          });
-        } catch (error) {
-          return JSON.stringify({ 
-            error: `Failed to fetch appointment details: ${error.message}` 
-          });
-        }
-      },
-      {
-        name: "get_appointment_details",
-        description: "Get detailed information about a specific appointment by ID.",
-        schema: z.object({
-          appointmentId: z.string().describe("The appointment ID to get details for")
-        })
-      }
-    ),
-    
-    // Tool 5: Get organizations
-    tool(
-      async () => {
-        try {
-          const orgs = await fetchOrganizations(passKey);
-          return JSON.stringify({
-            organizations: orgs,
-            count: orgs.length
-          });
-        } catch (error) {
-          return JSON.stringify({ 
-            error: `Failed to fetch organizations: ${error.message}` 
-          });
-        }
-      },
-      {
-        name: "get_organizations",
-        description: "List available organizations. Use when user needs to select an organization.",
-        schema: z.object({})
       }
     )
   ];
@@ -1190,7 +1245,18 @@ async function createCalendarAgent(passKey, orgId) {
   const tools = createCalendarTools(tool, z, passKey, orgId);
   
   const prompt = ChatPromptTemplate.fromMessages([
-    ["system", "You are a helpful calendar assistant. Use the available tools to answer questions about appointments, meetings, and schedules. Be concise and informative."],
+    ["system", `You are a helpful calendar assistant. Use the available tools to answer questions about calendar activities, appointments, meetings, and schedules.
+
+When working with calendar data:
+- Activities are returned in an array with each item containing:
+  - Type: Usually "Appointment" for calendar events
+  - Activity: Object with Id, Subject, StartTime, EndTime, Location, Description, and other metadata
+  - Attendees: Object with ContactIds (array), UserIds (array), and CompanyIds (array)
+- Use get_calendar_activities to fetch activities for a date range
+- Use get_activity_details to get full information about a specific activity
+- Use get_activity_attendees to see who is attending an activity
+
+Be concise and informative in your responses.`],
     ["human", "{input}"],
     ["placeholder", "{agent_scratchpad}"]
   ]);

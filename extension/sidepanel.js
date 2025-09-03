@@ -437,6 +437,36 @@ async function handleSendMessage() {
   }
 }
 
+function renderMarkdown(text) {
+  try {
+    // Configure marked options for better formatting
+    marked.setOptions({
+      breaks: true, // Convert line breaks to <br>
+      gfm: true, // GitHub Flavored Markdown
+      headerIds: false, // Don't add IDs to headers
+      mangle: false, // Don't mangle email addresses
+    });
+    
+    // Parse markdown to HTML
+    const rawHtml = marked.parse(text);
+    
+    // Sanitize HTML to prevent XSS
+    const cleanHtml = DOMPurify.sanitize(rawHtml, {
+      ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'strong', 'em', 
+                     'ul', 'ol', 'li', 'a', 'code', 'pre', 'blockquote', 'hr'],
+      ALLOWED_ATTR: ['href', 'target', 'rel'],
+      FORCE_BODY: true,
+      ADD_ATTR: ['target'], // Allow target attribute for links
+    });
+    
+    return cleanHtml;
+  } catch (error) {
+    console.error('[MARKDOWN] Parsing error:', error);
+    // Fallback to escaped text if parsing fails
+    return escapeHtml(text);
+  }
+}
+
 function addMessageToChat(text, isUser = false) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
@@ -445,13 +475,11 @@ function addMessageToChat(text, isUser = false) {
   bubbleDiv.className = 'message-bubble';
   
   // Process text for display
-  if (!isUser && text.includes('\n')) {
-    // Format multi-line responses
-    bubbleDiv.innerHTML = text
-      .split('\n')
-      .map(line => `<p>${escapeHtml(line)}</p>`)
-      .join('');
+  if (!isUser) {
+    // Render markdown for assistant messages
+    bubbleDiv.innerHTML = renderMarkdown(text);
   } else {
+    // User messages remain as plain text
     bubbleDiv.textContent = text;
   }
   

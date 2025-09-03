@@ -1118,62 +1118,43 @@ function createCalendarTools(tool, z, passKey, orgId) {
       }
     ),
     
-    // Tool 2: Get activity attendees with optional contact details
+    // Tool 2: Get contact details by IDs
     tool(
-      async ({ activityId, startDate, endDate, withContactDetails }) => {
+      async ({ contactIds, includeExtendedProperties }) => {
         try {
-          // Build search windows: provided dates, current month, then +/- 3 months
-          const searchWindows = buildSearchWindows(startDate, endDate);
-          
-          let activity = null;
-          for (const window of searchWindows) {
-            const data = await getCalendarActivities(passKey, orgId, {
-              from: window.from,
-              to: window.to,
-              includeAttendees: true
-            });
-            activity = (data.activities || []).find(a => a?.Activity?.Id === activityId);
-            if (activity) break;
-          }
-          
-          if (!activity) {
+          if (!contactIds || contactIds.length === 0) {
             return JSON.stringify({ 
-              error: "Activity not found in searched date ranges",
-              activityId,
-              searchedWindows: searchWindows.length
+              error: "No contact IDs provided",
+              contacts: [],
+              count: 0
             });
           }
-
-          const attendees = activity.Attendees || {};
-          const result = {
-            activityId,
-            attendees: {
-              ContactIds: attendees.ContactIds || [],
-              UserIds: attendees.UserIds || [],
-              CompanyIds: attendees.CompanyIds || []
-            }
-          };
-
-          if (withContactDetails && attendees.ContactIds?.length > 0) {
-            const contacts = await getContactsByIds(passKey, orgId, attendees.ContactIds, false);
-            result.contacts = contacts;
-          }
-
-          return JSON.stringify(result);
+          
+          const contacts = await getContactsByIds(
+            passKey, 
+            orgId, 
+            contactIds, 
+            includeExtendedProperties || false
+          );
+          
+          return JSON.stringify({
+            contacts,
+            count: contacts.length
+          });
         } catch (error) {
           return JSON.stringify({ 
-            error: `Failed to fetch activity attendees: ${error.message}` 
+            error: `Failed to fetch contacts: ${error.message}`,
+            contacts: [],
+            count: 0
           });
         }
       },
       {
-        name: "get_activity_attendees",
-        description: "Get attendees for a specific calendar activity. Returns ContactIds, UserIds, and CompanyIds. Optionally fetches full contact details.",
+        name: "get_contact_details",
+        description: "Fetch contact details for given contact IDs using the getMultiple endpoint. Use this after getting ContactIds from appointments.",
         schema: z.object({
-          activityId: z.string().describe("The activity/appointment ID"),
-          startDate: z.string().optional().describe("Start date in YYYY-MM-DD for search window"),
-          endDate: z.string().optional().describe("End date in YYYY-MM-DD for search window"),
-          withContactDetails: z.boolean().optional().describe("Fetch full contact details (default false)")
+          contactIds: z.array(z.string()).describe("Array of contact IDs to fetch"),
+          includeExtendedProperties: z.boolean().optional().describe("Include custom properties (default false)")
         })
       }
     ),
@@ -1252,9 +1233,22 @@ When working with calendar data:
   - Type: Usually "Appointment" for calendar events
   - Activity: Object with Id, Subject, StartTime, EndTime, Location, Description, and other metadata
   - Attendees: Object with ContactIds (array), UserIds (array), and CompanyIds (array)
-- Use get_calendar_activities to fetch activities for a date range
-- Use get_activity_details to get full information about a specific activity
-- Use get_activity_attendees to see who is attending an activity
+
+IMPORTANT - Be proactive with contact information:
+- When you retrieve appointments that have Attendees with ContactIds, ALWAYS immediately fetch their contact details
+- Use get_contact_details to fetch contact information for all ContactIds found in appointments
+- Present appointment information WITH attendee contact details together in your response
+- Don't wait for the user to ask about attendees - provide this information proactively
+
+Example workflow:
+1. User asks about appointments → Use get_calendar_activities
+2. See ContactIds in Attendees → Immediately use get_contact_details with those IDs
+3. Response includes both appointment details AND attendee names, emails, phone numbers
+
+Available tools:
+- get_calendar_activities: Fetch activities for a date range
+- get_contact_details: Fetch contact information for given contact IDs
+- get_activity_details: Get full information about a specific activity
 
 Be concise and informative in your responses.`],
     ["human", "{input}"],

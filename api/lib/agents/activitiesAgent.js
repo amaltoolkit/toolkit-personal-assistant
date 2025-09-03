@@ -473,9 +473,58 @@ async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependenc
   });
 }
 
+// Create Activities Node for LangGraph integration
+async function createActivitiesNode(passKey, orgId, timeZone = "UTC", dependencies) {
+  return async (state) => {
+    // Extract the user query from state
+    const messages = state.messages || [];
+    const userMessage = messages.find(m => m.role === 'user' || m.type === 'human');
+    
+    if (!userMessage) {
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: "No user query found for activities agent",
+          metadata: { agent: "activities", error: true }
+        }],
+        next: "__end__"
+      };
+    }
+    
+    const query = typeof userMessage === 'string' ? userMessage : userMessage.content;
+    
+    try {
+      // Create and invoke the activities agent
+      const agent = await createActivitiesAgent(passKey, orgId, timeZone, dependencies);
+      const result = await agent.invoke({ input: query });
+      
+      // Add the response to state
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: result.output,
+          metadata: { agent: "activities" }
+        }],
+        next: "__end__"
+      };
+    } catch (error) {
+      console.error("[Activities Node] Error:", error);
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: `Error in activities agent: ${error.message}`,
+          metadata: { agent: "activities", error: true }
+        }],
+        next: "__end__"
+      };
+    }
+  };
+}
+
 // Module exports
 module.exports = {
   createActivitiesAgent,
+  createActivitiesNode,
   createActivitiesTools,
   getActivities,
   getContactsByIds,

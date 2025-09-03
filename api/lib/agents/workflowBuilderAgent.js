@@ -624,9 +624,58 @@ async function createWorkflowBuilderAgent(passKey, orgId, dependencies) {
   });
 }
 
+// Create Workflow Node for LangGraph integration
+async function createWorkflowNode(passKey, orgId, dependencies) {
+  return async (state) => {
+    // Extract the user query from state
+    const messages = state.messages || [];
+    const userMessage = messages.find(m => m.role === 'user' || m.type === 'human');
+    
+    if (!userMessage) {
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: "No user query found for workflow agent",
+          metadata: { agent: "workflow", error: true }
+        }],
+        next: "__end__"
+      };
+    }
+    
+    const query = typeof userMessage === 'string' ? userMessage : userMessage.content;
+    
+    try {
+      // Create and invoke the workflow agent
+      const agent = await createWorkflowBuilderAgent(passKey, orgId, dependencies);
+      const result = await agent.invoke({ input: query });
+      
+      // Add the response to state
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: result.output,
+          metadata: { agent: "workflow" }
+        }],
+        next: "__end__"
+      };
+    } catch (error) {
+      console.error("[Workflow Node] Error:", error);
+      return {
+        messages: [...messages, {
+          role: "assistant",
+          content: `Error in workflow agent: ${error.message}`,
+          metadata: { agent: "workflow", error: true }
+        }],
+        next: "__end__"
+      };
+    }
+  };
+}
+
 // Module exports
 module.exports = {
   createWorkflowBuilderAgent,
+  createWorkflowNode,
   createWorkflowTools,
   createProcess,
   addProcessStep,

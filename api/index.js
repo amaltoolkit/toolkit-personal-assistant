@@ -624,6 +624,9 @@ app.get("/api/orgs", async (req, res) => {
   }
 });
 
+// Import date parser for natural language date queries
+const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
+
 // LangChain Calendar Agent implementation
 
 // Fetch calendar activities (appointments) using recommended calendar endpoint
@@ -705,12 +708,22 @@ async function getContactsByIds(passKey, orgId, contactIds = [], includeExtended
 
 
 // Define Calendar Agent Tools using tool function with Zod
-function createCalendarTools(tool, z, passKey, orgId) {
+function createCalendarTools(tool, z, passKey, orgId, timeZone = 'UTC') {
   return [
     // Tool 1: Get calendar activities with optional date filtering
     tool(
-      async ({ startDate, endDate, includeAttendees }) => {
+      async ({ startDate, endDate, includeAttendees, dateQuery }) => {
         try {
+          // Handle natural language date queries
+          if (dateQuery && !startDate && !endDate) {
+            const parsed = parseDateQuery(dateQuery, timeZone);
+            if (parsed) {
+              console.log("[Calendar Tool] Parsed date query:", dateQuery, "=>", parsed);
+              startDate = parsed.startDate;
+              endDate = parsed.endDate;
+            }
+          }
+          
           // Normalize and expand single-day queries to a +/- 1 day window to match BSA API behavior
           const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
           const addDays = (ymd, days) => {
@@ -736,7 +749,7 @@ function createCalendarTools(tool, z, passKey, orgId) {
             effectiveTo = addDays(effectiveTo, +1);
           }
 
-          console.log("[Calendar Tool] get_calendar_activities args:", { startDate, endDate, includeAttendees, effectiveFrom, effectiveTo });
+          console.log("[Calendar Tool] get_calendar_activities args:", { startDate, endDate, dateQuery, includeAttendees, effectiveFrom, effectiveTo });
 
           const data = await getCalendarActivities(passKey, orgId, {
             from: effectiveFrom,
@@ -758,10 +771,11 @@ function createCalendarTools(tool, z, passKey, orgId) {
       },
       {
         name: "get_calendar_activities",
-        description: "Fetch calendar activities (appointments, meetings, events) with optional date range filtering. Returns activities in native BSA format with Type, Activity, and Attendees objects.",
+        description: "Fetch calendar activities (appointments, meetings, events) with date range filtering. Supports natural language dates like 'this week', 'next month', 'last 7 days', etc. Returns activities in native BSA format with Type, Activity, and Attendees objects.",
         schema: z.object({
-          startDate: z.string().optional().describe("Start date in YYYY-MM-DD format (defaults to current month)"),
-          endDate: z.string().optional().describe("End date in YYYY-MM-DD format (defaults to current month)"),
+          startDate: z.string().optional().describe("Start date in YYYY-MM-DD format"),
+          endDate: z.string().optional().describe("End date in YYYY-MM-DD format"),
+          dateQuery: z.string().optional().describe("Natural language date query like 'this week', 'next month', 'last 7 days', 'this quarter', etc."),
           includeAttendees: z.boolean().optional().describe("Whether to include attendees in response (default true)")
         })
       }
@@ -821,7 +835,7 @@ async function createCalendarAgent(passKey, orgId, timeZone = "UTC") {
   // Use cached LLM client for better performance
   const llm = await getLLMClient();
   
-  const tools = createCalendarTools(tool, z, passKey, orgId);
+  const tools = createCalendarTools(tool, z, passKey, orgId, timeZone);
   
   // Get current date/time for context
   const now = new Date();
@@ -847,17 +861,25 @@ async function createCalendarAgent(passKey, orgId, timeZone = "UTC") {
 
 You are a helpful calendar assistant. Use the available tools to answer questions about calendar activities, appointments, meetings, and schedules.
 
-IMPORTANT: Use the current date and time provided above to correctly interpret relative date references like "today", "tomorrow", "next week", etc. Always interpret dates in the user's time zone (${timeZone}).
+IMPORTANT: Use the current date and time provided above to correctly interpret relative date references. Always interpret dates in the user's time zone (${timeZone}).
+
+NATURAL LANGUAGE DATE SUPPORT:
+The calendar tool now supports natural language date queries. You can use the dateQuery parameter with patterns like:
+- Single days: "today", "tomorrow", "yesterday"
+- Weeks: "this week", "last week", "next week" (Monday-Sunday)
+- Months: "this month", "last month", "next month"
+- Quarters: "this quarter", "last quarter", "next quarter"
+- Years: "this year", "last year", "next year"
+- Relative days: "next 7 days", "past 3 days"
+- Weekends: "this weekend", "last weekend", "next weekend"
+- Specific weekdays: "this Monday", "next Friday", "last Tuesday"
 
 CRITICAL RULES FOR DATE QUERIES:
-- When the user references a specific day (e.g., "today", "tomorrow", "next Friday"), compute the exact YYYY-MM-DD for that day in ${timeZone}.
-- Then call get_calendar_activities with startDate and endDate set to that day (same YYYY-MM-DD for both) unless the user asked for a range.
- - Then call get_calendar_activities with startDate and endDate set to that day (same YYYY-MM-DD for both). Internally, the tool will expand this to a +/- 1 day window to ensure the BSA API returns the day’s appointments.
-- Do not answer from memory. Always use get_calendar_activities to verify appointments.
-- Present times to the user in ${timeZone}.
- - If the question includes both a relative term (e.g., "tomorrow") and an explicit calendar date (e.g., "September 4th"), treat the explicit calendar date as authoritative and ignore the relative term if they conflict.
- - In your response, clearly state the resolved date (YYYY-MM-DD) and ensure the heading and the tool call use the same date.
- - If the intent is ambiguous after applying the above rule, ask a brief clarifying question before calling tools.
+- When the user mentions a date pattern like those above, pass it directly to the dateQuery parameter
+- The tool will automatically convert these to proper date ranges
+- For specific dates in YYYY-MM-DD format, use startDate/endDate parameters
+- Do not answer from memory. Always use get_calendar_activities to verify appointments
+- Present times to the user in ${timeZone}
 
 When working with calendar data:
 - Activities are returned in an array with each item containing:

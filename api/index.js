@@ -1016,42 +1016,6 @@ async function getCalendarActivities(passKey, orgId, options = {}) {
 }
 
 
-// Helper function to build search windows for finding activities by ID
-function buildSearchWindows(startDate, endDate) {
-  const windows = [];
-  const toDateStr = (d) => d.toISOString().slice(0, 10);
-  const firstOf = (y, m) => new Date(Date.UTC(y, m, 1));
-  const endOf = (y, m) => new Date(Date.UTC(y, m + 1, 0));
-  const now = new Date();
-  const currentYear = now.getUTCFullYear();
-  const currentMonth = now.getUTCMonth();
-  
-  // Add user-provided window if both dates given
-  if (startDate && endDate) {
-    windows.push({ from: startDate, to: endDate });
-  }
-  
-  // Add current month
-  windows.push({ 
-    from: toDateStr(firstOf(currentYear, currentMonth)), 
-    to: toDateStr(endOf(currentYear, currentMonth)) 
-  });
-  
-  // Add surrounding months (±3 months)
-  for (let delta = -3; delta <= 3; delta++) {
-    if (delta === 0) continue; // Skip current month (already added)
-    const targetMonth = currentMonth + delta;
-    const targetYear = currentYear + Math.floor(targetMonth / 12);
-    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
-    windows.push({ 
-      from: toDateStr(firstOf(targetYear, normalizedMonth)), 
-      to: toDateStr(endOf(targetYear, normalizedMonth)) 
-    });
-  }
-  
-  return windows;
-}
-
 // Batch fetch contacts by IDs using getMultiple.json
 async function getContactsByIds(passKey, orgId, contactIds = [], includeExtendedProperties = false) {
   if (!Array.isArray(contactIds) || contactIds.length === 0) return [];
@@ -1151,61 +1115,10 @@ function createCalendarTools(tool, z, passKey, orgId) {
       },
       {
         name: "get_contact_details",
-        description: "Fetch contact details for given contact IDs using the getMultiple endpoint. Use this after getting ContactIds from appointments.",
+        description: "Fetch contact details for one or more contact IDs using the getMultiple endpoint. Works with a single ID or array of IDs. Use this after getting ContactIds from appointments.",
         schema: z.object({
-          contactIds: z.array(z.string()).describe("Array of contact IDs to fetch"),
+          contactIds: z.array(z.string()).describe("Array of contact IDs to fetch (can be a single ID in an array, e.g., ['single-id'])"),
           includeExtendedProperties: z.boolean().optional().describe("Include custom properties (default false)")
-        })
-      }
-    ),
-    
-    // Tool 3: Get activity details by ID
-    tool(
-      async ({ activityId, startDate, endDate }) => {
-        try {
-          // Build search windows: provided dates, current month, then +/- 3 months
-          const searchWindows = buildSearchWindows(startDate, endDate);
-          
-          let activity = null;
-          for (const window of searchWindows) {
-            const data = await getCalendarActivities(passKey, orgId, {
-              from: window.from,
-              to: window.to,
-              includeAttendees: true
-            });
-            activity = (data.activities || []).find(a => a?.Activity?.Id === activityId);
-            if (activity) break;
-          }
-          
-          if (!activity) {
-            return JSON.stringify({ 
-              error: "Activity not found in searched date ranges",
-              activityId,
-              searchedWindows: searchWindows.length
-            });
-          }
-          
-          // Return the full activity in native BSA format
-          return JSON.stringify({
-            activity,
-            formattedDates: {
-              start: activity.Activity?.StartTime ? new Date(activity.Activity.StartTime).toLocaleString() : null,
-              end: activity.Activity?.EndTime ? new Date(activity.Activity.EndTime).toLocaleString() : null
-            }
-          });
-        } catch (error) {
-          return JSON.stringify({ 
-            error: `Failed to fetch activity details: ${error.message}` 
-          });
-        }
-      },
-      {
-        name: "get_activity_details",
-        description: "Get detailed information about a specific calendar activity by ID. Returns the full activity object with Type, Activity, and Attendees.",
-        schema: z.object({
-          activityId: z.string().describe("The activity/appointment ID"),
-          startDate: z.string().optional().describe("Start date in YYYY-MM-DD for search window"),
-          endDate: z.string().optional().describe("End date in YYYY-MM-DD for search window")
         })
       }
     )
@@ -1245,10 +1158,13 @@ Example workflow:
 2. See ContactIds in Attendees → Immediately use get_contact_details with those IDs
 3. Response includes both appointment details AND attendee names, emails, phone numbers
 
-Available tools:
-- get_calendar_activities: Fetch activities for a date range
-- get_contact_details: Fetch contact information for given contact IDs
-- get_activity_details: Get full information about a specific activity
+Available tools (2 total):
+- get_calendar_activities: Fetch activities for a date range or search for specific appointments
+- get_contact_details: Fetch contact information for one or more contact IDs (works with single ID too)
+
+Examples for get_contact_details:
+- Single contact: contactIds: ["40071328-2515-47da-8f17-c13d0c9b3162"]
+- Multiple contacts: contactIds: ["id1", "id2", "id3"]
 
 Be concise and informative in your responses.`],
     ["human", "{input}"],

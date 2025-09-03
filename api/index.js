@@ -825,24 +825,27 @@ Examples for get_contact_details:
 - Multiple contacts: contactIds: ["id1", "id2", "id3"]
 
 IMPORTANT OUTPUT FORMATTING:
-- Use PLAIN TEXT only - no markdown syntax
-- DO NOT use ** for bold, ### for headers, or - for bullet points
-- Use simple formatting:
-  * For headers, just use capital letters or write "APPOINTMENT DETAILS:"
-  * For lists, use numbers (1. 2. 3.) or simple dashes
-  * For emphasis, just use CAPS or write normally
-  * Separate sections with blank lines for readability
+- Use clean, well-structured markdown formatting
+- Use ## for main headers, ### for subheaders
+- Use **bold** for emphasis on important information
+- Use bullet points (-) or numbered lists (1. 2. 3.) for multiple items
+- Keep formatting clean and professional
+- Separate sections with blank lines for readability
 
 Example of good formatting:
-APPOINTMENT DETAILS
-Subject: Team Meeting
-Date: March 15, 2024
-Time: 2:00 PM
-Location: Conference Room A
+## Appointment Details
+**Subject:** Team Meeting  
+**Date:** March 15, 2024  
+**Time:** 2:00 PM  
+**Location:** Conference Room A
 
-ATTENDEES
-1. John Smith - john@example.com - (555) 123-4567
-2. Jane Doe - jane@example.com - (555) 987-6543
+### Attendees
+1. **John Smith**
+   - Email: john@example.com
+   - Phone: (555) 123-4567
+2. **Jane Doe**
+   - Email: jane@example.com
+   - Phone: (555) 987-6543
 
 Be concise and informative in your responses.`],
     ["human", "{input}"],

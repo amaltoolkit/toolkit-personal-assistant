@@ -1,38 +1,13 @@
-// ============================================
-// DEPENDENCIES AND IMPORTS
-// ============================================
-// Express.js - Main web framework for creating the backend server
-// This handles all HTTP requests from the Chrome extension
+// Dependencies
 const express = require("express");
-
-// Axios - HTTP client for making API calls to BlueSquareApps
-// Used for OAuth token exchange and all BSA API interactions
 const axios = require("axios");
-
-// Crypto - Node.js built-in module for cryptographic operations
-// Used to generate secure random state tokens for OAuth flow
 const crypto = require("crypto");
-
-// CORS - Cross-Origin Resource Sharing middleware
-// Allows the Chrome extension to make requests to this backend
 const cors = require("cors");
-
-// Cookie Parser - Middleware to parse cookies from requests
-// Currently used for potential cookie-based session management
-const cookieParser = require("cookie-parser");
-
-// Supabase Client - JavaScript client for Supabase database
-// Used to store OAuth sessions and PassKeys securely
 const { createClient } = require("@supabase/supabase-js");
-
-// HTTP/HTTPS modules for keep-alive agents
 const http = require('http');
 const https = require('https');
 
-// ============================================
-// PERFORMANCE OPTIMIZATIONS
-// ============================================
-// Keep-alive agents for connection reuse
+// Performance optimizations
 const keepAliveAgent = new http.Agent({
   keepAlive: true,
   maxSockets: 10
@@ -46,11 +21,11 @@ const keepAliveHttpsAgent = new https.Agent({
 const modulePromises = {};
 const moduleCache = {};
 
-// Enhanced axios config
+// Axios config with keep-alive for connection reuse
 const axiosConfig = {
+  timeout: 10000,
   httpAgent: keepAliveAgent,
-  httpsAgent: keepAliveHttpsAgent,
-  timeout: 10000
+  httpsAgent: keepAliveHttpsAgent
 };
 
 // Cached LLM client getter
@@ -70,81 +45,29 @@ async function getLLMClient() {
   return moduleCache.llm;
 }
 
-// ============================================
-// EXPRESS APP INITIALIZATION
-// ============================================
-// Create the Express application instance
+// Express app initialization
 const app = express();
-
-// Middleware to parse JSON request bodies
-// Required for handling POST requests with JSON payloads
 app.use(express.json());
-
-// Middleware to parse cookies from incoming requests
-// Enables reading and setting cookies for session management
-app.use(cookieParser());
-
-// Configure CORS to allow requests from any origin
-// origin: true - Reflects the request origin in the CORS response
-// credentials: true - Allows cookies and authentication headers
 app.use(cors({ origin: true, credentials: true }));
 
-// ============================================
-// SUPABASE DATABASE CONNECTION
-// ============================================
-// Initialize Supabase client with service role key
-// Service role key provides full database access (bypasses Row Level Security)
-// This key should NEVER be exposed to the frontend
-// Used to store OAuth sessions and PassKeys in the database
+// Supabase database connection
+// Service role key provides full database access - NEVER expose to frontend
 const supabase = createClient(
-  process.env.SUPABASE_URL,           // Supabase project URL
-  process.env.SUPABASE_SERVICE_ROLE_KEY  // Service role key for full access
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ============================================
-// ENVIRONMENT VARIABLES AND CONFIGURATION
-// ============================================
-// BlueSquareApps (BSA) OAuth and API configuration
-// These values are stored in environment variables for security
-
-// Base URL for all BlueSquareApps API endpoints
-// Example: https://rc.bluesquareapps.com
+// Environment variables
 const BSA_BASE = process.env.BSA_BASE;
-
-// OAuth 2.0 client credentials provided by BlueSquareApps
-// Client ID identifies this application to BSA
 const BSA_CLIENT_ID = process.env.BSA_CLIENT_ID;
-
-// Client secret for OAuth authentication (keep secure!)
-// Used during the OAuth token exchange process
 const BSA_CLIENT_SECRET = process.env.BSA_CLIENT_SECRET;
-
-// Redirect URI registered with BSA for OAuth callbacks
-// Must match exactly what's configured in BSA OAuth settings
-// Example: https://yourapp.vercel.app/auth/callback
 const BSA_REDIRECT_URI = process.env.BSA_REDIRECT_URI;
 
-// [REMOVED: APP_BASE_URL - Not used in code, kept in docs for deployment reference]
 
-// ============================================
-// OAUTH ENDPOINT 1: START AUTHENTICATION FLOW
-// ============================================
-// This endpoint initiates the OAuth 2.0 authorization flow with BlueSquareApps
-// Called by the Chrome extension when user clicks "Login"
-// 
-// Flow:
-// 1. Extension sends session_id (unique identifier for this login attempt)
-// 2. Generate cryptographically secure random state token for CSRF protection
-// 3. Store session_id and state in database for later validation
-// 4. Redirect user to BSA OAuth authorization page
-// 5. User will authenticate with BSA and grant permissions
-// 6. BSA will redirect back to our callback endpoint with authorization code
+// OAuth endpoint: Start authentication flow
 app.get("/auth/start", async (req, res) => {
   try {
-    // Extract session_id from query parameters
-    // This is generated by the Chrome extension to track the login session
     const sessionId = req.query.session_id;
-    console.log("[AUTH START] Session ID:", sessionId);
     
     // Validate that session_id was provided
     // Without it, we can't track this OAuth flow
@@ -153,11 +76,8 @@ app.get("/auth/start", async (req, res) => {
       return res.status(400).json({ error: "missing session_id" });
     }
 
-    // Generate a cryptographically secure random state token
-    // This prevents CSRF attacks by ensuring the callback is from our request
-    // 16 bytes = 32 hex characters
+    // Generate CSRF protection token
     const state = crypto.randomBytes(16).toString("hex");
-    console.log("[AUTH START] Generated state:", state);
     
     // Store the session in database for later validation
     // We'll match this when BSA redirects back to our callback
@@ -174,10 +94,7 @@ app.get("/auth/start", async (req, res) => {
       return res.status(500).json({ error: "database error" });
     }
     
-    console.log("[AUTH START] Stored session in database");
-
     // Construct the BSA OAuth authorization URL
-    // This is where we send the user to authenticate
     const authUrl = new URL(`${BSA_BASE}/oauth2/authorize`);
     
     // OAuth 2.0 standard parameters
@@ -186,8 +103,6 @@ app.get("/auth/start", async (req, res) => {
     authUrl.searchParams.set("redirect_uri", BSA_REDIRECT_URI); // Where BSA should redirect after auth
     authUrl.searchParams.set("scope", "openid profile email");  // Permissions we're requesting
     authUrl.searchParams.set("state", state);                   // CSRF protection token
-    
-    console.log("[AUTH START] Redirecting to:", authUrl.toString());
     
     // Redirect the user's browser to BSA's OAuth page
     // User will authenticate there and grant permissions
@@ -198,28 +113,11 @@ app.get("/auth/start", async (req, res) => {
   }
 });
 
-// ============================================
-// OAUTH ENDPOINT 2: HANDLE CALLBACK FROM BSA
-// ============================================
-// This endpoint receives the OAuth callback from BlueSquareApps
-// BSA redirects here after user successfully authenticates
-// 
-// Flow:
-// 1. BSA redirects here with authorization code and state
-// 2. Immediately redirect user to BSA (better UX - no waiting page)
-// 3. Process OAuth token exchange in the background
-// 4. Chrome extension polls /auth/status to detect completion
-//
-// This asynchronous approach prevents the user from seeing a blank page
-// while we perform the token exchange operations
+// OAuth endpoint: Handle callback from BSA
+// Immediately redirects user while processing in background
 app.get("/auth/callback", async (req, res) => {
   try {
-    // Extract OAuth parameters from query string
-    // code: Authorization code from BSA (exchange this for tokens)
-    // state: CSRF protection token (must match what we sent)
     const { code, state } = req.query;
-    console.log("[AUTH CALLBACK] Received code:", code ? "present" : "missing");
-    console.log("[AUTH CALLBACK] Received state:", state);
     
     // Validate required parameters
     // Both code and state are required for secure OAuth flow
@@ -228,9 +126,7 @@ app.get("/auth/callback", async (req, res) => {
       return res.status(400).send("Missing code or state parameter");
     }
 
-    console.log("[AUTH CALLBACK] Redirecting user to BSA, processing in background");
-    
-    // IMPORTANT: Immediately redirect user to BSA main page
+    // Immediately redirect user to BSA main page
     // This provides better UX - user doesn't see a loading page
     // The OAuth processing happens asynchronously in the background
     res.redirect(`${BSA_BASE}`);
@@ -248,28 +144,11 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-// ============================================
-// BACKGROUND OAUTH PROCESSING FUNCTION
-// ============================================
-// This function runs asynchronously after the OAuth callback
-// It performs the critical token exchange operations:
-// 1. Validates the state token for CSRF protection
-// 2. Exchanges authorization code for bearer token
-// 3. Exchanges bearer token for PassKey
-// 4. Stores PassKey in database for future API calls
-//
-// This is the core of the OAuth flow - converting the authorization
-// code into a usable PassKey that can access BSA APIs
+// Background OAuth processing
+// Validates state, exchanges code->token->PassKey, stores in DB
 async function processOAuthCallback(code, state) {
-  console.log("[PROCESS OAUTH] Starting background processing");
   try {
-    // ========================================
-    // STEP 1: VALIDATE STATE TOKEN
-    // ========================================
-    // Retrieve the OAuth session from database using the state token
-    // This validates that the callback is from a request we initiated
-    // and prevents CSRF attacks
-    console.log("[PROCESS OAUTH] Validating state:", state);
+    // Validate state token for CSRF protection
     const { data: rows, error } = await supabase
       .from("oauth_sessions")
       .select("*")
@@ -290,21 +169,11 @@ async function processOAuthCallback(code, state) {
       console.error("[PROCESS OAUTH] Invalid or expired state");
       return;
     }
-    
-    console.log("[PROCESS OAUTH] Found session:", row.session_id);
 
-    // ========================================
-    // STEP 2: EXCHANGE CODE FOR BEARER TOKEN
-    // ========================================
-    // First OAuth exchange: authorization code -> bearer token
-    // This is standard OAuth 2.0 flow
-    // The bearer token is temporary and will be exchanged for a PassKey
-    console.log("[PROCESS OAUTH] Step 1: Exchanging code for bearer token");
+    // Exchange authorization code for bearer token
     let tokenResp;
     try {
-      // BSA's OAuth token endpoint
       const tokenUrl = `${BSA_BASE}/oauth2/token`;
-      console.log("[PROCESS OAUTH] Token URL:", tokenUrl);
       
       // Make POST request to exchange authorization code for bearer token
       // Note: BSA expects application/x-www-form-urlencoded format
@@ -322,7 +191,6 @@ async function processOAuthCallback(code, state) {
           timeout: 10000  // 10 second timeout
         }
       );
-      console.log("[PROCESS OAUTH] Token response received, status:", tokenResp.status);
     } catch (tokenError) {
       // Log detailed error information for debugging
       console.error("[PROCESS OAUTH] Token exchange error:", tokenError.response?.data || tokenError.message);
@@ -330,10 +198,7 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
-    // Extract the bearer token from response
-    // This is a temporary token that we'll exchange for a PassKey
     const bearerToken = tokenResp.data.access_token;
-    console.log("[PROCESS OAUTH] Bearer token:", bearerToken ? "received" : "missing");
     
     // Validate bearer token was received
     if (!bearerToken) {
@@ -341,19 +206,10 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
-    // ========================================
-    // STEP 3: EXCHANGE BEARER TOKEN FOR PASSKEY
-    // ========================================
-    // Second exchange (BSA-specific): bearer token -> PassKey
-    // PassKey is BSA's proprietary token format that's used for all API calls
-    // It expires in 1 hour and can be refreshed using a special endpoint
-    console.log("[PROCESS OAUTH] Step 2: Exchanging bearer token for PassKey");
+    // Exchange bearer token for PassKey (BSA-specific)
     let passKeyResp;
     try {
-      // BSA's PassKey exchange endpoint
-      // This is specific to BlueSquareApps, not standard OAuth
       const passKeyUrl = `${BSA_BASE}/oauth2/passkey`;
-      console.log("[PROCESS OAUTH] PassKey URL:", passKeyUrl);
       
       // Exchange bearer token for PassKey
       // Note: Empty body, authorization via Bearer token header
@@ -368,8 +224,6 @@ async function processOAuthCallback(code, state) {
           timeout: 10000  // 10 second timeout
         }
       );
-      console.log("[PROCESS OAUTH] PassKey response received, status:", passKeyResp.status);
-      console.log("[PROCESS OAUTH] PassKey response data:", passKeyResp.data);
     } catch (passKeyError) {
       // Log detailed error information for debugging
       console.error("[PROCESS OAUTH] PassKey exchange error:", passKeyError.response?.data || passKeyError.message);
@@ -382,9 +236,7 @@ async function processOAuthCallback(code, state) {
     // - Array format: [{ PassKey: "...", Valid: true, ... }]
     // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
     const responseData = Array.isArray(passKeyResp.data) ? passKeyResp.data[0] : passKeyResp.data;
-    // Check both PascalCase 'PassKey' and lowercase 'passkey' field names
     const passKey = responseData?.PassKey || responseData?.passkey;
-    console.log("[PROCESS OAUTH] PassKey:", passKey ? "received" : "missing");
     
     // Validate PassKey was received
     if (!passKey) {
@@ -392,12 +244,7 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
-    // ========================================
-    // STEP 4: STORE PASSKEY IN DATABASE
-    // ========================================
-    // Store the PassKey in Supabase for future API calls
-    // PassKey expires in 1 hour and must be refreshed before expiry
-    console.log("[PROCESS OAUTH] Step 3: Storing PassKey in database");
+    // Store PassKey in database
     
     // Calculate expiry time (1 hour from now)
     // BSA PassKeys have a fixed 1-hour lifetime
@@ -423,69 +270,25 @@ async function processOAuthCallback(code, state) {
       console.error("[PROCESS OAUTH] Storage error details:", JSON.stringify(tokenError));
       return;
     }
-    
-    console.log("[PROCESS OAUTH] PassKey stored successfully");
-    
-    // ========================================
-    // STEP 5: VERIFY STORAGE (DEBUGGING)
-    // ========================================
-    // Read back the stored token to verify it was saved correctly
-    // This helps debug any storage issues
-    const { data: verifyRows, error: verifyError } = await supabase
-      .from("bsa_tokens")
-      .select("*")
-      .eq("session_id", row.session_id)
-      .limit(1);
-    
-    if (verifyError) {
-      console.error("[PROCESS OAUTH] Failed to verify storage:", verifyError);
-    } else if (verifyRows && verifyRows[0]) {
-      // Log verification details for debugging
-      console.log("[PROCESS OAUTH] Verification - Token stored with fields:", Object.keys(verifyRows[0]));
-      console.log("[PROCESS OAUTH] Verification - PassKey exists:", !!verifyRows[0].passkey);
-      console.log("[PROCESS OAUTH] Verification - PassKey length:", verifyRows[0].passkey?.length);
-    }
 
-    // ========================================
-    // STEP 6: MARK OAUTH SESSION AS USED
-    // ========================================
+    // Mark OAuth session as used to prevent replay attacks
     // Update the OAuth session to prevent reuse
     // This prevents replay attacks using the same state token
     await supabase
       .from("oauth_sessions")
-      .update({ used_at: new Date().toISOString() })  // Mark when it was used
+      .update({ used_at: new Date().toISOString() })
       .eq("id", row.id);
-
-    console.log("[PROCESS OAUTH] OAuth flow completed successfully for session:", row.session_id);
   } catch (error) {
     // Catch any unexpected errors in the entire flow
     console.error("[PROCESS OAUTH] Unexpected error:", error);
   }
 }
 
-// ============================================
-// PASSKEY REFRESH HELPER FUNCTION
-// ============================================
-// Refreshes an expired or expiring PassKey using BSA's refresh endpoint
-// PassKeys expire after 1 hour and must be refreshed to maintain access
-// 
-// Process:
-// 1. Retrieve current PassKey from database
-// 2. Use current PassKey to authenticate refresh request
-// 3. Receive new PassKey with fresh 1-hour expiry
-// 4. Update database with new PassKey
-//
-// This function is called automatically when a PassKey has <5 minutes remaining
-// or when an API call fails with 401 (authentication expired)
+// PassKey refresh helper
+// Refreshes expired/expiring PassKeys using BSA's refresh endpoint
 async function refreshPassKey(sessionId) {
-  console.log("[REFRESH_PASSKEY] Starting refresh for session:", sessionId);
-  
   try {
-    // ========================================
-    // STEP 1: RETRIEVE CURRENT PASSKEY
-    // ========================================
-    // Get the existing PassKey from database
-    // We need this to authenticate the refresh request
+    // Get existing PassKey from database
     const { data: rows, error } = await supabase
       .from("bsa_tokens")
       .select("*")
@@ -498,9 +301,7 @@ async function refreshPassKey(sessionId) {
       return null;
     }
     
-    // Extract current PassKey
     const currentPassKey = rows[0].passkey;
-    console.log("[REFRESH_PASSKEY] Current PassKey length:", currentPassKey?.length);
     
     // Validate PassKey exists
     if (!currentPassKey) {
@@ -508,14 +309,8 @@ async function refreshPassKey(sessionId) {
       return null;
     }
     
-    // ========================================
-    // STEP 2: CALL BSA REFRESH ENDPOINT
-    // ========================================
-    // BSA provides a special login endpoint that accepts an existing PassKey
-    // and returns a new one with fresh expiry
-    // This is NOT a standard OAuth refresh - it's BSA-specific
+    // Call BSA refresh endpoint
     const refreshUrl = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`;
-    console.log("[REFRESH_PASSKEY] Calling refresh endpoint:", refreshUrl);
     
     try {
       // Make refresh request using current PassKey
@@ -527,9 +322,6 @@ async function refreshPassKey(sessionId) {
           timeout: 10000  // 10 second timeout
         }
       );
-      
-      console.log("[REFRESH_PASSKEY] Refresh response status:", refreshResp.status);
-      console.log("[REFRESH_PASSKEY] Refresh response keys:", Object.keys(refreshResp.data));
       
       // Extract new PassKey from response
       // BSA may return PassKey in different formats:
@@ -543,14 +335,8 @@ async function refreshPassKey(sessionId) {
         return null;
       }
       
-      console.log("[REFRESH_PASSKEY] New PassKey received, length:", newPassKey.length);
-      
-      // ========================================
-      // STEP 3: UPDATE DATABASE WITH NEW PASSKEY
-      // ========================================
       // Store the new PassKey with fresh 1-hour expiry
       const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
-      console.log("[REFRESH_PASSKEY] Setting new expiry:", expiresAt);
       
       const { error: updateError } = await supabase
         .from("bsa_tokens")
@@ -567,7 +353,6 @@ async function refreshPassKey(sessionId) {
         return null;
       }
       
-      console.log("[REFRESH_PASSKEY] PassKey refreshed and stored successfully");
       return newPassKey;  // Return new PassKey for immediate use
       
     } catch (refreshError) {
@@ -584,26 +369,10 @@ async function refreshPassKey(sessionId) {
   }
 }
 
-// ============================================
-// GET VALID PASSKEY HELPER FUNCTION
-// ============================================
-// Primary function for retrieving a valid PassKey for API calls
-// This function handles automatic refresh when needed
-//
-// Features:
-// 1. Retrieves PassKey from database
-// 2. Checks expiration time
-// 3. Automatically refreshes if <5 minutes remaining
-// 4. Returns valid PassKey ready for API calls
-//
-// This is called by all API endpoints before making BSA requests
-// It ensures we always have a valid, non-expired PassKey
+// Get valid PassKey helper
+// Retrieves PassKey and auto-refreshes if <5 minutes remaining
 async function getValidPassKey(sessionId) {
-  console.log("[GET_PASSKEY] Querying database for session:", sessionId);
   
-  // ========================================
-  // STEP 1: RETRIEVE TOKEN FROM DATABASE
-  // ========================================
   const { data: rows, error } = await supabase
     .from("bsa_tokens")
     .select("*")
@@ -624,45 +393,28 @@ async function getValidPassKey(sessionId) {
   }
   
   const token = rows[0];
-  console.log("[GET_PASSKEY] Token found, fields:", Object.keys(token));
   
-  // ========================================
-  // STEP 2: VALIDATE PASSKEY EXISTS
-  // ========================================
   const passKey = token.passkey;
   if (!passKey) {
     console.error("[GET_PASSKEY] Token exists but passkey field is empty");
-    console.log("[GET_PASSKEY] Token data:", JSON.stringify(token).substring(0, 200));
     return null;
   }
   
-  console.log("[GET_PASSKEY] PassKey found, length:", passKey.length);
-  
-  // ========================================
-  // STEP 3: CHECK EXPIRATION & REFRESH IF NEEDED
-  // ========================================
-  // PassKeys expire after 1 hour
-  // We refresh proactively when <5 minutes remaining to avoid failures
+  // Check expiration and refresh if needed
   if (token.expires_at) {
     const expiry = new Date(token.expires_at);
     const now = new Date();
     const timeLeft = expiry - now;  // Time remaining in milliseconds
     const minutesLeft = Math.floor(timeLeft / 60000);  // Convert to minutes
     
-    console.log("[GET_PASSKEY] PassKey expires at:", token.expires_at);
-    console.log("[GET_PASSKEY] Time remaining (minutes):", minutesLeft);
-    
     // Refresh if less than 5 minutes remaining
     // This prevents API calls from failing due to expired tokens
     if (timeLeft < 5 * 60 * 1000) { // 5 minutes in milliseconds
-      console.log("[GET_PASSKEY] PassKey expiring soon, attempting refresh...");
       
       // Attempt to refresh the PassKey
       const newPassKey = await refreshPassKey(sessionId);
       
       if (newPassKey) {
-        // Refresh successful - return new PassKey
-        console.log("[GET_PASSKEY] Successfully refreshed PassKey");
         return newPassKey;
       } else {
         // Refresh failed - return existing PassKey (might still work)
@@ -670,28 +422,13 @@ async function getValidPassKey(sessionId) {
         return passKey;
       }
     }
-  } else {
-    // No expiry set - this shouldn't happen but handle gracefully
-    console.log("[GET_PASSKEY] No expiry time set for PassKey");
   }
   
   // PassKey is still valid - return it
   return passKey;
 }
 
-// ============================================
-// AUTH STATUS ENDPOINT - FOR POLLING
-// ============================================
-// This endpoint is polled by the Chrome extension to check authentication status
-// After initiating OAuth, the extension polls this to detect when authentication completes
-//
-// Returns:
-// - { ok: true } - Authentication successful, PassKey stored
-// - { ok: true, refreshed: true } - PassKey was expired but successfully refreshed
-// - { ok: false } - Not authenticated or authentication pending
-// - { ok: false, expired: true } - PassKey expired and refresh failed
-//
-// The extension polls this every second until it gets ok: true
+// Auth status endpoint - polled by Chrome extension
 app.get("/auth/status", async (req, res) => {
   try {
     // Extract session ID from query parameters
@@ -700,10 +437,7 @@ app.get("/auth/status", async (req, res) => {
       return res.json({ ok: false, error: "missing session_id" });
     }
     
-    // ========================================
-    // CHECK IF TOKEN EXISTS IN DATABASE
-    // ========================================
-    // Query for token with minimal fields (optimization)
+    // Check if token exists
     const { data: rows, error } = await supabase
       .from("bsa_tokens")
       .select("session_id, expires_at")  // Only select needed fields
@@ -723,18 +457,13 @@ app.get("/auth/status", async (req, res) => {
       return res.json({ ok: false });
     }
     
-    // ========================================
-    // CHECK TOKEN EXPIRATION
-    // ========================================
-    // Verify the token hasn't expired
-    // If expired, attempt to refresh it
+    // Check token expiration
     if (token.expires_at) {
       const expiry = new Date(token.expires_at);
       const now = new Date();
       
       if (expiry < now) {
         // Token has expired - attempt refresh
-        console.log("[AUTH STATUS] Token expired, attempting refresh");
         const newPassKey = await refreshPassKey(sessionId);
         
         if (newPassKey) {
@@ -755,14 +484,8 @@ app.get("/auth/status", async (req, res) => {
   }
 });
 
-// ============================================
-// BSA RESPONSE NORMALIZATION HELPER
-// ============================================
-// BSA APIs return data in an array wrapper format:
-// [{ Results/Organizations/etc: [...], Valid: true, TotalResults: n, ... }]
-// This helper unwraps the array and returns the normalized response
-//
-// Returns: { data: {...}, valid: boolean, error: string|null }
+// BSA response normalization helper
+// Unwraps array format: [{ Results/Organizations/etc: [...], Valid: true, ... }]
 function normalizeBSAResponse(response) {
   try {
     // Handle null/undefined responses
@@ -798,24 +521,9 @@ function normalizeBSAResponse(response) {
   }
 }
 
-// ============================================
-// FETCH ORGANIZATIONS HELPER FUNCTION
-// ============================================
-// Shared helper function to fetch user's organizations from BSA
-// Used by the /api/orgs endpoint
-//
-// BSA Response Format:
-// The API returns: [{ Organizations: [...], Valid: true, TotalResults: n, ... }]
-// Each organization contains:
-// - Id: Unique identifier for the organization
-// - Name: Organization display name
-// - Other metadata fields
-//
-// This function handles the array wrapper and extracts Organizations
+// Fetch organizations helper
 async function fetchOrganizations(passKey) {
-  // BSA endpoint for listing user's organizations
   const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json`;
-  console.log("[FETCH_ORGS] Calling BSA API:", url);
   
   try {
     // Make API call to BSA
@@ -828,13 +536,7 @@ async function fetchOrganizations(passKey) {
       }
     );
     
-    console.log("[FETCH_ORGS] BSA API response status:", resp.status);
-    console.log("[FETCH_ORGS] BSA API raw response:", JSON.stringify(resp.data).substring(0, 200));
-    
-    // ========================================
-    // NORMALIZE AND EXTRACT ORGANIZATIONS
-    // ========================================
-    // BSA returns: [{ Organizations: [...], Valid: true, ... }]
+    // Extract organizations from response
     const normalized = normalizeBSAResponse(resp.data);
     
     // Check if response is valid
@@ -848,7 +550,6 @@ async function fetchOrganizations(passKey) {
     
     // Validate organizations array
     if (Array.isArray(orgsArray)) {
-      console.log("[FETCH_ORGS] Found", orgsArray.length, "organizations");
       return orgsArray;
     } else {
       console.warn("[FETCH_ORGS] Organizations field is not an array:", typeof orgsArray);
@@ -861,27 +562,10 @@ async function fetchOrganizations(passKey) {
   }
 }
 
-// ============================================
-// API ENDPOINT: LIST ORGANIZATIONS
-// ============================================
-// Returns a list of organizations the authenticated user has access to
-// Called by the Chrome extension after successful authentication
-//
-// Request: GET /api/orgs?session_id=...
-// Response: { Organizations: [...] }
-//
-// Each organization contains:
-// - OrganizationId: Unique identifier
-// - Name: Display name
-// - Other metadata from BSA
-//
-// This endpoint handles authentication, automatic PassKey refresh,
-// and retry logic for failed requests
+// API endpoint: List organizations
 app.get("/api/orgs", async (req, res) => {
   try {
-    // Extract session ID from query parameters
     const sessionId = req.query.session_id;
-    console.log("[API/ORGS] Request received with session_id:", sessionId);
     
     // Validate session ID is provided
     if (!sessionId) {
@@ -889,11 +573,7 @@ app.get("/api/orgs", async (req, res) => {
       return res.status(400).json({ error: "missing session_id" });
     }
 
-    // ========================================
-    // RETRIEVE AND VALIDATE PASSKEY
-    // ========================================
     // Get valid PassKey (auto-refreshes if needed)
-    console.log("[API/ORGS] Retrieving PassKey for session:", sessionId);
     const passKey = await getValidPassKey(sessionId);
     
     // Check if user is authenticated
@@ -902,13 +582,7 @@ app.get("/api/orgs", async (req, res) => {
       return res.status(401).json({ error: "not authenticated" });
     }
     
-    console.log("[API/ORGS] PassKey retrieved successfully, length:", passKey.length);
-    
     try {
-      // ========================================
-      // FETCH ORGANIZATIONS FROM BSA
-      // ========================================
-      // Use the shared helper function to get organizations
       const orgs = await fetchOrganizations(passKey);
       
       // Return in the format expected by the frontend
@@ -918,20 +592,14 @@ app.get("/api/orgs", async (req, res) => {
     } catch (apiError) {
       console.error("[API/ORGS] Error fetching organizations:", apiError.message);
       
-      // ========================================
-      // HANDLE 401 UNAUTHORIZED - RETRY LOGIC
-      // ========================================
-      // If we get 401, the PassKey might have just expired
-      // Try refreshing once and retry the request
+      // Handle 401 - retry with refreshed PassKey
       if (apiError.response?.status === 401) {
-        console.log("[API/ORGS] Got 401, attempting to refresh PassKey");
         
         // Attempt to refresh the PassKey
         const newPassKey = await refreshPassKey(sessionId);
         
         if (newPassKey) {
           // Refresh successful - retry the API call
-          console.log("[API/ORGS] PassKey refreshed, retrying");
           try {
             const orgs = await fetchOrganizations(newPassKey);
             return res.json({ Organizations: orgs });
@@ -956,16 +624,7 @@ app.get("/api/orgs", async (req, res) => {
   }
 });
 
-// [REMOVED: Contacts endpoint - Users now query contacts through AI assistant]
-// The standalone contacts display feature has been deprecated in favor of
-// the unified chat interface where users can ask about contacts naturally.
-
-// ============================================
-// LANGCHAIN CALENDAR AGENT IMPLEMENTATION
-// ============================================
-// Helper functions for BSA API calls and Calendar Agent with tools
-
-// [REMOVED: Duplicate normalizeBSAResponse - Using the first instance at line 766]
+// LangChain Calendar Agent implementation
 
 // Fetch calendar activities (appointments) using recommended calendar endpoint
 async function getCalendarActivities(passKey, orgId, options = {}) {
@@ -1044,7 +703,6 @@ async function getContactsByIds(passKey, orgId, contactIds = [], includeExtended
   return normalized.data?.Results || [];
 }
 
-// [REMOVED: parseToolInput function - Unused after migrating to Zod-based tool schemas]
 
 // Define Calendar Agent Tools using tool function with Zod
 function createCalendarTools(tool, z, passKey, orgId) {
@@ -1180,14 +838,11 @@ Be concise and informative in your responses.`],
   return new AgentExecutor({
     agent,
     tools,
-    verbose: true // Set to false in production
+    verbose: false
   });
 }
 
-// ============================================
-// RATE LIMITING IMPLEMENTATION
-// ============================================
-// In-memory rate limiting (per-instance)
+// Rate limiting (in-memory)
 const rateLimitWindows = new Map();
 
 function checkRateLimit(sessionId) {
@@ -1219,16 +874,10 @@ function checkRateLimit(sessionId) {
   return true;
 }
 
-// ============================================
-// ASSISTANT API ENDPOINT
-// ============================================
-// Endpoint for AI assistant queries using Calendar Agent
+// Assistant API endpoint
 app.post("/api/assistant/query", async (req, res) => {
-  const requestId = crypto.randomBytes(8).toString('hex');
-  
   try {
     const { query, session_id, org_id } = req.body;
-    console.log(`[ASSISTANT:${requestId}] Query: "${query}"`);
     
     // Input validation
     if (!query || query.length > 500) {
@@ -1268,7 +917,7 @@ app.post("/api/assistant/query", async (req, res) => {
     });
     
   } catch (error) {
-    console.error(`[ASSISTANT:${requestId}] Error:`, error);
+    console.error('[ASSISTANT] Error:', error);
     res.status(500).json({ 
       error: "Failed to process query",
       details: error.message 
@@ -1276,16 +925,7 @@ app.post("/api/assistant/query", async (req, res) => {
   }
 });
 
-// ============================================
-// HEALTH CHECK ENDPOINT
-// ============================================
-// Simple endpoint to verify the server is running
-// Used by monitoring services and deployment checks
-//
-// Request: GET /health
-// Response: { status: "healthy", timestamp: "..." }
-//
-// Returns current timestamp to verify server is responsive
+// Health check endpoint
 app.get("/health", (_, res) => {
   res.json({ 
     status: "healthy",                        // Server status
@@ -1293,17 +933,7 @@ app.get("/health", (_, res) => {
   });
 });
 
-// ============================================
-// GLOBAL ERROR HANDLING MIDDLEWARE
-// ============================================
-// Catches any unhandled errors in the application
-// This is a safety net to prevent the server from crashing
-// and to ensure clients always get a proper error response
-//
-// Express calls this middleware when:
-// - An async function throws an error
-// - next(error) is called
-// - Synchronous errors occur in route handlers
+// Global error handling middleware
 app.use((err, _, res, __) => {
   // Log the full error for debugging
   console.error("Unhandled error:", err);
@@ -1313,21 +943,10 @@ app.use((err, _, res, __) => {
   res.status(500).json({ error: "internal server error" });
 });
 
-// ============================================
-// MODULE EXPORTS AND SERVER INITIALIZATION
-// ============================================
-// Export the Express app for Vercel serverless deployment
-// Vercel imports this module and handles the HTTP server
+// Module exports for Vercel
 module.exports = app;
 
-// ============================================
-// LOCAL DEVELOPMENT SERVER
-// ============================================
-// When running locally (not on Vercel), start the Express server
-// This allows local testing with 'npm run dev'
-//
-// require.main === module checks if this file is being run directly
-// (not imported by another module like Vercel)
+// Local development server
 if (require.main === module) {
   // Use PORT from environment or default to 3000
   const PORT = process.env.PORT || 3000;

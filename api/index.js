@@ -629,6 +629,8 @@ const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
 
 // Import Activities Agent module (unified calendar + tasks)
 const { createActivitiesAgent } = require('./lib/agents/activitiesAgent');
+// Import Workflow Builder Agent module
+const { createWorkflowBuilderAgent } = require('./lib/agents/workflowBuilderAgent');
 
 // LangChain Calendar Agent implementation
 
@@ -723,6 +725,77 @@ app.post("/api/assistant/query", async (req, res) => {
       error: "Failed to process query",
       details: error.message 
     });
+  }
+});
+
+// Workflow Builder API endpoint
+app.post("/api/workflow/query", async (req, res) => {
+  try {
+    const { query, session_id, org_id } = req.body;
+    
+    // Input validation
+    if (!query || query.length > 2000) {
+      return res.status(400).json({ 
+        error: "Query must be between 1 and 2000 characters" 
+      });
+    }
+    
+    // Rate limiting
+    if (!checkRateLimit(session_id)) {
+      return res.status(429).json({ 
+        error: "Rate limit exceeded",
+        retryAfter: 60 
+      });
+    }
+    
+    // Validate session
+    const { data: sessionData, error: sessionError } = await supabase
+      .from('bsa_tokens')
+      .select('passkey, expires_at')
+      .eq('session_id', session_id)
+      .single();
+    
+    if (sessionError || !sessionData) {
+      return res.status(401).json({ error: "Invalid session" });
+    }
+    
+    // Get PassKey and check if needs refresh
+    let passKey = sessionData.passkey;
+    const expiresAt = new Date(sessionData.expires_at);
+    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
+    
+    if (expiresAt < fiveMinutesFromNow) {
+      console.log('[WORKFLOW] PassKey expiring soon, refreshing...');
+      const refreshResult = await refreshPassKey(session_id);
+      if (refreshResult.error) {
+        return res.status(500).json({ error: "Failed to refresh authentication" });
+      }
+      passKey = refreshResult.passkey;
+    }
+    
+    // Create workflow agent with dependencies
+    const dependencies = {
+      axios,
+      axiosConfig,
+      BSA_BASE,
+      normalizeBSAResponse,
+      getLLMClient,
+      parseDateQuery,
+      extractDateFromQuery
+    };
+    
+    const agent = await createWorkflowBuilderAgent(passKey, org_id, dependencies);
+    const result = await agent.invoke({ input: query });
+    
+    res.json({ 
+      query,
+      response: result.output,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('[WORKFLOW] Error:', error);
+    res.status(500).json({ error: "Failed to process workflow request" });
   }
 });
 

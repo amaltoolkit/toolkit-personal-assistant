@@ -445,11 +445,21 @@ function addMessageToChat(text, isUser = false) {
   bubbleDiv.className = 'message-bubble';
   
   // Process text for display
-  if (!isUser && text.includes('\n')) {
-    // Format multi-line responses
-    bubbleDiv.innerHTML = text
+  if (!isUser) {
+    // Parse markdown for assistant messages
+    const formatted = parseMarkdown(text);
+    // Split by newlines and wrap non-list/header items in paragraphs
+    bubbleDiv.innerHTML = formatted
       .split('\n')
-      .map(line => `<p>${escapeHtml(line)}</p>`)
+      .map(line => {
+        // Don't wrap headers, lists, or empty lines in <p> tags
+        if (line.startsWith('<h') || line.startsWith('<ul') || line.startsWith('</ul') || 
+            line.startsWith('<ol') || line.startsWith('</ol') ||
+            line.startsWith('<li') || line.trim() === '') {
+          return line;
+        }
+        return `<p>${line}</p>`;
+      })
       .join('');
   } else {
     bubbleDiv.textContent = text;
@@ -618,6 +628,56 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function parseMarkdown(text) {
+  // First escape HTML to prevent XSS
+  let safe = escapeHtml(text);
+  
+  // Convert markdown to HTML
+  // Headers
+  safe = safe.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  safe = safe.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  safe = safe.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  
+  // Bold
+  safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  
+  // Handle lists - process line by line
+  const lines = safe.split('\n');
+  let inList = false;
+  let result = [];
+  
+  for (let line of lines) {
+    if (line.startsWith('- ')) {
+      if (!inList) {
+        result.push('<ul>');
+        inList = true;
+      }
+      result.push('<li>' + line.substring(2) + '</li>');
+    } else if (line.match(/^\d+\.\s/)) {
+      // Numbered lists
+      if (!inList) {
+        result.push('<ol>');
+        inList = true;
+      }
+      result.push('<li>' + line.replace(/^\d+\.\s/, '') + '</li>');
+    } else {
+      if (inList) {
+        result.push(inList === true ? '</ul>' : '</ol>');
+        inList = false;
+      }
+      result.push(line);
+    }
+  }
+  if (inList) result.push(inList === true ? '</ul>' : '</ol>');
+  
+  safe = result.join('\n');
+  
+  // Links
+  safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  
+  return safe;
 }
 
 function sleep(ms) {

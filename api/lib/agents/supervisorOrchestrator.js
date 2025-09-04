@@ -274,8 +274,14 @@ async function workflowNode(state, passKey, orgId, dependencies) {
   const query = typeof userMessage === 'string' ? userMessage : userMessage.content;
   
   try {
+    // Create workflow-specific dependencies with GPT-5
+    const workflowDependencies = {
+      ...dependencies,
+      getLLMClient: dependencies.getWorkflowLLMClient || dependencies.getLLMClient  // Use GPT-5 if available
+    };
+    
     // Create and invoke the workflow agent
-    const agent = await createWorkflowBuilderAgent(passKey, orgId, dependencies);
+    const agent = await createWorkflowBuilderAgent(passKey, orgId, workflowDependencies);
     const result = await agent.invoke({ input: query });
     
     // Add the response to messages

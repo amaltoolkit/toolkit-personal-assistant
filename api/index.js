@@ -51,6 +51,24 @@ async function getLLMClient() {
   return moduleCache.llm;
 }
 
+// Specialized GPT-5 client for workflow agent (enhanced intelligence)
+async function getWorkflowLLMClient() {
+  if (!moduleCache.workflowLLM) {
+    if (!modulePromises.workflowLLM) {
+      modulePromises.workflowLLM = import("@langchain/openai").then(({ ChatOpenAI }) => {
+        moduleCache.workflowLLM = new ChatOpenAI({
+          model: "gpt-5",  // Using GPT-5 for superior workflow understanding
+          temperature: 0.1  // Slightly higher for creative workflow generation
+        });
+        console.log("[Workflow LLM] Initialized with GPT-5 model");
+        return moduleCache.workflowLLM;
+      });
+    }
+    return modulePromises.workflowLLM;
+  }
+  return moduleCache.workflowLLM;
+}
+
 // Express app initialization
 const app = express();
 app.use(express.json());
@@ -792,13 +810,13 @@ app.post("/api/workflow/query", async (req, res) => {
       passKey = refreshResult.passkey;
     }
     
-    // Create workflow agent with dependencies
+    // Create workflow agent with dependencies (using GPT-5 for enhanced intelligence)
     const dependencies = {
       axios,
       axiosConfig,
       BSA_BASE,
       normalizeBSAResponse,
-      getLLMClient,
+      getLLMClient: getWorkflowLLMClient,  // Use GPT-5 for workflow agent
       parseDateQuery,
       extractDateFromQuery
     };
@@ -870,6 +888,7 @@ app.post("/api/orchestrator/query", async (req, res) => {
       BSA_BASE,
       normalizeBSAResponse,
       getLLMClient,
+      getWorkflowLLMClient,  // Add GPT-5 client for workflow agent
       parseDateQuery,
       extractDateFromQuery
     };

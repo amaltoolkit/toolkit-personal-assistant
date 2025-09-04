@@ -809,11 +809,11 @@ app.post("/api/workflow/query", async (req, res) => {
     
     if (expiresAt < fiveMinutesFromNow) {
       console.log('[WORKFLOW] PassKey expiring soon, refreshing...');
-      const refreshResult = await refreshPassKey(session_id);
-      if (refreshResult.error) {
+      const newPassKey = await refreshPassKey(session_id);
+      if (!newPassKey) {
         return res.status(500).json({ error: "Failed to refresh authentication" });
       }
-      passKey = refreshResult.passkey;
+      passKey = newPassKey;
     }
     
     // Create workflow agent with dependencies (using GPT-5 for enhanced intelligence)
@@ -880,11 +880,11 @@ app.post("/api/orchestrator/query", async (req, res) => {
     
     if (expiresAt < fiveMinutesFromNow) {
       console.log('[ORCHESTRATOR] PassKey expiring soon, refreshing...');
-      const refreshResult = await refreshPassKey(session_id);
-      if (refreshResult.error) {
+      const newPassKey = await refreshPassKey(session_id);
+      if (!newPassKey) {
         return res.status(500).json({ error: "Failed to refresh authentication" });
       }
-      passKey = refreshResult.passkey;
+      passKey = newPassKey;
     }
     
     // Create orchestrator with dependencies

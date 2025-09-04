@@ -397,7 +397,7 @@ async function handleSendMessage() {
     isProcessing = true;
     elements.sendBtn.disabled = true;
     
-    const response = await fetch(`${API_BASE}/api/assistant/query`, {
+    const response = await fetch(`${API_BASE}/api/orchestrator/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

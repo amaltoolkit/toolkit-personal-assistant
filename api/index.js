@@ -1,3 +1,9 @@
+// Ensure LangSmith callbacks complete in serverless environment
+// This MUST be set before any LangChain imports for proper tracing
+if (!process.env.LANGCHAIN_CALLBACKS_BACKGROUND) {
+  process.env.LANGCHAIN_CALLBACKS_BACKGROUND = "false";
+}
+
 // Dependencies
 const express = require("express");
 const axios = require("axios");
@@ -62,6 +68,17 @@ const BSA_BASE = process.env.BSA_BASE;
 const BSA_CLIENT_ID = process.env.BSA_CLIENT_ID;
 const BSA_CLIENT_SECRET = process.env.BSA_CLIENT_SECRET;
 const BSA_REDIRECT_URI = process.env.BSA_REDIRECT_URI;
+
+// LangSmith Configuration (for observability)
+// These environment variables enable comprehensive tracing when set in Vercel:
+// LANGCHAIN_TRACING_V2=true
+// LANGCHAIN_API_KEY=your-api-key
+// LANGCHAIN_PROJECT=your-project-name
+// LANGCHAIN_ENDPOINT=https://api.smith.langchain.com (optional)
+if (process.env.LANGCHAIN_TRACING_V2 === 'true' && process.env.LANGCHAIN_API_KEY) {
+  console.log('[LangSmith] Tracing enabled for project:', process.env.LANGCHAIN_PROJECT || 'default');
+  console.log('[LangSmith] Traces will be visible at: https://smith.langchain.com');
+}
 
 
 // OAuth endpoint: Start authentication flow

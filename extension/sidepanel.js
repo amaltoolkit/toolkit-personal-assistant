@@ -161,6 +161,7 @@ function showWelcomeScreen() {
   hideAllScreens();
   elements.onboardingContainer.classList.remove('hidden');
   elements.welcomeScreen.classList.remove('hidden');
+  elements.orgSelectionScreen.classList.add('hidden');  // Explicitly hide org selection
 }
 
 function showOrgSelectionScreen() {
@@ -715,6 +716,7 @@ async function handleLogout() {
   localStorage.removeItem(SESSION_ID_KEY);
   localStorage.removeItem(LAST_ORG_ID_KEY);
   localStorage.removeItem(LAST_ORG_NAME_KEY);
+  // Don't clear ONBOARDING_COMPLETED_KEY so returning users skip welcome
   
   currentSessionId = null;
   currentOrgId = null;
@@ -722,7 +724,7 @@ async function handleLogout() {
   organizations = [];
   chatMessages = [];
   
-  // Reset UI
+  // Reset UI - show welcome screen with clean state
   showWelcomeScreen();
 }
 

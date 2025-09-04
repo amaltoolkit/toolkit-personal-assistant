@@ -67,6 +67,10 @@ WORKFLOW STRUCTURE:
   - DayOffset: Days allocated (consider regulatory timelines)
   - AssigneeType: "ContactsOwner" (advisor) or "ContactsOwnersAssistant"
   - RollOver: Whether incomplete steps move to next day
+  
+HARD STEP LIMIT:
+- When creating workflows, enforce a hard ceiling of 22 total steps.
+- If the workflow would exceed 22 steps, consolidate sub-actions and group related tasks to remain at or below 22.
 
 FINANCIAL SERVICES PARSING RULES:
 When users describe workflows, consider:
@@ -672,7 +676,8 @@ async function createWorkflowBuilderAgent(passKey, orgId, dependencies) {
   const executorConfig = {
     agent,
     tools,
-    verbose: false
+    verbose: false,
+    maxIterations: 25
   };
   
   // Add LangSmith metadata if tracing is enabled

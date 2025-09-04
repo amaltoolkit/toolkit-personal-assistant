@@ -475,7 +475,7 @@ app.get("/auth/status", async (req, res) => {
     // Check if token exists
     const { data: rows, error } = await supabase
       .from("bsa_tokens")
-      .select("session_id, expires_at")  // Only select needed fields
+      .select("session_id, expires_at, passkey")  // Include passkey to check if it exists
       .eq("session_id", sessionId)
       .limit(1);
     
@@ -492,6 +492,12 @@ app.get("/auth/status", async (req, res) => {
       return res.json({ ok: false });
     }
     
+    // Check if passkey exists
+    if (!token.passkey) {
+      // Token record exists but no passkey - requires re-authentication
+      return res.json({ ok: false, requiresReauth: true });
+    }
+    
     // Check token expiration
     if (token.expires_at) {
       const expiry = new Date(token.expires_at);
@@ -506,8 +512,8 @@ app.get("/auth/status", async (req, res) => {
           return res.json({ ok: true, refreshed: true });
         }
         
-        // Refresh failed - authentication expired
-        return res.json({ ok: false, expired: true });
+        // Refresh failed - authentication expired, requires full re-authentication
+        return res.json({ ok: false, expired: true, requiresReauth: true });
       }
     }
     
@@ -614,7 +620,7 @@ app.get("/api/orgs", async (req, res) => {
     // Check if user is authenticated
     if (!passKey) {
       console.error("[API/ORGS] No PassKey found for session:", sessionId);
-      return res.status(401).json({ error: "not authenticated" });
+      return res.status(401).json({ error: "not authenticated", requiresReauth: true });
     }
     
     try {
@@ -645,7 +651,7 @@ app.get("/api/orgs", async (req, res) => {
         }
         
         // PassKey refresh failed or retry failed
-        return res.status(401).json({ error: "authentication expired" });
+        return res.status(401).json({ error: "authentication expired", requiresReauth: true });
       }
       
       // Other API errors (not authentication related)
@@ -728,7 +734,7 @@ app.post("/api/assistant/query", async (req, res) => {
     // Validate session
     const passKey = await getValidPassKey(session_id);
     if (!passKey) {
-      return res.status(401).json({ error: "not authenticated" });
+      return res.status(401).json({ error: "not authenticated", requiresReauth: true });
     }
     
     if (!org_id) {
@@ -793,7 +799,7 @@ app.post("/api/workflow/query", async (req, res) => {
       .single();
     
     if (sessionError || !sessionData) {
-      return res.status(401).json({ error: "Invalid session" });
+      return res.status(401).json({ error: "Invalid session", requiresReauth: true });
     }
     
     // Get PassKey and check if needs refresh
@@ -864,7 +870,7 @@ app.post("/api/orchestrator/query", async (req, res) => {
       .single();
     
     if (sessionError || !sessionData) {
-      return res.status(401).json({ error: "Invalid session" });
+      return res.status(401).json({ error: "Invalid session", requiresReauth: true });
     }
     
     // Get PassKey and check if needs refresh

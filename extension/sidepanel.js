@@ -98,9 +98,32 @@ async function initializeApp() {
   
   // Check authentication status
   if (currentSessionId) {
-    const isAuthenticated = await checkAuthStatus();
+    // First, do a quick check to see if re-auth is needed
+    const statusResponse = await fetch(
+      `${API_BASE}/auth/status?session_id=${encodeURIComponent(currentSessionId)}`
+    );
+    const statusData = await statusResponse.json();
     
-    if (isAuthenticated) {
+    if (statusData.requiresReauth) {
+      // Session expired, needs re-authentication
+      console.log('[INIT] Session requires re-authentication');
+      
+      // Preserve organization selection
+      const lastOrgId = localStorage.getItem(LAST_ORG_ID_KEY);
+      const lastOrgName = localStorage.getItem(LAST_ORG_NAME_KEY);
+      if (lastOrgId && lastOrgName) {
+        currentOrgId = lastOrgId;
+        currentOrgName = lastOrgName;
+      }
+      
+      // Show appropriate screen and trigger re-auth
+      if (hasCompletedOnboarding) {
+        showChatInterface();
+        await handleReauthentication();
+      } else {
+        handleGetStarted();
+      }
+    } else if (statusData.ok) {
       // User is authenticated
       const lastOrgId = localStorage.getItem(LAST_ORG_ID_KEY);
       const lastOrgName = localStorage.getItem(LAST_ORG_NAME_KEY);
@@ -234,6 +257,21 @@ async function loadOrganizations() {
     );
     
     if (!response.ok) {
+      if (response.status === 401) {
+        // Check if re-authentication is required
+        const errorData = await response.json();
+        if (errorData.requiresReauth) {
+          showLoading(false, 'org-loading');
+          
+          // Trigger re-authentication
+          const reAuthSuccess = await handleReauthentication();
+          if (reAuthSuccess) {
+            // Re-authentication successful, reload organizations
+            await loadOrganizations();
+          }
+          return; // Exit early
+        }
+      }
       throw new Error('Failed to load organizations');
     }
     
@@ -410,6 +448,20 @@ async function handleSendMessage() {
     
     if (!response.ok) {
       if (response.status === 401) {
+        // Check if re-authentication is required
+        const errorData = await response.json();
+        if (errorData.requiresReauth) {
+          // Remove typing indicator before re-auth
+          removeTypingIndicator(typingId);
+          
+          // Trigger re-authentication
+          const reAuthSuccess = await handleReauthentication();
+          if (reAuthSuccess) {
+            // Re-authentication successful, prompt user to resend their message
+            addMessageToChat('Please resend your message.', false);
+          }
+          return; // Exit early, don't process further
+        }
         throw new Error('Session expired. Please login again.');
       }
       if (response.status === 429) {
@@ -547,10 +599,87 @@ async function checkAuthStatus() {
       `${API_BASE}/auth/status?session_id=${encodeURIComponent(currentSessionId)}`
     );
     const data = await response.json();
+    
+    // Check if re-authentication is required
+    if (data.requiresReauth) {
+      console.log('[AUTH] Re-authentication required');
+      return false;
+    }
+    
     return data.ok === true;
   } catch (error) {
     console.error('[AUTH] Check failed:', error);
     return false;
+  }
+}
+
+// Handle re-authentication when session expires
+async function handleReauthentication() {
+  console.log('[REAUTH] Starting re-authentication process');
+  
+  // Show re-authentication message
+  const reAuthMessage = 'Your session has expired. Re-authenticating...';
+  if (!elements.chatContainer?.classList.contains('hidden')) {
+    addMessageToChat(reAuthMessage, false);
+  } else {
+    showError(reAuthMessage);
+  }
+  
+  try {
+    showLoading(true);
+    
+    const sessionId = currentSessionId || getSessionId();
+    console.log('[REAUTH] Using session:', sessionId);
+    
+    const authUrl = `${API_BASE}/auth/start?session_id=${encodeURIComponent(sessionId)}`;
+    
+    // Open OAuth window for re-authentication
+    const authWindow = window.open(
+      authUrl,
+      'BSA_ReAuth',
+      'width=500,height=700,menubar=no,toolbar=no,location=no,status=no'
+    );
+    
+    // Poll for authentication with longer timeout for re-auth
+    const authenticated = await pollAuthStatus(sessionId, 180000); // 3 minutes
+    
+    if (authenticated) {
+      console.log('[REAUTH] Re-authentication successful');
+      
+      // Update session ID if needed
+      currentSessionId = sessionId;
+      localStorage.setItem(SESSION_ID_KEY, sessionId);
+      
+      // Restore previous state
+      if (currentOrgId && currentOrgName) {
+        // User was in chat, show success message
+        addMessageToChat('✓ Re-authenticated successfully. You can continue your conversation.', false);
+        
+        // Re-enable chat input
+        if (elements.sendBtn) {
+          elements.sendBtn.disabled = false;
+        }
+        if (elements.chatInput) {
+          elements.chatInput.disabled = false;
+          elements.chatInput.focus();
+        }
+      } else {
+        // User needs to select organization again
+        showOrgSelectionScreen();
+        await loadOrganizations();
+      }
+      
+      return true;
+    } else {
+      showError('Re-authentication failed. Please refresh the page and try again.');
+      return false;
+    }
+  } catch (error) {
+    console.error('[REAUTH] Error:', error);
+    showError('Failed to re-authenticate. Please refresh the page and try again.');
+    return false;
+  } finally {
+    showLoading(false);
   }
 }
 

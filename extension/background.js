@@ -1,7 +1,7 @@
 // Service Worker for Chrome Extension
 // Minimal background script - side panel is configured via manifest
 
-console.log('BlueSquare Assistant service worker started');
+console.log('Toolkit Co-pilot service worker started');
 
 // Handle extension installation
 chrome.runtime.onInstalled.addListener((details) => {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "BlueSquare Assistant",
+  "name": "Toolkit Co-pilot",
   "version": "1.0.0",
-  "description": "Chrome extension for BlueSquareApps integration with OAuth authentication",
+  "description": "Toolkit Co-pilot for BlueSquareApps with OAuth and side panel UI",
   "permissions": [
     "storage",
     "activeTab",
@@ -17,7 +17,7 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "BlueSquare Assistant",
+    "default_title": "Toolkit Co-pilot",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

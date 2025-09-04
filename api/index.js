@@ -210,20 +210,24 @@ async function processOAuthCallback(code, state) {
     try {
       const tokenUrl = `${BSA_BASE}/oauth2/token`;
       
+      // Create properly encoded form data for OAuth token exchange
+      // Using URLSearchParams ensures RFC-compliant encoding
+      const form = new URLSearchParams({
+        grant_type: "authorization_code",      // OAuth grant type
+        client_id: BSA_CLIENT_ID,               // Our app's client ID
+        client_secret: BSA_CLIENT_SECRET,       // Our app's client secret
+        code,                                   // Authorization code from callback
+        redirect_uri: BSA_REDIRECT_URI          // Must match original request
+      });
+      
       // Make POST request to exchange authorization code for bearer token
       // Note: BSA expects application/x-www-form-urlencoded format
       tokenResp = await axios.post(
         tokenUrl,
-        {
-          grant_type: "authorization_code",      // OAuth grant type
-          client_id: BSA_CLIENT_ID,               // Our app's client ID
-          client_secret: BSA_CLIENT_SECRET,       // Our app's client secret
-          code,                                   // Authorization code from callback
-          redirect_uri: BSA_REDIRECT_URI          // Must match original request
-        },
+        form.toString(),  // Convert URLSearchParams to string
         { 
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          timeout: 10000  // 10 second timeout
+          ...axiosConfig  // Apply keep-alive agents for connection reuse
         }
       );
     } catch (tokenError) {
@@ -256,7 +260,7 @@ async function processOAuthCallback(code, state) {
             "Authorization": `Bearer ${bearerToken}`,  // Use bearer token for auth
             "Content-Type": "application/json"
           },
-          timeout: 10000  // 10 second timeout
+          ...axiosConfig  // Apply keep-alive agents for connection reuse
         }
       );
     } catch (passKeyError) {
@@ -354,7 +358,7 @@ async function refreshPassKey(sessionId) {
         { PassKey: currentPassKey },  // Authenticate with current PassKey
         {
           headers: { "Content-Type": "application/json" },
-          timeout: 10000  // 10 second timeout
+          ...axiosConfig  // Apply keep-alive agents for connection reuse
         }
       );
       
@@ -440,7 +444,6 @@ async function getValidPassKey(sessionId) {
     const expiry = new Date(token.expires_at);
     const now = new Date();
     const timeLeft = expiry - now;  // Time remaining in milliseconds
-    const minutesLeft = Math.floor(timeLeft / 60000);  // Convert to minutes
     
     // Refresh if less than 5 minutes remaining
     // This prevents API calls from failing due to expired tokens
@@ -573,7 +576,7 @@ async function fetchOrganizations(passKey) {
       { PassKey: passKey },  // Authenticate with PassKey
       { 
         headers: { "Content-Type": "application/json" },
-        timeout: 10000  // 10 second timeout
+        ...axiosConfig  // Apply keep-alive agents for connection reuse
       }
     );
     

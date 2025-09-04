@@ -39,6 +39,8 @@ ROUTING RULES:
 - "Create a process for..." or "Build a workflow for..." → workflow_agent
 - Financial planning process creation → workflow_agent
 - Viewing today's/this week's activities → activities_agent
+- What processes do i have? → workflow_agent
+- Do i have a process/workflow for [X] → workflow_agent
 
 FINANCIAL ADVISORY CONTEXT:
 - Client reviews, meetings → activities_agent (if checking schedule) or workflow_agent (if creating process)

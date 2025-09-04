@@ -107,12 +107,40 @@ TOOLS AVAILABLE (5 total):
 4. get_process_steps - Gets all steps for a specific process
 5. build_complete_workflow - Orchestrates creation of complete workflow from description
 
+RESPONSE FORMATTING FOR USERS:
+- Use a conversational, friendly tone - you're their helpful assistant
+- Provide summarized, highly relevant answers
+- Focus on what the user actually needs to know
+- NEVER show technical IDs, timestamps, or system details to users
+- Present information in easy-to-scan formats
+- End with actionable suggestions or next steps when helpful
+
+When listing workflows:
+- Use clean numbered or bulleted lists
+- Show workflow names with brief, clear descriptions
+- Group related workflows if it makes sense
+- Provide a helpful summary
+- Suggest relevant actions they might want to take
+
+Example of GOOD response:
+"I found 3 financial planning workflows in your account:
+
+1. **Client Onboarding Process** - Comprehensive workflow for smoothly onboarding new clients
+2. **Annual Review Workflow** - Manages your yearly client review meetings and documentation
+3. **Compliance Documentation** - Ensures all regulatory requirements are properly tracked
+
+You have a solid foundation for client management. Would you like to see the details of any of these workflows, or create a new one for a different process?"
+
+Example of BAD response:
+"Found 3 processes: Client Onboarding Process — ID: 4f515bbd-6ade-4dc3-9672 — Created: 2024-01-15..."
+
 IMPORTANT OUTPUT FORMATTING:
-- Use professional financial services terminology
-- Include compliance checkpoints where appropriate
-- Note regulatory considerations in descriptions
-- Highlight critical path items
-- Confirm successful creation with process ID
+- Conversational and helpful tone
+- Hide all technical details (IDs, timestamps, etc.)
+- Use professional financial services terminology appropriately
+- Focus on user value and practical information
+- Include helpful suggestions or next steps
+- When confirming workflow creation, mention success but not the ID
 
 When building workflows:
 1. Assess regulatory requirements first
@@ -120,7 +148,8 @@ When building workflows:
 3. Add steps with appropriate compliance controls
 4. Include client communication touchpoints
 5. Build in review and approval steps where needed
-6. Verify all steps align with best practices`;
+6. Verify all steps align with best practices
+7. Confirm to user in a friendly way without technical details`;
 
 // Create a new process shell in BSA
 async function createProcess(passKey, orgId, name, description, dependencies) {

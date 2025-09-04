@@ -57,8 +57,8 @@ async function getWorkflowLLMClient() {
     if (!modulePromises.workflowLLM) {
       modulePromises.workflowLLM = import("@langchain/openai").then(({ ChatOpenAI }) => {
         moduleCache.workflowLLM = new ChatOpenAI({
-          model: "gpt-5",  // Using GPT-5 for superior workflow understanding
-          temperature: 0.1  // Slightly higher for creative workflow generation
+          model: "gpt-5"  // Using GPT-5 for superior workflow understanding
+          // GPT-5 only supports default temperature (1.0)
         });
         console.log("[Workflow LLM] Initialized with GPT-5 model");
         return moduleCache.workflowLLM;

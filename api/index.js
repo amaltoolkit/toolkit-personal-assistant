@@ -51,16 +51,16 @@ async function getLLMClient() {
   return moduleCache.llm;
 }
 
-// Specialized GPT-4o client for workflow agent (enhanced intelligence)
+// Specialized GPT-5 client for workflow agent (enhanced intelligence)
 async function getWorkflowLLMClient() {
   if (!moduleCache.workflowLLM) {
     if (!modulePromises.workflowLLM) {
       modulePromises.workflowLLM = import("@langchain/openai").then(({ ChatOpenAI }) => {
         moduleCache.workflowLLM = new ChatOpenAI({
-          model: "gpt-4o",  // Using GPT-4o for superior workflow understanding
-          temperature: 0.1  // Slightly higher for creative workflow generation
+          model: "gpt-5"  // Using GPT-5 for superior workflow understanding
+          // Note: If GPT-5 doesn't support custom temperature, remove the line above
         });
-        console.log("[Workflow LLM] Initialized with GPT-4o model");
+        console.log("[Workflow LLM] Initialized with GPT-5 model");
         return moduleCache.workflowLLM;
       });
     }

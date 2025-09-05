@@ -418,6 +418,11 @@ function createActivitiesTools(tool, z, passKey, orgId, timeZone = 'UTC', depend
 async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependencies) {
   const { getLLMClient } = dependencies;
   
+  // Extract memory context if provided
+  const memoryContext = dependencies.memoryContext || '';
+  const checkpointer = dependencies.checkpointer;
+  const threadConfig = dependencies.threadConfig;
+  
   // Dynamic imports for LangChain and Zod
   const { z } = await import("zod");
   const { tool } = await import("@langchain/core/tools");
@@ -447,12 +452,20 @@ async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependenc
 
   // Debug log to confirm agent time context in server logs
   console.log(`[Activities Agent] Time context: Today is ${currentDate} at ${currentTime} ${timeZone}`);
+  if (memoryContext) {
+    console.log(`[Activities Agent] Memory context available: ${memoryContext.length} chars`);
+  }
 
-  // Format the prompt with current date/time context
-  const formattedPrompt = ACTIVITIES_PROMPT
+  // Format the prompt with current date/time context and memory
+  let formattedPrompt = ACTIVITIES_PROMPT
     .replace(/{currentDate}/g, currentDate)
     .replace(/{currentTime}/g, currentTime)
     .replace(/{timeZone}/g, timeZone);
+  
+  // Add memory context to the prompt if available
+  if (memoryContext) {
+    formattedPrompt += `\n\nRelevant memories about this user:\n${memoryContext}`;
+  }
 
   const prompt = ChatPromptTemplate.fromMessages([
     ["system", formattedPrompt],
@@ -466,7 +479,48 @@ async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependenc
     prompt
   });
   
-  // Configure executor with LangSmith tracing if available
+  // If checkpointer is provided, create a stateful graph
+  if (checkpointer && threadConfig) {
+    console.log(`[Activities Agent] Using stateful mode with thread: ${threadConfig.configurable.thread_id}`);
+    
+    // Dynamic import for LangGraph
+    const { StateGraph } = await import('@langchain/langgraph');
+    
+    const graph = new StateGraph({
+      channels: {
+        messages: {
+          value: (x, y) => x.concat(y),
+          default: () => []
+        }
+      }
+    });
+    
+    // Add the agent as a node
+    graph.addNode("agent", async (state) => {
+      const result = await agent.invoke(state);
+      return { messages: [result] };
+    });
+    
+    graph.setEntryPoint("agent");
+    graph.setFinishPoint("agent");
+    
+    const compiledGraph = graph.compile({ checkpointer });
+    
+    // Return a wrapper that matches AgentExecutor interface
+    return {
+      async invoke(input, config = threadConfig) {
+        const result = await compiledGraph.invoke(
+          { input: input.input, messages: [] },
+          config
+        );
+        // Extract the output from the graph result
+        const lastMessage = result.messages[result.messages.length - 1];
+        return { output: lastMessage.output || lastMessage.content || '' };
+      }
+    };
+  }
+  
+  // Fallback to stateless executor (existing behavior)
   const executorConfig = {
     agent,
     tools,
@@ -479,7 +533,8 @@ async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependenc
     executorConfig.metadata = {
       agent: 'activities',
       orgId,
-      timeZone
+      timeZone,
+      hasMemory: !!memoryContext
     };
   }
   

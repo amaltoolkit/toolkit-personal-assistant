@@ -27,6 +27,13 @@ const keepAliveHttpsAgent = new https.Agent({
 const modulePromises = {};
 const moduleCache = {};
 
+// Memory helpers - initialize once
+const { MemoryHelper } = require('./lib/memoryHelper');
+const { CheckpointerManager } = require('./lib/checkpointer');
+const memoryHelper = new MemoryHelper();
+const checkpointerManager = new CheckpointerManager();
+let checkpointerInitialized = false;
+
 // Axios config with keep-alive for connection reuse
 const axiosConfig = {
   timeout: 10000,
@@ -767,6 +774,25 @@ app.post("/api/assistant/query", async (req, res) => {
       });
     }
     
+    // Initialize checkpointer once
+    if (!checkpointerInitialized) {
+      const checkpointerResult = await checkpointerManager.initialize();
+      checkpointerInitialized = true;
+      if (!checkpointerResult) {
+        console.warn('[ASSISTANT] Checkpointer initialization failed - continuing without conversation memory');
+      }
+    }
+    
+    // Get thread config for conversation continuity
+    const threadConfig = await checkpointerManager.getThread(session_id, org_id);
+    
+    // Get relevant memories for context
+    const memoryContext = await memoryHelper.getRelevantMemories(
+      query,
+      session_id,
+      org_id
+    );
+    
     // Create and execute Activities Agent with dependencies
     const dependencies = {
       axios,
@@ -774,11 +800,23 @@ app.post("/api/assistant/query", async (req, res) => {
       BSA_BASE,
       normalizeBSAResponse,
       parseDateQuery,
-      getLLMClient
+      getLLMClient,
+      memoryContext,
+      checkpointer: checkpointerManager.checkpointer,
+      threadConfig
     };
     
     const agent = await createActivitiesAgent(passKey, org_id, time_zone || "UTC", dependencies);
-    const result = await agent.invoke({ input: query });
+    const result = await agent.invoke({ input: query }, threadConfig);
+    
+    // Save conversation to memory (async, non-blocking)
+    setImmediate(async () => {
+      const messages = [
+        { role: "user", content: query },
+        { role: "assistant", content: result.output }
+      ];
+      await memoryHelper.saveConversation(messages, session_id, org_id);
+    });
     
     res.json({ 
       query,
@@ -947,6 +985,109 @@ app.post("/api/orchestrator/query", async (req, res) => {
   } catch (error) {
     console.error('[ORCHESTRATOR] Error:', error);
     res.status(500).json({ error: "Failed to process orchestrated request" });
+  }
+});
+
+// Memory Management API Endpoints
+
+// Get memory status
+app.get("/api/memory/status", async (req, res) => {
+  try {
+    const { session_id, org_id } = req.query;
+    
+    // Validate session
+    const passKey = await getValidPassKey(session_id);
+    if (!passKey) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    
+    const memories = await memoryHelper.getAllMemories(session_id, org_id);
+    
+    res.json({
+      count: memories.length,
+      memories: memories.slice(0, 10), // Return first 10
+      has_memory_enabled: !!process.env.MEM0_API_KEY,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[MEMORY STATUS] Error:', error);
+    res.status(500).json({ error: "Failed to get memory status" });
+  }
+});
+
+// Search memories
+app.post("/api/memory/search", async (req, res) => {
+  try {
+    const { session_id, org_id, query } = req.body;
+    
+    // Validate session
+    const passKey = await getValidPassKey(session_id);
+    if (!passKey) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    
+    const memories = await memoryHelper.mem0.searchMemories(
+      query,
+      memoryHelper.getUserId(session_id, org_id),
+      10
+    );
+    
+    res.json({
+      query,
+      results: memories,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[MEMORY SEARCH] Error:', error);
+    res.status(500).json({ error: "Failed to search memories" });
+  }
+});
+
+// Clear memories
+app.delete("/api/memory/clear", async (req, res) => {
+  try {
+    const { session_id, org_id } = req.body;
+    
+    // Validate session
+    const passKey = await getValidPassKey(session_id);
+    if (!passKey) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    
+    const result = await memoryHelper.clearMemories(session_id, org_id);
+    
+    res.json({
+      success: result.success,
+      message: "Memories cleared successfully"
+    });
+  } catch (error) {
+    console.error('[MEMORY CLEAR] Error:', error);
+    res.status(500).json({ error: "Failed to clear memories" });
+  }
+});
+
+// Export memories (GDPR compliance)
+app.get("/api/memory/export", async (req, res) => {
+  try {
+    const { session_id, org_id } = req.query;
+    
+    // Validate session
+    const passKey = await getValidPassKey(session_id);
+    if (!passKey) {
+      return res.status(401).json({ error: "not authenticated" });
+    }
+    
+    const memories = await memoryHelper.getAllMemories(session_id, org_id);
+    
+    res.json({
+      user_id: `${session_id}_${org_id}`,
+      org_id,
+      memories,
+      exported_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[MEMORY EXPORT] Error:', error);
+    res.status(500).json({ error: "Failed to export memories" });
   }
 });
 

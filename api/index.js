@@ -276,6 +276,15 @@ async function processOAuthCallback(code, state) {
     // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
     const responseData = Array.isArray(passKeyResp.data) ? passKeyResp.data[0] : passKeyResp.data;
     const passKey = responseData?.PassKey || responseData?.passkey;
+    const userId = responseData?.user_id || responseData?.UserId || responseData?.UserID;
+    
+    // Log the response structure for debugging
+    console.log("[PROCESS OAUTH] PassKey response structure:", {
+      hasPassKey: !!passKey,
+      hasUserId: !!userId,
+      userId: userId || "not found",
+      responseKeys: Object.keys(responseData || {})
+    });
     
     // Validate PassKey was received
     if (!passKey) {
@@ -298,6 +307,7 @@ async function processOAuthCallback(code, state) {
         passkey: passKey,                 // The actual PassKey (stored in plain text)
         refresh_token: null,              // No traditional refresh token - use PassKey to refresh
         expires_at: expiresAt,            // When this PassKey expires
+        user_id: userId || null,          // Store user ID from BSA response
         updated_at: new Date().toISOString()  // Track last update time
       }, { 
         onConflict: "session_id"         // Update if session_id already exists
@@ -369,6 +379,16 @@ async function refreshPassKey(sessionId) {
       const responseData = Array.isArray(refreshResp.data) ? refreshResp.data[0] : refreshResp.data;
       // Check both PascalCase 'PassKey' and lowercase 'passkey' field names
       const newPassKey = responseData?.PassKey || responseData?.passkey;
+      const userId = responseData?.user_id || responseData?.UserId || responseData?.UserID;
+      
+      // Log the response structure for debugging
+      console.log("[REFRESH_PASSKEY] Refresh response structure:", {
+        hasPassKey: !!newPassKey,
+        hasUserId: !!userId,
+        userId: userId || "not found",
+        responseKeys: Object.keys(responseData || {})
+      });
+      
       if (!newPassKey) {
         console.error("[REFRESH_PASSKEY] No new PassKey in refresh response:", refreshResp.data);
         return null;
@@ -382,6 +402,7 @@ async function refreshPassKey(sessionId) {
         .update({
           passkey: newPassKey,                        // New PassKey
           expires_at: expiresAt,                      // Fresh 1-hour expiry
+          user_id: userId || null,                    // Update user ID if provided
           updated_at: new Date().toISOString()        // Track update time
         })
         .eq("session_id", sessionId);

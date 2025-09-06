@@ -1,6 +1,7 @@
 // Activities Agent Module for BSA Integration
 // Unified agent for managing both calendar appointments and tasks
 // Supports appointments-only, tasks-only, or mixed queries
+// Now includes appointment creation and attendee linking capabilities
 
 // Activities Agent Prompt Template
 const ACTIVITIES_PROMPT = `Today is {currentDate} at {currentTime} {timeZone}.
@@ -64,9 +65,11 @@ Example workflow:
 3. Activities returned with _enrichedAttendees field containing full contact details
 4. Present the enriched information directly to the user
 
-TOOLS AVAILABLE (2 total):
+TOOLS AVAILABLE (4 total):
 1. get_activities - Fetches appointments and/or tasks based on parameters
 2. get_contact_details - Resolves contact information for attendees
+3. create_appointment - Creates a new calendar appointment
+4. link_attendees - Links contacts, companies, or users to an appointment
 
 Remember: The BSA API uses ObjectName intelligently:
 - Appointments only: ObjectName = "appointment" is added
@@ -98,6 +101,17 @@ Example of good formatting when both types are included:
 
 2. **Review budget proposal**
    - Due: End of day
+
+CREATING APPOINTMENTS:
+You can create new appointments using the create_appointment tool. Examples:
+- "Create a meeting tomorrow at 2pm for 30 minutes" - Parse the natural language date/time
+- "Schedule a call with John next Monday from 10-11am" - Convert to proper timestamps
+- "Book a team meeting in Conference Room A" - Include location details
+
+After creating an appointment, you can link attendees using the link_attendees tool:
+- Provide the appointment ID from creation
+- Specify contacts, companies, or users to link
+- The tool handles the proper linker types automatically
    - Assigned by: Sarah Johnson
 
 Be concise and informative in your responses. Always be explicit about what types of activities you're fetching.`;
@@ -168,6 +182,155 @@ async function getActivities(passKey, orgId, options = {}, dependencies) {
       appointments: payload.IncludeAppointments,
       tasks: payload.IncludeTasks
     }
+  };
+}
+
+// Create a new appointment using BSA create endpoint
+async function createAppointment(passKey, orgId, appointmentData, dependencies) {
+  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  
+  const payload = {
+    PassKey: passKey,
+    OrganizationId: orgId,
+    ObjectName: "appointment",
+    DataObject: {
+      Subject: appointmentData.subject,
+      Description: appointmentData.description || null,
+      StartTime: appointmentData.startTime,
+      EndTime: appointmentData.endTime,
+      Location: appointmentData.location || null,
+      AllDay: appointmentData.allDay || false,
+      Complete: false,
+      AppointmentTypeId: appointmentData.appointmentTypeId || null
+    },
+    IncludeExtendedProperties: false
+  };
+
+  console.log("[createAppointment] Creating appointment:", payload.DataObject.Subject);
+  
+  const resp = await axios.post(url, payload, axiosConfig);
+  const normalized = normalizeBSAResponse(resp.data);
+
+  if (!normalized.valid) {
+    throw new Error(normalized.error || 'Failed to create appointment');
+  }
+
+  const created = normalized.data;
+  console.log("[createAppointment] Created with ID:", created.Id);
+  
+  return {
+    id: created.Id,
+    subject: created.Subject,
+    startTime: created.StartTime,
+    endTime: created.EndTime,
+    location: created.Location,
+    description: created.Description,
+    createdOn: created.CreatedOn
+  };
+}
+
+// Link an attendee to an appointment using BSA link endpoint
+async function linkAttendeeToAppointment(passKey, orgId, appointmentId, attendeeId, attendeeType, dependencies) {
+  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`;
+  
+  // Determine the correct linker type and right object name based on attendee type
+  let linkerType, rightObjectName;
+  switch (attendeeType.toLowerCase()) {
+    case 'contact':
+      linkerType = 'linker_appointments_contacts';
+      rightObjectName = 'contact';
+      break;
+    case 'company':
+      linkerType = 'linker_appointments_companies';
+      rightObjectName = 'company';
+      break;
+    case 'user':
+      linkerType = 'linker_appointments_users';
+      rightObjectName = 'organization_user';
+      break;
+    default:
+      throw new Error(`Invalid attendee type: ${attendeeType}. Must be 'contact', 'company', or 'user'`);
+  }
+  
+  const payload = {
+    PassKey: passKey,
+    OrganizationId: orgId,
+    ObjectName: linkerType,
+    LeftObjectName: "appointment",
+    LeftId: appointmentId,
+    RightObjectName: rightObjectName,
+    RightId: attendeeId
+  };
+
+  console.log(`[linkAttendee] Linking ${attendeeType} ${attendeeId} to appointment ${appointmentId}`);
+  
+  const resp = await axios.post(url, payload, axiosConfig);
+  const normalized = normalizeBSAResponse(resp.data);
+
+  if (!normalized.valid) {
+    throw new Error(normalized.error || `Failed to link ${attendeeType} to appointment`);
+  }
+
+  return {
+    success: true,
+    appointmentId,
+    attendeeId,
+    attendeeType,
+    linkerId: normalized.data?.Id
+  };
+}
+
+// Batch link multiple attendees to an appointment
+async function linkMultipleAttendees(passKey, orgId, appointmentId, attendees, dependencies) {
+  const results = [];
+  const errors = [];
+  
+  // Process contacts
+  if (attendees.contactIds && Array.isArray(attendees.contactIds)) {
+    for (const contactId of attendees.contactIds) {
+      try {
+        const result = await linkAttendeeToAppointment(passKey, orgId, appointmentId, contactId, 'contact', dependencies);
+        results.push(result);
+      } catch (error) {
+        errors.push({ type: 'contact', id: contactId, error: error.message });
+      }
+    }
+  }
+  
+  // Process companies
+  if (attendees.companyIds && Array.isArray(attendees.companyIds)) {
+    for (const companyId of attendees.companyIds) {
+      try {
+        const result = await linkAttendeeToAppointment(passKey, orgId, appointmentId, companyId, 'company', dependencies);
+        results.push(result);
+      } catch (error) {
+        errors.push({ type: 'company', id: companyId, error: error.message });
+      }
+    }
+  }
+  
+  // Process users
+  if (attendees.userIds && Array.isArray(attendees.userIds)) {
+    for (const userId of attendees.userIds) {
+      try {
+        const result = await linkAttendeeToAppointment(passKey, orgId, appointmentId, userId, 'user', dependencies);
+        results.push(result);
+      } catch (error) {
+        errors.push({ type: 'user', id: userId, error: error.message });
+      }
+    }
+  }
+  
+  return {
+    appointmentId,
+    linked: results,
+    errors,
+    totalLinked: results.length,
+    totalErrors: errors.length
   };
 }
 
@@ -410,6 +573,156 @@ function createActivitiesTools(tool, z, passKey, orgId, timeZone = 'UTC', depend
           includeExtendedProperties: z.boolean().optional().describe("Include custom properties (default false)")
         })
       }
+    ),
+    
+    // Tool 3: Create a new appointment
+    tool(
+      async ({ subject, description, startTime, endTime, location, allDay, dateQuery, duration }) => {
+        try {
+          // Validate required fields
+          if (!subject) {
+            return JSON.stringify({ 
+              error: "Subject is required for creating an appointment" 
+            });
+          }
+          
+          // Handle natural language date parsing if dateQuery is provided
+          if (dateQuery && (!startTime || !endTime)) {
+            const parsed = parseDateQuery(dateQuery, timeZone);
+            if (parsed) {
+              // Use parsed dates as starting point
+              if (!startTime) {
+                // Default to 9 AM in the user's timezone for the start date
+                const startDate = new Date(parsed.startDate + 'T09:00:00');
+                startTime = startDate.toISOString();
+              }
+              if (!endTime && startTime) {
+                // Default to 1 hour duration if not specified
+                const start = new Date(startTime);
+                const durationMs = duration ? duration * 60000 : 60 * 60000; // duration in minutes or default 60 min
+                const end = new Date(start.getTime() + durationMs);
+                endTime = end.toISOString();
+              }
+            }
+          }
+          
+          // Ensure we have both startTime and endTime
+          if (!startTime || !endTime) {
+            return JSON.stringify({ 
+              error: "Both startTime and endTime are required. Provide them in ISO format or use dateQuery with duration." 
+            });
+          }
+          
+          // Convert to ISO format if needed
+          const ensureISO = (dateStr) => {
+            const date = new Date(dateStr);
+            return date.toISOString();
+          };
+          
+          const appointmentData = {
+            subject,
+            description: description || null,
+            startTime: ensureISO(startTime),
+            endTime: ensureISO(endTime),
+            location: location || null,
+            allDay: allDay || false
+          };
+          
+          console.log("[create_appointment Tool] Creating appointment:", appointmentData);
+          
+          const result = await createAppointment(passKey, orgId, appointmentData, dependencies);
+          
+          return JSON.stringify({
+            success: true,
+            appointment: result,
+            message: `Appointment "${result.subject}" created successfully`,
+            id: result.id
+          });
+          
+        } catch (error) {
+          console.error("[create_appointment Tool] Error:", error);
+          return JSON.stringify({ 
+            success: false,
+            error: `Failed to create appointment: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "create_appointment",
+        description: "Create a new calendar appointment. Supports natural language dates via dateQuery parameter.",
+        schema: z.object({
+          subject: z.string().describe("The subject/title of the appointment (required)"),
+          description: z.string().optional().describe("Detailed description of the appointment"),
+          startTime: z.string().optional().describe("Start time in ISO format (e.g., 2025-09-10T14:00:00Z)"),
+          endTime: z.string().optional().describe("End time in ISO format (e.g., 2025-09-10T15:00:00Z)"),
+          location: z.string().optional().describe("Location of the appointment"),
+          allDay: z.boolean().optional().describe("Whether this is an all-day event (default: false)"),
+          dateQuery: z.string().optional().describe("Natural language date like 'tomorrow at 2pm' or 'next Monday'"),
+          duration: z.number().optional().describe("Duration in minutes (used with dateQuery if endTime not specified)")
+        })
+      }
+    ),
+    
+    // Tool 4: Link attendees to an appointment
+    tool(
+      async ({ appointmentId, contactIds, companyIds, userIds }) => {
+        try {
+          // Validate that we have an appointment ID
+          if (!appointmentId) {
+            return JSON.stringify({ 
+              error: "appointmentId is required to link attendees" 
+            });
+          }
+          
+          // Validate that we have at least one type of attendee
+          if ((!contactIds || contactIds.length === 0) && 
+              (!companyIds || companyIds.length === 0) && 
+              (!userIds || userIds.length === 0)) {
+            return JSON.stringify({ 
+              error: "At least one attendee (contact, company, or user) must be provided" 
+            });
+          }
+          
+          const attendees = {
+            contactIds: contactIds || [],
+            companyIds: companyIds || [],
+            userIds: userIds || []
+          };
+          
+          console.log("[link_attendees Tool] Linking attendees to appointment:", appointmentId, attendees);
+          
+          const result = await linkMultipleAttendees(passKey, orgId, appointmentId, attendees, dependencies);
+          
+          // Prepare a summary message
+          let message = `Successfully linked ${result.totalLinked} attendee(s) to appointment ${appointmentId}`;
+          if (result.totalErrors > 0) {
+            message += ` (${result.totalErrors} error(s) occurred)`;
+          }
+          
+          return JSON.stringify({
+            success: result.totalErrors === 0,
+            ...result,
+            message
+          });
+          
+        } catch (error) {
+          console.error("[link_attendees Tool] Error:", error);
+          return JSON.stringify({ 
+            success: false,
+            error: `Failed to link attendees: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "link_attendees",
+        description: "Link contacts, companies, or users as attendees to an existing appointment",
+        schema: z.object({
+          appointmentId: z.string().describe("The ID of the appointment to link attendees to (required)"),
+          contactIds: z.array(z.string()).optional().describe("Array of contact IDs to link as attendees"),
+          companyIds: z.array(z.string()).optional().describe("Array of company IDs to link as attendees"),
+          userIds: z.array(z.string()).optional().describe("Array of user IDs to link as attendees")
+        })
+      }
     )
   ];
 }
@@ -541,5 +854,8 @@ module.exports = {
   createActivitiesTools,
   getActivities,
   getContactsByIds,
+  createAppointment,
+  linkAttendeeToAppointment,
+  linkMultipleAttendees,
   ACTIVITIES_PROMPT
 };

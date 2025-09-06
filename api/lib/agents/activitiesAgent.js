@@ -390,7 +390,8 @@ function createActivitiesTools(tool, z, passKey, orgId, timeZone = 'UTC', depend
             }
           }
           
-          // Normalize and expand single-day queries to a +/- 1 day window to match BSA API behavior
+          // BSA API quirk: Same From/To date returns empty results
+          // Must use From = date-1, To = date for single-day queries
           const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
           const addDays = (ymd, days) => {
             const d = new Date(ymd + 'T00:00:00Z');
@@ -402,17 +403,17 @@ function createActivitiesTools(tool, z, passKey, orgId, timeZone = 'UTC', depend
           let effectiveTo = isDate(endDate) ? endDate : undefined;
 
           if (effectiveFrom && effectiveTo && effectiveFrom === effectiveTo) {
-            // exact single day -> expand window
+            // exact single day -> BSA API requires From = date-1, To = date
             effectiveFrom = addDays(effectiveFrom, -1);
-            effectiveTo = addDays(effectiveTo, +1);
+            // Keep effectiveTo as the same date (not +1)
           } else if (effectiveFrom && !effectiveTo) {
             // only start provided -> assume single day
-            effectiveTo = addDays(effectiveFrom, +1);
-            effectiveFrom = addDays(effectiveFrom, -1);
+            effectiveTo = effectiveFrom;  // To = same date
+            effectiveFrom = addDays(effectiveFrom, -1);  // From = date-1
           } else if (!effectiveFrom && effectiveTo) {
             // only end provided -> assume single day
-            effectiveFrom = addDays(effectiveTo, -1);
-            effectiveTo = addDays(effectiveTo, +1);
+            effectiveFrom = addDays(effectiveTo, -1);  // From = date-1
+            // Keep effectiveTo as is (not +1)
           }
 
           console.log("[Activities Tool] get_activities args:", { 

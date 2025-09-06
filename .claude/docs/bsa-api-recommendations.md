@@ -23,6 +23,14 @@ This document captures the recommended API usage patterns provided by the BSA de
 
 ### 1. Get Calendar Activities (Appointments)
 
+**IMPORTANT:** Always use this endpoint for fetching appointments, even when retrieving a single appointment. DO NOT use the generic `get.json` endpoint for appointments because:
+- `getActivities` includes attendee information (ContactIds, CompanyIds, UserIds)
+- `getActivities` provides richer appointment-specific fields
+- `getActivities` handles date filtering server-side
+- `getActivities` returns the proper appointment structure with Type and Activity fields
+
+To fetch a single appointment, simply narrow the date range around the appointment's date.
+
 **Endpoint:** `POST https://rc.bluesquareapps.com/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json`
 
 **Headers:**
@@ -295,15 +303,20 @@ Contacts can have custom properties defined by the organization, such as:
 
 ## Implementation Priority
 
-1. **High Priority**: 
-   - Switch to `getActivities.json` for appointments (biggest performance gain)
+1. **Critical - Must Change Immediately**: 
+   - ALWAYS use `getActivities.json` for ALL appointment fetching (never use `get.json`)
+   - This applies to single appointments too - just use narrow date ranges
    - Include attendees in appointment calls (eliminates extra API calls)
 
-2. **Medium Priority**:
+2. **High Priority**: 
+   - Switch all appointment fetching code to `getActivities.json` 
+   - Ensure IncludeAttendees is always true for proper relationship data
+
+3. **Medium Priority**:
    - Implement batch contact fetching (improves efficiency)
    - Add server-side date filtering (better accuracy)
 
-3. **Low Priority**:
+4. **Low Priority**:
    - Add single contact detail fetching (nice to have)
    - Extended properties support (only when needed)
 
@@ -328,6 +341,203 @@ Contacts can have custom properties defined by the organization, such as:
 - Error message formatting
 - Response formatting for UI
 
+## Creating Appointments and Linking Attendees
+
+### 1. Create Appointment
+
+**Endpoint:** `POST https://rc.bluesquareapps.com/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`
+
+**Request Body:**
+```json
+{
+  "PassKey": "your-passkey",
+  "OrganizationId": "org-uuid",
+  "ObjectName": "appointment",
+  "DataObject": {
+    "Subject": "Client discovery call",  // Required
+    "Description": "Agenda: goals, current stack, success criteria",
+    "StartTime": "2025-09-10T14:00:00.000Z",  // Required - ISO format
+    "EndTime": "2025-09-10T14:30:00.000Z",     // Required - ISO format
+    "Location": "Zoom",
+    "AllDay": false,
+    "Complete": false,
+    "RollOver": false,
+    "AppointmentTypeId": null  // Optional - UUID of appointment type
+  },
+  "IncludeExtendedProperties": false
+}
+```
+
+**Response Structure:**
+```json
+[
+  {
+    "DataObject": {
+      "Id": "656d48cd-c3b4-44af-9f4d-fc93fd85c705",
+      "Subject": "Client discovery call",
+      "Description": "Agenda: goals, current stack, success criteria",
+      "StartTime": "2025-09-10T14:00:00.000Z",
+      "EndTime": "2025-09-10T14:30:00.000Z",
+      "Location": "Zoom",
+      "AllDay": false,
+      "Complete": false,
+      "CreatedOn": "2025-09-06T21:20:59.000Z",
+      "CreatedBy": "32ad7a84-8108-404e-9ec6-47fb30e4fea6",
+      "ModifiedOn": "2025-09-06T21:20:59.000Z",
+      "ModifiedBy": "32ad7a84-8108-404e-9ec6-47fb30e4fea6"
+    },
+    "Valid": true,
+    "ResponseMessage": "success"
+  }
+]
+```
+
+### 2. Link Attendees to Appointment
+
+**Endpoint:** `POST https://rc.bluesquareapps.com/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`
+
+**Linker Types:**
+- `linker_appointments_contacts` - Links contacts to appointments
+- `linker_appointments_companies` - Links companies to appointments  
+- `linker_appointments_users` - Links organization users to appointments
+
+**Request Body (Link Contact):**
+```json
+{
+  "PassKey": "your-passkey",
+  "OrganizationId": "org-uuid",
+  "ObjectName": "linker_appointments_contacts",  // The linker type
+  "LeftObjectName": "appointment",
+  "LeftId": "appointment-uuid",  // ID from create response
+  "RightObjectName": "contact",
+  "RightId": "contact-uuid"
+}
+```
+
+**Request Body (Link Company):**
+```json
+{
+  "PassKey": "your-passkey",
+  "OrganizationId": "org-uuid",
+  "ObjectName": "linker_appointments_companies",
+  "LeftObjectName": "appointment",
+  "LeftId": "appointment-uuid",
+  "RightObjectName": "company",
+  "RightId": "company-uuid"
+}
+```
+
+**Request Body (Link User):**
+```json
+{
+  "PassKey": "your-passkey",
+  "OrganizationId": "org-uuid",
+  "ObjectName": "linker_appointments_users",
+  "LeftObjectName": "appointment",
+  "LeftId": "appointment-uuid",
+  "RightObjectName": "organization_user",  // Note: different from linker name
+  "RightId": "user-uuid"
+}
+```
+
+**Response Structure:**
+```json
+[
+  {
+    "DataObject": {
+      "Id": "link-uuid",  // The linker record ID
+      "LeftObjectName": "appointment",
+      "LeftId": "appointment-uuid",
+      "RightObjectName": "contact",
+      "RightId": "contact-uuid"
+    },
+    "Valid": true,
+    "ResponseMessage": "success"
+  }
+]
+```
+
+### 3. Discover Available Linker Types
+
+**Endpoint:** `POST https://rc.bluesquareapps.com/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/listLinkerTypes.json`
+
+**Request Body:**
+```json
+{
+  "PassKey": "your-passkey",
+  "OrganizationId": "org-uuid",
+  "ObjectName": "appointment"  // Base object to get linkers for
+}
+```
+
+**Response includes linker types like:**
+- `linker_appointments_contacts` (LeftObjectName: appointment, RightObjectName: contact)
+- `linker_appointments_companies` (LeftObjectName: appointment, RightObjectName: company)
+- `linker_appointments_users` (LeftObjectName: appointment, RightObjectName: organization_user)
+
+### 4. Appointment Descriptor Fields
+
+**Endpoint:** `GET https://rc.bluesquareapps.com/endpoints/ajax/descriptors/com.platform.vc.data.Appointment.json`
+
+**Key Fields:**
+- `Subject` (String, required) - The subject/title
+- `Description` (String, MultiLine) - Detailed description
+- `StartTime` (DateTime, required) - When appointment starts
+- `EndTime` (DateTime, required) - When appointment ends
+- `Location` (String) - Where the appointment is
+- `AllDay` (Boolean) - All-day event flag
+- `Complete` (Boolean) - Completion status
+- `RollOver` (Boolean) - Auto-rollover incomplete activities
+- `AppointmentTypeId` (UUID) - Type categorization
+- `RecurringActivityId` (UUID, auto) - For recurring appointments
+- `ExternalScheduleId` (UUID, auto) - For web-booked appointments
+
+## Complete Appointment Creation Flow
+
+1. **Create the appointment** using `create.json` endpoint
+2. **Extract the appointment ID** from the response (`DataObject.Id`)
+3. **For each attendee**, call `link.json` with:
+   - Appropriate linker type (`linker_appointments_contacts`, etc.)
+   - Left side: appointment (parent)
+   - Right side: attendee entity (contact/company/user)
+4. **Verify** by fetching with `getActivities.json` - attendees will appear in the Attendees field
+
+## Best Practices for Fetching Appointments
+
+### Always Use getActivities Endpoint
+**NEVER** use the generic `get.json` endpoint for appointments, even when fetching a single appointment by ID. The `getActivities` endpoint should be your only method for retrieving appointment data.
+
+### Why getActivities is Superior:
+1. **Attendee Information**: Automatically includes ContactIds, CompanyIds, and UserIds
+2. **Proper Structure**: Returns appointments in the correct Type/Activity structure
+3. **Date Filtering**: Server-side date filtering for performance
+4. **No ID-based Fetching Needed**: Just use a narrow date range around the appointment
+5. **Consistent Data Format**: Same format whether fetching one or many appointments
+
+### Examples:
+
+**Fetching appointments for a day:**
+```json
+{
+  "From": "2025-09-10",
+  "To": "2025-09-10",
+  "IncludeAppointments": true,
+  "IncludeAttendees": true
+}
+```
+
+**Fetching appointments for a specific time (when you know the approximate time):**
+```json
+{
+  "From": "2025-09-09",  // Day before
+  "To": "2025-09-11",    // Day after
+  "IncludeAppointments": true,
+  "IncludeAttendees": true
+}
+```
+
+Then filter the results client-side by the specific appointment ID if needed.
+
 ## Notes for Future Implementation
 
 1. The `From` and `To` date parameters appear to accept "YYYY-MM-DD" format
@@ -338,3 +548,7 @@ Contacts can have custom properties defined by the organization, such as:
 6. The `Valid` field indicates success (true) or failure (false)
 7. Custom properties have complex structures (nested values, currency types)
 8. Consider caching frequently accessed contacts to reduce API calls
+9. When linking attendees, the RightObjectName for users is `organization_user`, not `user`
+10. All datetime fields use ISO 8601 format with timezone (e.g., "2025-09-10T14:00:00.000Z")
+11. The linker pattern follows: `linker_<leftobject>_<rightobject>` naming convention
+12. Appointment creation returns the full object with system-generated fields (Id, CreatedOn, etc.)

@@ -6,11 +6,12 @@
 3. [Common Patterns](#common-patterns)
 4. [Calendar & Activities](#calendar--activities)
 5. [Appointments](#appointments)
-6. [Contacts](#contacts)
-7. [Relationships & Linking](#relationships--linking)
-8. [Descriptors](#descriptors)
-9. [Error Handling](#error-handling)
-10. [Best Practices](#best-practices)
+6. [Tasks](#tasks)
+7. [Contacts](#contacts)
+8. [Relationships & Linking](#relationships--linking)
+9. [Descriptors](#descriptors)
+10. [Error Handling](#error-handling)
+11. [Best Practices](#best-practices)
 
 ## Overview
 
@@ -81,13 +82,14 @@ if (!normalized.valid) {
 ### Get Activities (Appointments & Tasks)
 **Endpoint:** `POST /endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json`
 
-**CRITICAL:** This is the ONLY endpoint to use for fetching appointments. Never use generic `get.json` for appointments.
+**CRITICAL:** This is the ONLY endpoint to use for fetching appointments and tasks. Never use generic `get.json` for activities.
 
 **Why getActivities is mandatory:**
+- Unified endpoint for both appointments and tasks
 - Includes attendee relationships automatically
 - Provides proper Type/Activity structure
 - Server-side date filtering for performance
-- Returns complete appointment context
+- Returns complete activity context
 
 **Request:**
 ```json
@@ -100,11 +102,11 @@ if (!normalized.valid) {
   "To": "2025-09-30",
   "IncludeAttendees": true,
   "IncludeExtendedProperties": false,
-  "ObjectName": "appointment"  // Optional, for appointments only
+  "ObjectName": "appointment"  // Optional: "appointment" for appointments only, "task" for tasks only, omit for both
 }
 ```
 
-**Response:**
+**Response for Appointments:**
 ```json
 [
   {
@@ -126,6 +128,42 @@ if (!normalized.valid) {
           "AllDay": false,
           "Complete": false,
           "AppointmentTypeId": "uuid",
+          "CreatedBy": "uuid",
+          "CreatedOn": "datetime",
+          "ModifiedBy": "uuid",
+          "ModifiedOn": "datetime"
+        }
+      }
+    ],
+    "Valid": true,
+    "ResponseMessage": "success"
+  }
+]
+```
+
+**Response for Tasks:**
+```json
+[
+  {
+    "Activities": [
+      {
+        "Type": "Task",
+        "Attendees": {
+          "ContactIds": ["uuid"],
+          "CompanyIds": [],
+          "UserIds": ["uuid"]
+        },
+        "Activity": {
+          "Id": "uuid",
+          "Subject": "string",
+          "Description": "string",
+          "Status": "NotStarted",
+          "Priority": "Normal",
+          "StartTime": "2025-09-04T19:00:00.000Z",
+          "DueTime": "2025-09-04T19:15:00.000Z",
+          "PercentComplete": 0,
+          "Location": "string",
+          "RollOver": false,
           "CreatedBy": "uuid",
           "CreatedOn": "datetime",
           "ModifiedBy": "uuid",
@@ -233,6 +271,173 @@ Fetch week:
 | Complete | Boolean | No | Completion status |
 | RollOver | Boolean | No | Auto-rollover incomplete |
 | AppointmentTypeId | UUID | No | Type categorization |
+
+## Tasks
+
+### Create Task
+**Endpoint:** `POST /endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`
+
+**Request:**
+```json
+{
+  "PassKey": "string",
+  "OrganizationId": "uuid",
+  "ObjectName": "task",  // Note: "task" not "Task"
+  "DataObject": {
+    "Subject": "Follow up with client",      // Required
+    "DueDate": "2025-09-15T00:00:00Z",      // Required
+    "Description": "Call about proposal",
+    "StatusId": "NotStarted",               // Required: NotStarted|InProgress|Completed|WaitingOnSomeoneElse|Deferred
+    "PriorityId": "Normal",                 // Optional: Low|Normal|High
+    "PercentComplete": 0,                   // 0-100
+    "StartDate": "2025-09-10T00:00:00Z",    // Optional
+    "CompletedDate": null,                  // Set when StatusId = Completed
+    "ReminderTime": null                    // Optional reminder
+  },
+  "IncludeExtendedProperties": false
+}
+```
+
+**Response:**
+```json
+[
+  {
+    "DataObject": {
+      "Id": "23e3f4d5-789a-4b5c-8d9e-0f1a2b3c4d5e",
+      "Subject": "Follow up with client",
+      "DueDate": "2025-09-15T00:00:00.000Z",
+      "StatusId": "NotStarted",
+      "PriorityId": "Normal",
+      "PercentComplete": 0,
+      "CreatedOn": "2025-09-06T21:30:00.000Z",
+      "CreatedBy": "uuid",
+      "ModifiedOn": "2025-09-06T21:30:00.000Z",
+      "ModifiedBy": "uuid"
+    },
+    "Valid": true,
+    "ResponseMessage": "success"
+  }
+]
+```
+
+### Task Fields
+| Field | Type | Required | Description | Valid Values |
+|-------|------|----------|-------------|--------------|
+| Subject | String | Yes | Task title | Any text |
+| DueDate | DateTime | Yes | Task due date | ISO 8601 format |
+| StatusId | String | Yes | Task status | NotStarted, InProgress, Completed, WaitingOnSomeoneElse, Deferred |
+| Description | String | No | Detailed description | Any text |
+| PriorityId | String | No | Task priority | Low, Normal, High (default: Normal) |
+| PercentComplete | Integer | No | Completion percentage | 0-100 (default: 0) |
+| StartDate | DateTime | No | When to start task | ISO 8601 format |
+| CompletedDate | DateTime | No | When task was completed | ISO 8601 format (auto-set when StatusId=Completed) |
+| ReminderTime | DateTime | No | Reminder notification time | ISO 8601 format |
+| RollOver | Boolean | No | Auto-rollover if incomplete | true/false |
+
+### Task Status Values
+- **NotStarted**: Task hasn't been started yet
+- **InProgress**: Task is actively being worked on
+- **Completed**: Task is finished
+- **WaitingOnSomeoneElse**: Task is blocked by external dependency
+- **Deferred**: Task is postponed to a later date
+
+### Task vs Appointment
+
+Tasks and appointments use the same underlying activities system but have distinct characteristics:
+
+| Aspect | Task | Appointment |
+|--------|------|-------------|
+| ObjectName | "task" | "appointment" |
+| Time Fields | DueDate (single) | StartTime + EndTime (range) |
+| Required Fields | Subject, DueDate, StatusId | Subject, StartTime, EndTime |
+| Status Tracking | StatusId + PercentComplete | Complete (boolean) |
+| Linker Type | linker_tasks_* | linker_appointments_* |
+| Get Activities | IncludeTasks: true | IncludeAppointments: true |
+
+### Link Attendees to Task
+
+Tasks support the same attendee linking pattern as appointments:
+
+**Endpoint:** `POST /endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`
+
+**Request (Link Contact):**
+```json
+{
+  "PassKey": "string",
+  "OrganizationId": "uuid",
+  "ObjectName": "linker_tasks_contacts",
+  "LeftLink": {
+    "ObjectName": "task",
+    "Id": "task-uuid",
+    "OrganizationId": "org-uuid"
+  },
+  "RightLink": {
+    "ObjectName": "organization_user",  // Note: not "contact"
+    "Id": "contact-uuid",
+    "OrganizationId": "org-uuid"
+  }
+}
+```
+
+**Request (Link Company):**
+```json
+{
+  "PassKey": "string",
+  "OrganizationId": "uuid",
+  "ObjectName": "linker_tasks_companies",
+  "LeftLink": {
+    "ObjectName": "task",
+    "Id": "task-uuid",
+    "OrganizationId": "org-uuid"
+  },
+  "RightLink": {
+    "ObjectName": "company",
+    "Id": "company-uuid",
+    "OrganizationId": "org-uuid"
+  }
+}
+```
+
+### Get Tasks
+
+Tasks are retrieved through the same getActivities endpoint as appointments:
+
+**Request:**
+```json
+{
+  "PassKey": "string",
+  "OrganizationId": "uuid",
+  "From": "2025-09-08",   // Day before actual start
+  "To": "2025-09-15",     // Actual end date
+  "IncludeTasks": true,   // Include tasks
+  "IncludeAttendees": true
+}
+```
+
+**Response includes tasks in Activities array:**
+```json
+[
+  {
+    "Activities": [
+      {
+        "Task": {
+          "Id": "task-uuid",
+          "Subject": "Follow up with client",
+          "DueDate": "2025-09-15T00:00:00.000Z",
+          "StatusId": "InProgress",
+          "PriorityId": "High",
+          "PercentComplete": 50
+        },
+        "Attendees": {
+          "ContactIds": ["contact-uuid-1"],
+          "CompanyIds": ["company-uuid-1"]
+        }
+      }
+    ],
+    "Valid": true
+  }
+]
+```
 
 ## Contacts
 
@@ -591,6 +796,86 @@ const enriched = activities.map(activity => ({
   _enrichedContacts: contacts.filter(c => 
     activity.Attendees?.ContactIds?.includes(c.Id)
   )
+}));
+```
+
+### Create Task with Assignees
+```javascript
+// 1. Create task
+const task = await createTask({
+  Subject: "Follow up on proposal",
+  DueDate: "2025-09-15T00:00:00Z",
+  StatusId: "NotStarted",
+  PriorityId: "High",
+  Description: "Review and send final proposal to client",
+  PercentComplete: 0
+});
+
+// 2. Link contact assignee
+await linkAttendee({
+  taskId: task.Id,
+  contactId: "contact-uuid",
+  type: "contact",
+  linkerType: "linker_tasks_contacts"  // Task-specific linker
+});
+
+// 3. Link company
+await linkAttendee({
+  taskId: task.Id,
+  companyId: "company-uuid",
+  type: "company",
+  linkerType: "linker_tasks_companies"
+});
+
+// 4. Verify with getActivities
+const activities = await getActivities({
+  From: "2025-09-14",  // Day before due date
+  To: "2025-09-15",    // Due date
+  IncludeTasks: true,
+  IncludeAttendees: true
+});
+
+// 5. Update task progress
+await updateTask({
+  Id: task.Id,
+  StatusId: "InProgress",
+  PercentComplete: 50
+});
+```
+
+### Fetch Mixed Activities (Tasks + Appointments)
+```javascript
+// 1. Get all activities for a date range
+const activities = await getActivities({
+  From: "2025-09-01",
+  To: "2025-09-30",
+  IncludeAppointments: true,
+  IncludeTasks: true,
+  IncludeAttendees: true
+});
+
+// 2. Separate by type
+const appointments = activities.filter(a => a.Appointment);
+const tasks = activities.filter(a => a.Task);
+
+// 3. Process tasks by status
+const openTasks = tasks.filter(t => 
+  t.Task.StatusId !== "Completed"
+);
+const overdueTasks = tasks.filter(t => 
+  new Date(t.Task.DueDate) < new Date() && 
+  t.Task.StatusId !== "Completed"
+);
+
+// 4. Create unified activity view
+const allActivities = activities.map(activity => ({
+  id: activity.Appointment?.Id || activity.Task?.Id,
+  type: activity.Appointment ? "appointment" : "task",
+  subject: activity.Appointment?.Subject || activity.Task?.Subject,
+  date: activity.Appointment?.StartTime || activity.Task?.DueDate,
+  status: activity.Appointment?.Complete ? "Complete" : 
+          activity.Task?.StatusId || "Scheduled",
+  attendees: activity.Attendees
 }));
 ```
 

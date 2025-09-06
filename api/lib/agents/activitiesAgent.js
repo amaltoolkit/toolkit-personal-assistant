@@ -65,11 +65,12 @@ Example workflow:
 3. Activities returned with _enrichedAttendees field containing full contact details
 4. Present the enriched information directly to the user
 
-TOOLS AVAILABLE (4 total):
+TOOLS AVAILABLE (5 total):
 1. get_activities - Fetches appointments and/or tasks based on parameters
 2. get_contact_details - Resolves contact information for attendees
 3. create_appointment - Creates a new calendar appointment
-4. link_attendees - Links contacts, companies, or users to an appointment
+4. create_task - Creates a new task/todo item with status and priority
+5. link_attendees - Links contacts, companies, or users to appointments or tasks
 
 Remember: The BSA API uses ObjectName intelligently:
 - Appointments only: ObjectName = "appointment" is added
@@ -108,10 +109,20 @@ You can create new appointments using the create_appointment tool. Examples:
 - "Schedule a call with John next Monday from 10-11am" - Convert to proper timestamps
 - "Book a team meeting in Conference Room A" - Include location details
 
-After creating an appointment, you can link attendees using the link_attendees tool:
-- Provide the appointment ID from creation
+CREATING TASKS:
+You can create new tasks using the create_task tool. Examples:
+- "Create a task to review the budget by Friday" - Sets due date with default 5 PM
+- "Add a high priority task to call client tomorrow" - Sets priority level
+- "Create a task with 50% completion" - Track partial progress
+- Task statuses: NotStarted, InProgress, Completed, WaitingOnSomeoneElse, Deferred
+- Task priorities: Low, Normal, High
+
+LINKING ATTENDEES:
+After creating an appointment or task, you can link attendees using the link_attendees tool:
+- Provide the appointment/task ID from creation
 - Specify contacts, companies, or users to link
 - The tool handles the proper linker types automatically
+- Works for both appointments and tasks
    - Assigned by: Sarah Johnson
 
 Be concise and informative in your responses. Always be explicit about what types of activities you're fetching.`;
@@ -185,6 +196,55 @@ async function getActivities(passKey, orgId, options = {}, dependencies) {
   };
 }
 
+// Create a new task using BSA create endpoint
+async function createTask(passKey, orgId, taskData, dependencies) {
+  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  
+  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  
+  const payload = {
+    PassKey: passKey,
+    OrganizationId: orgId,
+    ObjectName: "task",
+    DataObject: {
+      Subject: taskData.subject,
+      Description: taskData.description || null,
+      Status: taskData.status || "NotStarted",
+      Priority: taskData.priority || "Normal",
+      StartTime: taskData.startTime || null,
+      DueTime: taskData.dueTime,
+      PercentComplete: taskData.percentComplete || 0,
+      Location: taskData.location || null,
+      RollOver: taskData.rollOver || false
+    },
+    IncludeExtendedProperties: false
+  };
+
+  console.log("[createTask] Creating task:", payload.DataObject.Subject);
+  
+  const resp = await axios.post(url, payload, axiosConfig);
+  const normalized = normalizeBSAResponse(resp.data);
+
+  if (!normalized.valid) {
+    throw new Error(normalized.error || 'Failed to create task');
+  }
+
+  const created = normalized.data;
+  console.log("[createTask] Created with ID:", created.Id);
+  
+  return {
+    id: created.Id,
+    subject: created.Subject,
+    status: created.Status,
+    priority: created.Priority,
+    startTime: created.StartTime,
+    dueTime: created.DueTime,
+    percentComplete: created.PercentComplete,
+    description: created.Description,
+    createdOn: created.CreatedOn
+  };
+}
+
 // Create a new appointment using BSA create endpoint
 async function createAppointment(passKey, orgId, appointmentData, dependencies) {
   const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
@@ -231,25 +291,29 @@ async function createAppointment(passKey, orgId, appointmentData, dependencies) 
   };
 }
 
-// Link an attendee to an appointment using BSA link endpoint
-async function linkAttendeeToAppointment(passKey, orgId, appointmentId, attendeeId, attendeeType, dependencies) {
+// Link an attendee to an activity (appointment or task) using BSA link endpoint
+async function linkAttendeeToActivity(passKey, orgId, activityId, attendeeId, attendeeType, activityType, dependencies) {
   const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
   
   const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`;
+  
+  // Determine activity type (default to appointment for backward compatibility)
+  const activity = activityType || 'appointment';
+  const isTask = activity.toLowerCase() === 'task';
   
   // Determine the correct linker type and right object name based on attendee type
   let linkerType, rightObjectName;
   switch (attendeeType.toLowerCase()) {
     case 'contact':
-      linkerType = 'linker_appointments_contacts';
+      linkerType = isTask ? 'linker_tasks_contacts' : 'linker_appointments_contacts';
       rightObjectName = 'contact';
       break;
     case 'company':
-      linkerType = 'linker_appointments_companies';
+      linkerType = isTask ? 'linker_tasks_companies' : 'linker_appointments_companies';
       rightObjectName = 'company';
       break;
     case 'user':
-      linkerType = 'linker_appointments_users';
+      linkerType = isTask ? 'linker_tasks_users' : 'linker_appointments_users';
       rightObjectName = 'organization_user';
       break;
     default:
@@ -260,28 +324,34 @@ async function linkAttendeeToAppointment(passKey, orgId, appointmentId, attendee
     PassKey: passKey,
     OrganizationId: orgId,
     ObjectName: linkerType,
-    LeftObjectName: "appointment",
-    LeftId: appointmentId,
+    LeftObjectName: activity.toLowerCase(),
+    LeftId: activityId,
     RightObjectName: rightObjectName,
     RightId: attendeeId
   };
 
-  console.log(`[linkAttendee] Linking ${attendeeType} ${attendeeId} to appointment ${appointmentId}`);
+  console.log(`[linkAttendee] Linking ${attendeeType} ${attendeeId} to ${activity} ${activityId}`);
   
   const resp = await axios.post(url, payload, axiosConfig);
   const normalized = normalizeBSAResponse(resp.data);
 
   if (!normalized.valid) {
-    throw new Error(normalized.error || `Failed to link ${attendeeType} to appointment`);
+    throw new Error(normalized.error || `Failed to link ${attendeeType} to ${activity}`);
   }
 
   return {
     success: true,
-    appointmentId,
+    activityId,
+    activityType: activity,
     attendeeId,
     attendeeType,
     linkerId: normalized.data?.Id
   };
+}
+
+// Legacy wrapper for backward compatibility
+async function linkAttendeeToAppointment(passKey, orgId, appointmentId, attendeeId, attendeeType, dependencies) {
+  return linkAttendeeToActivity(passKey, orgId, appointmentId, attendeeId, attendeeType, 'appointment', dependencies);
 }
 
 // Batch link multiple attendees to an appointment
@@ -664,7 +734,113 @@ function createActivitiesTools(tool, z, passKey, orgId, timeZone = 'UTC', depend
       }
     ),
     
-    // Tool 4: Link attendees to an appointment
+    // Tool 4: Create a new task
+    tool(
+      async ({ subject, description, status, priority, startTime, dueTime, percentComplete, location, rollOver, dateQuery, duration }) => {
+        try {
+          // Validate required fields
+          if (!subject) {
+            return JSON.stringify({ 
+              error: "Subject is required for creating a task" 
+            });
+          }
+          
+          // Handle natural language date parsing if dateQuery is provided
+          if (dateQuery && !dueTime) {
+            const parsed = parseDateQuery(dateQuery, timeZone);
+            if (parsed) {
+              // For tasks, use the end date as due time with default 5 PM
+              const dueDate = new Date(parsed.endDate + 'T17:00:00');
+              dueTime = dueDate.toISOString();
+              
+              // If start time requested, use start date with 9 AM
+              if (!startTime && parsed.startDate !== parsed.endDate) {
+                const start = new Date(parsed.startDate + 'T09:00:00');
+                startTime = start.toISOString();
+              }
+            }
+          }
+          
+          // Ensure we have at least a due time
+          if (!dueTime) {
+            return JSON.stringify({ 
+              error: "DueTime is required. Provide it in ISO format or use dateQuery." 
+            });
+          }
+          
+          // Convert to ISO format if needed
+          const ensureISO = (dateStr) => {
+            if (!dateStr) return null;
+            const date = new Date(dateStr);
+            return date.toISOString();
+          };
+          
+          // Validate enums
+          const validStatuses = ["NotStarted", "InProgress", "Completed", "WaitingOnSomeoneElse", "Deferred"];
+          const validPriorities = ["Low", "Normal", "High"];
+          
+          if (status && !validStatuses.includes(status)) {
+            return JSON.stringify({ 
+              error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` 
+            });
+          }
+          
+          if (priority && !validPriorities.includes(priority)) {
+            return JSON.stringify({ 
+              error: `Invalid priority. Must be one of: ${validPriorities.join(", ")}` 
+            });
+          }
+          
+          const taskData = {
+            subject,
+            description: description || null,
+            status: status || "NotStarted",
+            priority: priority || "Normal",
+            startTime: ensureISO(startTime),
+            dueTime: ensureISO(dueTime),
+            percentComplete: percentComplete || 0,
+            location: location || null,
+            rollOver: rollOver || false
+          };
+          
+          console.log("[create_task Tool] Creating task:", taskData);
+          
+          const result = await createTask(passKey, orgId, taskData, dependencies);
+          
+          return JSON.stringify({
+            success: true,
+            task: result,
+            message: `Task "${result.subject}" created successfully`,
+            id: result.id
+          });
+          
+        } catch (error) {
+          console.error("[create_task Tool] Error:", error);
+          return JSON.stringify({ 
+            success: false,
+            error: `Failed to create task: ${error.message}` 
+          });
+        }
+      },
+      {
+        name: "create_task",
+        description: "Create a new task/todo item. Supports natural language dates via dateQuery parameter.",
+        schema: z.object({
+          subject: z.string().describe("The subject/title of the task (required)"),
+          description: z.string().optional().describe("Detailed description of the task"),
+          status: z.enum(["NotStarted", "InProgress", "Completed", "WaitingOnSomeoneElse", "Deferred"]).optional().describe("Task status (default: NotStarted)"),
+          priority: z.enum(["Low", "Normal", "High"]).optional().describe("Task priority (default: Normal)"),
+          startTime: z.string().optional().describe("Start time in ISO format (optional)"),
+          dueTime: z.string().optional().describe("Due time in ISO format (e.g., 2025-09-10T17:00:00Z)"),
+          percentComplete: z.number().min(0).max(100).optional().describe("Completion percentage 0-100 (default: 0)"),
+          location: z.string().optional().describe("Location for the task"),
+          rollOver: z.boolean().optional().describe("Auto-rollover incomplete tasks to next day (default: false)"),
+          dateQuery: z.string().optional().describe("Natural language date like 'tomorrow' or 'next Friday'")
+        })
+      }
+    ),
+    
+    // Tool 5: Link attendees to an appointment
     tool(
       async ({ appointmentId, contactIds, companyIds, userIds }) => {
         try {
@@ -856,6 +1032,8 @@ module.exports = {
   getActivities,
   getContactsByIds,
   createAppointment,
+  createTask,
+  linkAttendeeToActivity,
   linkAttendeeToAppointment,
   linkMultipleAttendees,
   ACTIVITIES_PROMPT

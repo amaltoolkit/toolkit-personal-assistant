@@ -7,6 +7,9 @@ const API_BASE = window.location.protocol === 'chrome-extension:'
   ? APP_BASE 
   : LOCAL_BASE;
 
+// Feature flag for new architecture
+const USE_NEW_ARCHITECTURE = true; // Set to true to use new agent endpoints
+
 // Storage Keys
 const SESSION_ID_KEY = 'bsa_session_id';
 const LAST_ORG_ID_KEY = 'bsa_last_org_id';
@@ -436,14 +439,22 @@ async function handleSendMessage() {
     isProcessing = true;
     elements.sendBtn.disabled = true;
     
-    const response = await fetch(`${API_BASE}/api/orchestrator/query`, {
+    // Choose endpoint based on feature flag
+    const endpoint = USE_NEW_ARCHITECTURE 
+      ? `${API_BASE}/api/agent/execute`
+      : `${API_BASE}/api/orchestrator/query`;
+    
+    console.log(`[CHAT] Using endpoint: ${endpoint}`);
+    
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         query: message,
         session_id: currentSessionId,
         org_id: currentOrgId,
-        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        safe_mode: true // Enable approval flow for testing
       })
     });
     
@@ -476,9 +487,38 @@ async function handleSendMessage() {
     // Remove typing indicator
     removeTypingIndicator(typingId);
     
-    // Add assistant response
-    const responseText = data.response || data.error || 'I couldn\'t process that request.';
-    addMessageToChat(responseText, false);
+    // Handle new architecture response format
+    if (USE_NEW_ARCHITECTURE) {
+      if (data.status === 'PENDING_APPROVAL') {
+        // Handle approval request
+        console.log('[CHAT] Approval required:', data.previews);
+        
+        // Show approval message if provided
+        if (data.message) {
+          addMessageToChat(data.message, false);
+        }
+        
+        // Show approval UI
+        showApprovalUI(data.previews, data.thread_id);
+      } else if (data.status === 'COMPLETED') {
+        // Add assistant response
+        const responseText = data.response || 'Task completed.';
+        addMessageToChat(responseText, false);
+        
+        // Show follow-up questions if provided
+        if (data.followups && data.followups.length > 0) {
+          showFollowUpQuestions(data.followups);
+        }
+      } else {
+        // Handle error or unknown status
+        const responseText = data.error || 'I couldn\'t process that request.';
+        addMessageToChat(responseText, false);
+      }
+    } else {
+      // Legacy format handling
+      const responseText = data.response || data.error || 'I couldn\'t process that request.';
+      addMessageToChat(responseText, false);
+    }
     
   } catch (error) {
     console.error('[CHAT] Error:', error);
@@ -575,6 +615,246 @@ function scrollToBottom() {
   if (elements.chatMessages) {
     elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
   }
+}
+
+// ============================================
+// APPROVAL UI FUNCTIONS (NEW ARCHITECTURE)
+// ============================================
+
+let currentThreadId = null; // Store thread ID for approval
+
+function showApprovalUI(previews, threadId) {
+  if (!previews || previews.length === 0) {
+    console.error('[APPROVAL] No previews to show');
+    return;
+  }
+  
+  currentThreadId = threadId;
+  console.log('[APPROVAL] Showing approval UI for thread:', threadId);
+  
+  // Create approval container
+  const approvalDiv = document.createElement('div');
+  approvalDiv.className = 'approval-container';
+  approvalDiv.id = `approval-${Date.now()}`;
+  
+  // Add title
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'approval-title';
+  titleDiv.innerHTML = '<strong>🔍 Review and Approve Actions:</strong>';
+  approvalDiv.appendChild(titleDiv);
+  
+  // Create approval cards
+  const approvals = {};
+  previews.forEach((preview, index) => {
+    const card = document.createElement('div');
+    card.className = 'approval-card';
+    
+    // Action type and ID
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'approval-header';
+    headerDiv.innerHTML = `
+      <span class="approval-type">${preview.type || preview.kind || 'Action'}</span>
+      <span class="approval-id">#${preview.actionId || index + 1}</span>
+    `;
+    card.appendChild(headerDiv);
+    
+    // Preview content
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'approval-content';
+    
+    // Format the preview spec
+    if (preview.spec) {
+      const specHtml = formatPreviewSpec(preview.spec);
+      contentDiv.innerHTML = specHtml;
+    } else {
+      contentDiv.textContent = JSON.stringify(preview, null, 2);
+    }
+    card.appendChild(contentDiv);
+    
+    // Approval buttons
+    const buttonsDiv = document.createElement('div');
+    buttonsDiv.className = 'approval-buttons';
+    
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'approve-btn';
+    approveBtn.textContent = '✓ Approve';
+    approveBtn.dataset.actionId = preview.actionId || `action-${index}`;
+    
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'reject-btn';
+    rejectBtn.textContent = '✗ Reject';
+    rejectBtn.dataset.actionId = preview.actionId || `action-${index}`;
+    
+    // Set default to approve
+    approvals[preview.actionId || `action-${index}`] = true;
+    approveBtn.classList.add('selected');
+    
+    // Button event handlers
+    approveBtn.onclick = () => {
+      approvals[approveBtn.dataset.actionId] = true;
+      approveBtn.classList.add('selected');
+      rejectBtn.classList.remove('selected');
+    };
+    
+    rejectBtn.onclick = () => {
+      approvals[rejectBtn.dataset.actionId] = false;
+      rejectBtn.classList.add('selected');
+      approveBtn.classList.remove('selected');
+    };
+    
+    buttonsDiv.appendChild(approveBtn);
+    buttonsDiv.appendChild(rejectBtn);
+    card.appendChild(buttonsDiv);
+    
+    approvalDiv.appendChild(card);
+  });
+  
+  // Submit button
+  const submitDiv = document.createElement('div');
+  submitDiv.className = 'approval-submit';
+  
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'submit-approval-btn';
+  submitBtn.textContent = 'Submit Decisions';
+  submitBtn.onclick = () => handleApprovalSubmit(approvals, approvalDiv.id);
+  
+  submitDiv.appendChild(submitBtn);
+  approvalDiv.appendChild(submitDiv);
+  
+  // Add to chat
+  elements.chatMessages?.appendChild(approvalDiv);
+  approvalDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+function formatPreviewSpec(spec) {
+  if (!spec) return '';
+  
+  let html = '<div class="spec-details">';
+  
+  // Format based on type
+  if (spec.name) {
+    html += `<div><strong>Name:</strong> ${spec.name}</div>`;
+  }
+  if (spec.description) {
+    html += `<div><strong>Description:</strong> ${spec.description}</div>`;
+  }
+  if (spec.steps && Array.isArray(spec.steps)) {
+    html += '<div><strong>Steps:</strong></div>';
+    html += '<ol class="spec-steps">';
+    spec.steps.forEach(step => {
+      html += `<li>${step.subject || step.name || step}</li>`;
+    });
+    html += '</ol>';
+  }
+  if (spec.dueDate) {
+    html += `<div><strong>Due Date:</strong> ${new Date(spec.dueDate).toLocaleDateString()}</div>`;
+  }
+  if (spec.priority) {
+    html += `<div><strong>Priority:</strong> ${spec.priority}</div>`;
+  }
+  
+  html += '</div>';
+  return html;
+}
+
+async function handleApprovalSubmit(approvals, containerId) {
+  console.log('[APPROVAL] Submitting approvals:', approvals);
+  
+  if (!currentThreadId) {
+    console.error('[APPROVAL] No thread ID available');
+    addMessageToChat('Error: Missing thread ID for approval', false);
+    return;
+  }
+  
+  // Disable submit button
+  const container = document.getElementById(containerId);
+  const submitBtn = container?.querySelector('.submit-approval-btn');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Processing...';
+  }
+  
+  try {
+    const response = await fetch(`${API_BASE}/api/agent/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        org_id: currentOrgId,
+        thread_id: currentThreadId,
+        approvals: approvals,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to submit approvals');
+    }
+    
+    const data = await response.json();
+    
+    // Remove approval UI
+    if (container) {
+      container.remove();
+    }
+    
+    // Handle response
+    if (data.status === 'PENDING_APPROVAL') {
+      // Another approval required
+      if (data.message) {
+        addMessageToChat(data.message, false);
+      }
+      showApprovalUI(data.previews, data.thread_id || currentThreadId);
+    } else if (data.status === 'COMPLETED') {
+      // Show completion message
+      const responseText = data.response || 'Actions executed successfully.';
+      addMessageToChat(responseText, false);
+      
+      // Show follow-ups if available
+      if (data.followups && data.followups.length > 0) {
+        showFollowUpQuestions(data.followups);
+      }
+    }
+    
+  } catch (error) {
+    console.error('[APPROVAL] Error submitting approvals:', error);
+    addMessageToChat('Failed to submit approvals. Please try again.', false);
+    
+    // Re-enable submit button
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit Decisions';
+    }
+  }
+}
+
+function showFollowUpQuestions(followups) {
+  if (!followups || followups.length === 0) return;
+  
+  const followupDiv = document.createElement('div');
+  followupDiv.className = 'followup-container';
+  
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'followup-title';
+  titleDiv.innerHTML = '<strong>Suggested follow-up questions:</strong>';
+  followupDiv.appendChild(titleDiv);
+  
+  followups.forEach((question, index) => {
+    const questionBtn = document.createElement('button');
+    questionBtn.className = 'followup-question';
+    questionBtn.textContent = `${index + 1}. ${question}`;
+    questionBtn.onclick = () => {
+      // Set the question in the input and send
+      if (elements.chatInput) {
+        elements.chatInput.value = question;
+        handleSendMessage();
+      }
+    };
+    followupDiv.appendChild(questionBtn);
+  });
+  
+  elements.chatMessages?.appendChild(followupDiv);
+  followupDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 // ============================================

@@ -237,7 +237,23 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
+    // Log the FULL token response to see all fields
+    console.log("[PROCESS OAUTH] Token endpoint full response:", JSON.stringify(tokenResp.data, null, 2));
+    console.log("[PROCESS OAUTH] Token response keys:", Object.keys(tokenResp.data));
+    
+    // Extract all possible fields
     const bearerToken = tokenResp.data.access_token;
+    const userIdFromToken = tokenResp.data.user_id || tokenResp.data.UserId || tokenResp.data.UserID || tokenResp.data.userId;
+    const refreshToken = tokenResp.data.refresh_token;
+    const expiresIn = tokenResp.data.expires_in;
+    
+    console.log("[PROCESS OAUTH] Token endpoint extracted values:", {
+      hasAccessToken: !!bearerToken,
+      hasUserId: !!userIdFromToken,
+      userId: userIdFromToken || "not in token response",
+      hasRefreshToken: !!refreshToken,
+      expiresIn
+    });
     
     // Validate bearer token was received
     if (!bearerToken) {
@@ -270,20 +286,34 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
+    // Log the FULL passkey response to see all fields
+    console.log("[PROCESS OAUTH] PassKey endpoint full response:", JSON.stringify(passKeyResp.data, null, 2));
+    console.log("[PROCESS OAUTH] PassKey response keys:", Object.keys(passKeyResp.data));
+    
     // Extract PassKey from response
     // BSA may return PassKey in different formats:
     // - Array format: [{ PassKey: "...", Valid: true, ... }]
     // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
     const responseData = Array.isArray(passKeyResp.data) ? passKeyResp.data[0] : passKeyResp.data;
     const passKey = responseData?.PassKey || responseData?.passkey;
-    const userId = responseData?.user_id || responseData?.UserId || responseData?.UserID;
+    const userIdFromPassKey = responseData?.user_id || responseData?.UserId || responseData?.UserID || responseData?.userId;
     
-    // Log the response structure for debugging
-    console.log("[PROCESS OAUTH] PassKey response structure:", {
+    console.log("[PROCESS OAUTH] PassKey endpoint extracted values:", {
       hasPassKey: !!passKey,
-      hasUserId: !!userId,
-      userId: userId || "not found",
-      responseKeys: Object.keys(responseData || {})
+      hasUserId: !!userIdFromPassKey,
+      userId: userIdFromPassKey || "not in passkey response",
+      responseStructure: Array.isArray(passKeyResp.data) ? "array" : "object",
+      responseDataKeys: responseData ? Object.keys(responseData) : []
+    });
+    
+    // Determine where userId came from
+    const userId = userIdFromToken || userIdFromPassKey || null;
+    
+    console.log("[PROCESS OAUTH] Final userId determination:", {
+      fromToken: userIdFromToken || "none",
+      fromPassKey: userIdFromPassKey || "none",
+      final: userId || "not found",
+      source: userIdFromToken ? "token" : (userIdFromPassKey ? "passkey" : "none")
     });
     
     // Validate PassKey was received
@@ -297,6 +327,14 @@ async function processOAuthCallback(code, state) {
     // Calculate expiry time (1 hour from now)
     // BSA PassKeys have a fixed 1-hour lifetime
     const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+    
+    console.log("[PROCESS OAUTH] About to store in database:", {
+      session_id: row.session_id,
+      hasPassKey: !!passKey,
+      hasUserId: !!userId,
+      userId: userId || "null",
+      expires_at: expiresAt
+    });
 
     // Upsert the PassKey into bsa_tokens table
     // Using upsert to handle case where session already has a token
@@ -865,6 +903,16 @@ app.post("/api/workflow/query", async (req, res) => {
     res.status(500).json({ error: "Failed to process workflow request" });
   }
 });
+
+// Multi-Agent Routes (New Architecture)
+// Only mount if feature flag is enabled
+if (process.env.USE_NEW_ARCHITECTURE === 'true') {
+  console.log('[SERVER] New architecture enabled - mounting agent routes');
+  const agentRoutes = require('./routes/agent');
+  app.use('/api/agent', agentRoutes);
+} else {
+  console.log('[SERVER] New architecture disabled - using legacy endpoints');
+}
 
 // Orchestrator API endpoint - Unified multi-agent interface
 app.post("/api/orchestrator/query", async (req, res) => {

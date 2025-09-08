@@ -1062,3 +1062,185 @@ body {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 /* ===== End dropdown refresh ===== */
+
+/* ================================ */
+/* APPROVAL UI STYLES (NEW ARCHITECTURE) */
+/* ================================ */
+
+.approval-container {
+  margin: 10px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  animation: slideIn 0.3s ease-out;
+}
+
+.approval-title {
+  margin-bottom: 15px;
+  color: #333;
+  font-size: 16px;
+}
+
+.approval-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.approval-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.approval-type {
+  background: #007bff;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.approval-id {
+  color: #666;
+  font-size: 12px;
+}
+
+.approval-content {
+  margin: 10px 0;
+  color: #333;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.spec-details {
+  padding: 5px 0;
+}
+
+.spec-details > div {
+  margin-bottom: 8px;
+}
+
+.spec-steps {
+  margin-left: 20px;
+  margin-top: 5px;
+}
+
+.spec-steps li {
+  margin-bottom: 5px;
+  color: #555;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.approve-btn,
+.reject-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.approve-btn:hover {
+  border-color: #28a745;
+  background: #f0fff4;
+}
+
+.reject-btn:hover {
+  border-color: #dc3545;
+  background: #fff5f5;
+}
+
+.approve-btn.selected {
+  border-color: #28a745;
+  background: #28a745;
+  color: white;
+}
+
+.reject-btn.selected {
+  border-color: #dc3545;
+  background: #dc3545;
+  color: white;
+}
+
+.approval-submit {
+  margin-top: 15px;
+  text-align: center;
+}
+
+.submit-approval-btn {
+  padding: 10px 24px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.submit-approval-btn:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.submit-approval-btn:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Follow-up Questions */
+.followup-container {
+  margin: 10px;
+  padding: 12px;
+  background: #e3f2fd;
+  border-radius: 8px;
+  animation: slideIn 0.3s ease-out;
+}
+
+.followup-title {
+  margin-bottom: 10px;
+  color: #1976d2;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.followup-question {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: white;
+  border: 1px solid #90caf9;
+  border-radius: 4px;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.followup-question:hover {
+  background: #1976d2;
+  color: white;
+  border-color: #1976d2;
+  transform: translateX(2px);
+}

@@ -8,12 +8,77 @@
 
 const { baseApplier, findPreviewForAction, responsePatterns, withRetry, validateApplierConfig } = require('./baseApplier');
 const axios = require('axios');
+const { withDedupe } = require('../lib/dedupe');
+const { parseDateQuery } = require('../lib/dateParser');
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+
+// Load dayjs plugins for timezone support
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 /**
  * Create an appointment in BSA
  */
 async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
   const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  
+  // Handle natural language date parsing if dateQuery is provided
+  let startTime = appointmentSpec.startTime;
+  let endTime = appointmentSpec.endTime;
+  
+  if (appointmentSpec.dateQuery && appointmentSpec.dateQuery !== null && (!startTime || !endTime)) {
+    const userTimezone = bsaConfig.timezone || 'UTC';
+    console.log(`[APPOINTMENT:APPLY] Parsing natural language date: "${appointmentSpec.dateQuery}"`);
+    
+    const parsed = parseDateQuery(appointmentSpec.dateQuery, userTimezone);
+    if (parsed) {
+      console.log(`[APPOINTMENT:APPLY] Parsed to: ${parsed.interpreted}`);
+      
+      // Check if the query includes a specific time
+      const timeMatch = appointmentSpec.dateQuery.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)/i);
+      
+      if (timeMatch) {
+        // User specified a time
+        let hour = parseInt(timeMatch[1]);
+        const minute = timeMatch[2] ? parseInt(timeMatch[2]) : 0;
+        const meridiem = timeMatch[3]?.toLowerCase();
+        
+        // Convert to 24-hour format
+        if (meridiem === 'pm' && hour !== 12) hour += 12;
+        if (meridiem === 'am' && hour === 12) hour = 0;
+        
+        // Create start time on the parsed date
+        const startDate = dayjs(parsed.startDate).tz(userTimezone)
+          .hour(hour).minute(minute).second(0);
+        startTime = startDate.toISOString();
+        
+        // Use duration or default to 60 minutes
+        const duration = (appointmentSpec.duration && appointmentSpec.duration !== null) ? appointmentSpec.duration : 60;
+        endTime = startDate.add(duration, 'minute').toISOString();
+      } else {
+        // No specific time - use business hours default (10 AM)
+        const startDate = dayjs(parsed.startDate).tz(userTimezone)
+          .hour(10).minute(0).second(0);
+        startTime = startDate.toISOString();
+        
+        // Use duration or default to 60 minutes
+        const duration = (appointmentSpec.duration && appointmentSpec.duration !== null) ? appointmentSpec.duration : 60;
+        endTime = startDate.add(duration, 'minute').toISOString();
+      }
+    } else {
+      // Parsing failed - fall back to provided times or error
+      if (!startTime || !endTime) {
+        throw new Error(`Could not parse date query: "${appointmentSpec.dateQuery}"`);
+      }
+    }
+  }
+  
+  // Validate we have required times
+  if (!startTime || !endTime) {
+    throw new Error("Appointment must have both startTime and endTime");
+  }
   
   // Convert AppointmentSpec to BSA format
   const payload = {
@@ -23,37 +88,58 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
     DataObject: {
       Subject: appointmentSpec.subject,
       Description: appointmentSpec.description || null,
-      StartTime: appointmentSpec.startTime,
-      EndTime: appointmentSpec.endTime,
+      StartTime: startTime,
+      EndTime: endTime,
       Location: appointmentSpec.location || null,
       AllDay: appointmentSpec.allDay || false,
-      Complete: appointmentSpec.complete || false,
-      AppointmentTypeId: appointmentSpec.appointmentTypeId || null
+      Complete: appointmentSpec.complete || false
     },
     IncludeExtendedProperties: false
   };
   
-  // Add linking fields if provided (primary contact/account)
-  if (appointmentSpec.contactId) {
+  // Add optional fields only if they have actual values (not null or empty string)
+  if (appointmentSpec.appointmentTypeId && appointmentSpec.appointmentTypeId !== "") {
+    payload.DataObject.AppointmentTypeId = appointmentSpec.appointmentTypeId;
+  }
+  if (appointmentSpec.contactId && appointmentSpec.contactId !== "") {
     payload.DataObject.ContactId = appointmentSpec.contactId;
   }
-  if (appointmentSpec.accountId) {
+  if (appointmentSpec.accountId && appointmentSpec.accountId !== "") {
     payload.DataObject.AccountId = appointmentSpec.accountId;
   }
-  if (appointmentSpec.opportunityId) {
+  if (appointmentSpec.opportunityId && appointmentSpec.opportunityId !== "") {
     payload.DataObject.OpportunityId = appointmentSpec.opportunityId;
   }
   
   console.log(`[APPOINTMENT:APPLY] Creating appointment: ${appointmentSpec.subject}`);
-  console.log(`[APPOINTMENT:APPLY] Time: ${payload.DataObject.StartTime} to ${payload.DataObject.EndTime}`);
+  console.log(`[APPOINTMENT:APPLY] Time: ${startTime} to ${endTime}`);
   
-  const response = await axios.post(url, payload, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 10000
-  });
+  // Wrap with deduplication (5 minute window)
+  const result = await withDedupe(
+    payload.DataObject, // Use the appointment data for deduplication
+    5 * 60 * 1000, // 5 minute window
+    async () => {
+      const response = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000
+      });
+      return response;
+    }
+  );
+  
+  // Check if this was a duplicate
+  if (result.skipped) {
+    console.log(`[APPOINTMENT:APPLY] Skipped duplicate appointment creation: ${appointmentSpec.subject}`);
+    // Return success with the cached result from the previous attempt
+    return {
+      id: result.cachedResult?.id || "duplicate-detected",
+      duplicate: true,
+      message: `Appointment already created recently: ${appointmentSpec.subject}`
+    };
+  }
   
   // BSA responses are wrapped in arrays
-  const data = Array.isArray(response.data) ? response.data[0] : response.data;
+  const data = Array.isArray(result.data) ? result.data[0] : result.data;
   
   if (!data.Valid) {
     throw new Error(data.ResponseMessage || data.StackMessage || "Failed to create appointment");
@@ -113,13 +199,41 @@ async function linkAttendeeToAppointment(appointmentId, attendeeType, attendeeId
   
   console.log(`[APPOINTMENT:APPLY] Linking ${attendeeType} ${attendeeId} to appointment ${appointmentId}`);
   
-  const response = await axios.post(url, payload, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 10000
-  });
+  // Wrap with deduplication to prevent duplicate links
+  // Use composite key: linkerType + appointmentId + attendeeId
+  const dedupeKey = {
+    linkerType,
+    appointmentId,
+    attendeeId
+  };
+  
+  const result = await withDedupe(
+    dedupeKey,
+    5 * 60 * 1000, // 5 minute window
+    async () => {
+      const response = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000
+      });
+      return response;
+    }
+  );
+  
+  // Check if this was a duplicate
+  if (result.skipped) {
+    console.log(`[APPOINTMENT:APPLY] Skipped duplicate link: ${attendeeType} ${attendeeId} already linked to appointment ${appointmentId}`);
+    return {
+      success: true,
+      attendeeType,
+      attendeeId,
+      linkerId: null,
+      skipped: true,
+      message: `Duplicate link detected: ${attendeeType} was already linked recently`
+    };
+  }
   
   // BSA responses are wrapped in arrays
-  const data = Array.isArray(response.data) ? response.data[0] : response.data;
+  const data = Array.isArray(result.data) ? result.data[0] : result.data;
   
   if (!data.Valid) {
     throw new Error(data.ResponseMessage || data.StackMessage || `Failed to link ${attendeeType}`);
@@ -177,6 +291,9 @@ async function linkAttendeesToAppointment(appointmentId, attendees, bsaConfig) {
  * Apply the appointment to BSA (create + link attendees)
  */
 async function applyAppointmentToBSA(spec, bsaConfig, config) {
+  // Add timezone to bsaConfig for date parsing
+  bsaConfig.timezone = config?.configurable?.user_tz || 'UTC';
+  
   const results = {
     appointmentId: null,
     subject: null,
@@ -230,9 +347,33 @@ async function applyAppointmentToBSA(spec, bsaConfig, config) {
     if (spec.attendees && spec.attendees.length > 0) {
       console.log(`[APPOINTMENT:APPLY] Phase 2: Linking ${spec.attendees.length} attendee(s)`);
       
+      // Filter out primary entities that are already linked via direct fields
+      const filteredAttendees = spec.attendees.filter(attendee => {
+        // Skip contact if it's the primary contact
+        if (attendee.type.toLowerCase() === 'contact' && attendee.id === spec.contactId) {
+          console.log(`[APPOINTMENT:APPLY] Skipping primary contact ${attendee.id} - already linked via ContactId field`);
+          return false;
+        }
+        
+        // Skip company if it's the primary account
+        if (attendee.type.toLowerCase() === 'company' && attendee.id === spec.accountId) {
+          console.log(`[APPOINTMENT:APPLY] Skipping primary account ${attendee.id} - already linked via AccountId field`);
+          return false;
+        }
+        
+        // Note: We don't filter opportunityId as it's not typically an attendee
+        return true;
+      });
+      
+      // Log if we filtered any attendees
+      const filteredCount = spec.attendees.length - filteredAttendees.length;
+      if (filteredCount > 0) {
+        console.log(`[APPOINTMENT:APPLY] Filtered ${filteredCount} primary entity/entities from attendees list`);
+      }
+      
       const attendeeResults = await linkAttendeesToAppointment(
         results.appointmentId,
-        spec.attendees,
+        filteredAttendees,
         bsaConfig
       );
       

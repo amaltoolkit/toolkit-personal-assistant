@@ -65,7 +65,6 @@ async function baseDesigner(state, config, designerConfig) {
 
     // Return updated state with preview
     return {
-      messages: state.messages,
       previews: [preview]
     };
 
@@ -74,7 +73,6 @@ async function baseDesigner(state, config, designerConfig) {
     
     // Return error preview
     return {
-      messages: state.messages,
       previews: [{
         actionId: state.action?.id || `error_${Date.now()}`,
         kind: "error",

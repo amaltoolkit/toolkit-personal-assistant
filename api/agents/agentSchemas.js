@@ -15,10 +15,10 @@ const { z } = require("zod");
  */
 const WorkflowSpec = z.object({
   name: z.string().min(3).max(100).describe("Name of the advocate process"),
-  description: z.string().optional().describe("Description of the process purpose"),
+  description: z.string().nullable().optional().describe("Description of the process purpose"),
   steps: z.array(z.object({
     subject: z.string().min(3).max(200).describe("Brief title for the step"),
-    description: z.string().optional().describe("Detailed description of what needs to be done"),
+    description: z.string().nullable().optional().describe("Detailed description of what needs to be done"),
     sequence: z.number().int().min(1).describe("Order number of this step in the process (1, 2, 3, etc.)"),
     activityType: z.enum(["Task", "Appointment"]).default("Task").describe("Either Task or Appointment"),
     dayOffset: z.number().int().min(0).default(1).describe("Number of days allocated for completing this step"),
@@ -46,10 +46,11 @@ const WorkflowSpec = z.object({
  */
 const TaskSpec = z.object({
   subject: z.string().min(3).max(200).describe("Subject/title of the task"),
-  description: z.string().optional().describe("Detailed description of the task"),
+  description: z.string().nullable().optional().describe("Detailed description of the task"),
   
-  // Timing - Using BSA field names
-  dueTime: z.string().describe("Due date/time in ISO format"),
+  // Timing - Support both natural language and ISO format
+  dateQuery: z.string().optional().nullable().describe("Natural language date like 'tomorrow', 'next Friday', 'in 3 days'"),
+  dueTime: z.string().optional().nullable().describe("Due date/time in ISO format"),
   startTime: z.string().nullable().optional().describe("Start date/time in ISO format"),
   
   // Priority and status - BSA supported values only
@@ -82,11 +83,13 @@ const TaskSpec = z.object({
  */
 const AppointmentSpec = z.object({
   subject: z.string().min(3).max(200).describe("Subject/title of the appointment"),
-  description: z.string().optional().describe("Detailed description or agenda"),
+  description: z.string().nullable().optional().describe("Detailed description or agenda"),
   
-  // Time fields - Using BSA field names
-  startTime: z.string().describe("Start date/time in ISO format"),
-  endTime: z.string().describe("End date/time in ISO format"),
+  // Time fields - Support both natural language and ISO format
+  dateQuery: z.string().optional().nullable().describe("Natural language date/time like 'next Monday at 8 AM' or 'tomorrow at 2pm'"),
+  startTime: z.string().optional().nullable().describe("Start date/time in ISO format"),
+  endTime: z.string().optional().nullable().describe("End date/time in ISO format"),
+  duration: z.number().optional().nullable().describe("Duration in minutes (used with dateQuery if endTime not specified)"),
   allDay: z.boolean().default(false).describe("Is this an all-day event?"),
   
   // Location
@@ -94,33 +97,8 @@ const AppointmentSpec = z.object({
   locationType: z.enum(["Physical", "Virtual", "Phone"]).default("Physical")
     .describe("Type of meeting location"),
   
-  // Attendees - Simplified to match BSA supported types
-  attendees: z.array(z.object({
-    type: z.enum(["Contact", "Company", "User"]).describe("Type of BSA entity"),
-    id: z.string().describe("BSA ID of the attendee"),
-    role: z.enum(["Organizer", "Required", "Optional"]).default("Required")
-      .describe("Attendee's role in the meeting")
-  })).optional().default([]).describe("List of meeting attendees"),
-  
-  // Meeting categorization
-  appointmentTypeId: z.string().nullable().optional()
-    .describe("BSA appointment type ID for categorization"),
-  appointmentCategory: z.enum([
-    "ClientMeeting",
-    "InternalMeeting", 
-    "PhoneCall",
-    "VideoConference",
-    "SiteVisit",
-    "Other"
-  ]).default("ClientMeeting").describe("Category of appointment for context"),
-  
   // Status - BSA doesn't use status on create, but useful for designer
-  complete: z.boolean().default(false).describe("Is the appointment completed?"),
-  
-  // Linking to BSA entities
-  contactId: z.string().nullable().optional().describe("Primary contact for this appointment"),
-  accountId: z.string().nullable().optional().describe("Associated account"),
-  opportunityId: z.string().nullable().optional().describe("Associated opportunity")
+  complete: z.boolean().default(false).describe("Is the appointment completed?")
 });
 
 /**

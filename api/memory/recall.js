@@ -119,7 +119,7 @@ async function recallMemoryNode(state, config) {
     
     if (!orgId || !userId) {
       console.log("[MEMORY:RECALL] Missing org/user context, skipping recall");
-      return { messages: state.messages };
+      return {};
     }
     
     // Initialize memory store
@@ -131,7 +131,7 @@ async function recallMemoryNode(state, config) {
     
     if (!userQuery) {
       console.log("[MEMORY:RECALL] No user query found, skipping recall");
-      return { messages: state.messages };
+      return {};
     }
     
     console.log(`[MEMORY:RECALL] Searching for memories related to: "${userQuery.substring(0, 50)}..."`);
@@ -148,7 +148,7 @@ async function recallMemoryNode(state, config) {
     console.log(`[MEMORY:RECALL] Found ${memories.length} relevant memories`);
     
     if (memories.length === 0) {
-      return { messages: state.messages };
+      return {};
     }
     
     // Log retrieved memories for debugging
@@ -160,7 +160,7 @@ async function recallMemoryNode(state, config) {
     const memoryContext = formatMemoriesAsContext(memories);
     
     if (!memoryContext) {
-      return { messages: state.messages };
+      return {};
     }
     
     // Create a system message with the memory context
@@ -187,7 +187,7 @@ async function recallMemoryNode(state, config) {
   } catch (error) {
     console.error("[MEMORY:RECALL] Error during memory recall:", error.message);
     // Don't fail the entire flow if memory recall fails
-    return { messages: state.messages };
+    return {};
   }
 }
 

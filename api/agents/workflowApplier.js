@@ -8,6 +8,7 @@
 
 const { baseApplier, findPreviewForAction, responsePatterns, withRetry, validateApplierConfig } = require('./baseApplier');
 const axios = require('axios');
+const { withDedupe } = require('../lib/dedupe');
 
 /**
  * Create advocate_process shell in BSA
@@ -28,13 +29,27 @@ async function createProcessShell(name, description, bsaConfig) {
   
   console.log(`[WORKFLOW:APPLY] Creating advocate_process shell: ${name}`);
   
-  const response = await axios.post(url, payload, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 10000
-  });
+  // Wrap with deduplication (5 minute window)
+  const result = await withDedupe(
+    { workflowName: name, description }, // Dedupe based on workflow name and description
+    5 * 60 * 1000, // 5 minute window
+    async () => {
+      const response = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000
+      });
+      return response;
+    }
+  );
+  
+  // Check if this was a duplicate
+  if (result.skipped) {
+    console.log(`[WORKFLOW:APPLY] Skipped duplicate workflow creation: ${name}`);
+    throw new Error(`Duplicate workflow detected: ${name}. This workflow was already created recently.`);
+  }
   
   // BSA responses are wrapped in arrays
-  const data = Array.isArray(response.data) ? response.data[0] : response.data;
+  const data = Array.isArray(result.data) ? result.data[0] : result.data;
   
   if (!data.Valid) {
     throw new Error(data.ResponseMessage || data.StackMessage || "Failed to create process shell");
@@ -96,13 +111,28 @@ async function addProcessStep(processId, stepData, bsaConfig) {
   
   console.log(`[WORKFLOW:APPLY] Adding step ${stepData.sequence}: ${stepData.subject}`);
   
-  const response = await axios.post(url, payload, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 10000
-  });
+  // Wrap with deduplication (5 minute window) - dedupe based on processId and step details
+  const result = await withDedupe(
+    { processId, sequence: stepData.sequence, subject: stepData.subject },
+    5 * 60 * 1000, // 5 minute window
+    async () => {
+      const response = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000
+      });
+      return response;
+    }
+  );
+  
+  // Check if this was a duplicate
+  if (result.skipped) {
+    console.log(`[WORKFLOW:APPLY] Skipped duplicate step: ${stepData.subject}`);
+    // For steps, we might want to continue rather than throw
+    return { stepId: 'skipped', subject: stepData.subject, skipped: true };
+  }
   
   // BSA responses are wrapped in arrays
-  const data = Array.isArray(response.data) ? response.data[0] : response.data;
+  const data = Array.isArray(result.data) ? result.data[0] : result.data;
   
   if (!data.Valid) {
     throw new Error(`Step ${stepData.sequence} failed: ${data.ResponseMessage || data.StackMessage || "Unknown error"}`);

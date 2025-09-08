@@ -7,12 +7,68 @@
 
 const { baseApplier, findPreviewForAction, responsePatterns, withRetry, validateApplierConfig } = require('./baseApplier');
 const axios = require('axios');
+const { withDedupe } = require('../lib/dedupe');
+const { parseDateQuery } = require('../lib/dateParser');
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+
+// Load dayjs plugins for timezone support
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 /**
  * Create a task in BSA
  */
 async function createTaskInBSA(taskSpec, bsaConfig) {
   const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  
+  // Handle natural language date parsing if dateQuery is provided
+  let dueTime = taskSpec.dueTime;
+  let startTime = taskSpec.startTime;
+  
+  if (taskSpec.dateQuery && taskSpec.dateQuery !== null && !dueTime) {
+    const userTimezone = bsaConfig.timezone || 'UTC';
+    console.log(`[TASK:APPLY] Parsing natural language date: "${taskSpec.dateQuery}"`);
+    
+    const parsed = parseDateQuery(taskSpec.dateQuery, userTimezone);
+    if (parsed) {
+      console.log(`[TASK:APPLY] Parsed to: ${parsed.interpreted}`);
+      
+      // Check for keywords to determine if it's a due date or start date
+      const dueKeywords = /\b(due|by|before|deadline|complete by|finish by)\b/i;
+      const startKeywords = /\b(start|begin|starting)\b/i;
+      
+      // Parse the date in user's timezone
+      const parsedDate = dayjs(parsed.startDate).tz(userTimezone);
+      
+      if (startKeywords.test(taskSpec.dateQuery)) {
+        // It's a start date - set to beginning of business day (9 AM)
+        startTime = parsedDate.hour(9).minute(0).second(0).toISOString();
+        // Due date is end of same day by default
+        dueTime = parsedDate.hour(17).minute(0).second(0).toISOString();
+      } else {
+        // Default or "due" keywords - treat as due date
+        // Set due date to end of business day (5 PM)
+        dueTime = parsedDate.hour(17).minute(0).second(0).toISOString();
+        // Start time can be null or current time
+        if (!startTime) {
+          const now = dayjs().tz(userTimezone);
+          startTime = now.toISOString();
+        }
+      }
+    } else {
+      // Parsing failed - fall back to provided time or error
+      if (!dueTime) {
+        throw new Error(`Could not parse date query: "${taskSpec.dateQuery}"`);
+      }
+    }
+  }
+  
+  // Validate we have at least a due time
+  if (!dueTime) {
+    throw new Error("Task must have a dueTime");
+  }
   
   // Convert TaskSpec to BSA format
   const payload = {
@@ -24,8 +80,8 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
       Description: taskSpec.description || null,
       Status: taskSpec.status || "NotStarted",
       Priority: taskSpec.priority || "Normal",
-      StartTime: taskSpec.startTime || null,
-      DueTime: taskSpec.dueTime,
+      StartTime: startTime || null,
+      DueTime: dueTime,
       PercentComplete: taskSpec.percentComplete || 0,
       Location: taskSpec.location || null,
       RollOver: taskSpec.rollOver || false
@@ -53,15 +109,29 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
   // ContactsOwner and ContactsOwnersAssistant are typically handled by BSA rules
   
   console.log(`[TASK:APPLY] Creating task: ${taskSpec.subject}`);
-  console.log(`[TASK:APPLY] Priority: ${payload.DataObject.Priority}, Due: ${payload.DataObject.DueTime}`);
+  console.log(`[TASK:APPLY] Priority: ${payload.DataObject.Priority}, Due: ${dueTime}`);
   
-  const response = await axios.post(url, payload, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 10000
-  });
+  // Wrap the BSA call with deduplication (5 minute window)
+  const result = await withDedupe(
+    payload.DataObject, // Use the task data for deduplication
+    5 * 60 * 1000, // 5 minute window
+    async () => {
+      const response = await axios.post(url, payload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000
+      });
+      return response;
+    }
+  );
+  
+  // Check if this was a duplicate
+  if (result.skipped) {
+    console.log(`[TASK:APPLY] Skipped duplicate task creation: ${taskSpec.subject}`);
+    throw new Error(`Duplicate task detected: ${taskSpec.subject}. This task was already created recently.`);
+  }
   
   // BSA responses are wrapped in arrays
-  const data = Array.isArray(response.data) ? response.data[0] : response.data;
+  const data = Array.isArray(result.data) ? result.data[0] : result.data;
   
   if (!data.Valid) {
     throw new Error(data.ResponseMessage || data.StackMessage || "Failed to create task");
@@ -89,6 +159,9 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
  * Apply the task to BSA
  */
 async function applyTaskToBSA(spec, bsaConfig, config) {
+  // Add timezone to bsaConfig for date parsing
+  bsaConfig.timezone = config?.configurable?.user_tz || 'UTC';
+  
   const results = {
     taskId: null,
     subject: null,

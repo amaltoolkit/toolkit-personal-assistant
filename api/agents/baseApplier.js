@@ -24,28 +24,33 @@ async function baseApplier(state, config, applierConfig) {
   } = applierConfig;
 
   try {
-    // Find the preview for this action
-    const preview = findPreviewForAction(state);
-    
-    if (!preview) {
-      console.error(`[APPLIER:${actionType}] No preview found for action ${state.action?.id}`);
-      return {
-        messages: state.messages,
-        artifacts: {
-          ...state.artifacts,
-          error: `No preview found for ${actionType}`
-        }
-      };
-    }
+    // Derive preview/spec from branch state or global state
+    const inlinePreview = state.preview || null;
+    const globalPreview = findPreviewForAction(state);
+    const preview = inlinePreview || globalPreview;
+    const spec = (preview && preview.spec) || state.spec;
 
-    // Validate preview has required spec
-    if (!preview.spec) {
-      console.error(`[APPLIER:${actionType}] Preview missing spec`);
+    if (!spec) {
+      const msg = `[APPLIER:${actionType}] No preview/spec found for action ${state.action?.id}`;
+      console.error(msg);
+      const failed = {
+        actionId: state.action?.id,
+        error: msg,
+        phase: "apply",
+        timestamp: new Date().toISOString(),
+        retryable: false
+      };
       return {
-        messages: state.messages,
         artifacts: {
           ...state.artifacts,
-          error: `Preview missing spec for ${actionType}`
+          failedActions: [ ...(state.artifacts?.failedActions || []), failed ],
+          lastApplied: {
+            actionId: state.action?.id,
+            type: actionType,
+            timestamp: new Date().toISOString(),
+            success: false,
+            error: failed.error
+          }
         }
       };
     }
@@ -64,8 +69,8 @@ async function baseApplier(state, config, applierConfig) {
       throw new Error("PassKey not available in config");
     }
 
-    // Apply the action
-    const result = await applyFunction(preview.spec, bsaConfig, config);
+    // Apply using the derived spec
+    const result = await applyFunction(spec, bsaConfig, config);
 
     // Mark action as done
     const doneIds = new Set(state.artifacts?.doneIds || []);
@@ -76,7 +81,6 @@ async function baseApplier(state, config, applierConfig) {
 
     // Return updated artifacts
     return {
-      messages: state.messages,
       artifacts: {
         ...state.artifacts,
         doneIds: Array.from(doneIds),
@@ -98,12 +102,24 @@ async function baseApplier(state, config, applierConfig) {
       ? 'Authentication error'
       : error.message;
 
+    // Track this as a failed action to prevent infinite retries
+    const failedAction = {
+      actionId: state.action?.id || state.actionId,
+      error: safeError,
+      phase: "apply",
+      timestamp: new Date().toISOString(),
+      retryable: false // Mark as non-retryable after baseApplier failures
+    };
+
+    const existingFailed = state.artifacts?.failedActions || [];
+    const alreadyFailed = existingFailed.some(f => f.actionId === failedAction.actionId);
+
     return {
-      messages: state.messages,
       artifacts: {
         ...state.artifacts,
+        failedActions: alreadyFailed ? existingFailed : [...existingFailed, failedAction],
         lastApplied: {
-          actionId: state.action?.id,
+          actionId: failedAction.actionId,
           type: actionType,
           timestamp: new Date().toISOString(),
           success: false,
@@ -118,12 +134,16 @@ async function baseApplier(state, config, applierConfig) {
  * Find the preview for the current action
  */
 function findPreviewForAction(state) {
+  // First check if preview was passed directly (from Send object)
+  if (state.preview) return state.preview;
+  
+  // Fall back to searching previews array
   if (!state.action?.id || !state.previews) {
     return null;
   }
-
+  
   // Find preview matching the action ID
-  return state.previews.find(p => p.actionId === state.action.id);
+  return state.previews.find(p => p.actionId === state.action.id) || null;
 }
 
 /**

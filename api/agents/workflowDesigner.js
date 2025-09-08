@@ -7,6 +7,13 @@
 
 const { baseDesigner, promptPatterns, validateDesignerConfig } = require('./baseDesigner');
 const { WorkflowSpec } = require('./agentSchemas');
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+
+// Load dayjs plugins for timezone support
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 /**
  * Prompt template for workflow generation
@@ -19,7 +26,17 @@ function generateWorkflowPrompt(params) {
 ${promptPatterns.getUserContext(userContext)}
 ${promptPatterns.getMemoryContext(memoryContext)}
 
+Current Date and Time Context:
+- Current Date/Time: ${userContext.currentDateTime}
+- Today's Date: ${userContext.currentDate} (${userContext.dayOfWeek})
+- Timezone: ${userContext.timezone}
+
 User Request: ${userMessage}
+
+IMPORTANT: When setting dayOffset values, calculate them relative to the current date shown above. For example:
+- dayOffset: 0 = Today (${userContext.currentDate})
+- dayOffset: 1 = Tomorrow
+- dayOffset: 7 = One week from today
 
 Create a professional financial advisor workflow with the following requirements:
 
@@ -76,9 +93,19 @@ function extractWorkflowParams(state, config) {
     m.role === "system" && m.content?.includes("Relevant context:")
   );
   
+  // Get user's timezone and current date/time
+  const userTimezone = config?.configurable?.user_tz || "UTC";
+  const now = dayjs().tz(userTimezone);
+  
   return {
     userMessage,
-    userContext: config,
+    userContext: {
+      ...config,
+      currentDateTime: now.toISOString(),
+      timezone: userTimezone,
+      currentDate: now.format('YYYY-MM-DD'),
+      dayOfWeek: now.format('dddd')
+    },
     memoryContext: memoryContext || state
   };
 }

@@ -120,7 +120,9 @@ For the UI elements:
     return {
       messages: [assistantMessage],
       responseGenerated: true,
-      finalResponse: result
+      finalResponse: result,
+      ui: result.ui,              // Surface at top level for API
+      followups: result.followups  // Surface at top level for API
     };
     
   } catch (error) {
@@ -148,7 +150,9 @@ For the UI elements:
         message: fallbackMessage.content,
         ui: fallbackMessage.metadata.ui,
         followups: fallbackMessage.metadata.followups
-      }
+      },
+      ui: fallbackMessage.metadata.ui,          // Surface at top level for API
+      followups: fallbackMessage.metadata.followups  // Surface at top level for API
     };
   }
 }

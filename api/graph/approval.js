@@ -35,7 +35,6 @@ async function approvalBatchNode(state, config) {
       }
       
       return {
-        messages: state.messages,
         approvals: autoApprovals,
         interruptMarker: null // Clear any interrupt marker
       };
@@ -47,7 +46,6 @@ async function approvalBatchNode(state, config) {
     if (previews.length === 0) {
       console.log("[APPROVAL] No previews to approve, continuing");
       return {
-        messages: state.messages,
         approvals: {},
         interruptMarker: null
       };
@@ -68,36 +66,46 @@ async function approvalBatchNode(state, config) {
       timestamp: new Date().toISOString()
     };
     
-    // Set the interrupt marker in state
-    // This will be checked by the orchestrator to detect interruption
-    const updatedState = {
-      messages: state.messages,
+    // Prepare the state update with interrupt marker
+    // This will be saved to state if the interrupt happens
+    console.log("[APPROVAL] Setting interrupt marker: PENDING_APPROVAL");
+    
+    // Prepare state with the marker that will be set during interrupt
+    // The interrupt call below will pause execution with this state
+    const stateUpdate = {
       interruptMarker: "PENDING_APPROVAL",
       approvalPayload: interruptPayload
     };
     
-    console.log("[APPROVAL] Setting interrupt marker: PENDING_APPROVAL");
-    
     // Call interrupt to pause execution
     // The graph will pause here and wait for resume with approvals
-    const decision = interrupt(interruptPayload);
+    const decision = await interrupt(interruptPayload);
     
     // When resumed, decision will contain the user's approvals
     // Expected format: { [actionId]: true/false }
     console.log("[APPROVAL] Resumed with decisions:", Object.keys(decision || {}));
     
+    // Clear the interrupt marker since we've resumed with approvals
+    // This allows the graph to proceed to fanOutApply
     return {
-      messages: state.messages,
-      approvals: decision,
-      interruptMarker: null, // Clear the interrupt marker
-      approvalPayload: null // Clear the payload
+      interruptMarker: null,  // Clear the marker after resuming
+      approvalPayload: null,  // Clear the payload too
+      approvals: decision
     };
     
   } catch (error) {
-    console.error("[APPROVAL] Error in approval node:", error.message);
+    // Check if this is an interrupt (not an error)
+    // Interrupts have specific properties that identify them
+    if (error && (error.resumable === true || error.when === "during")) {
+      // This is an interrupt, re-throw it to pause execution
+      console.log("[APPROVAL] Interrupt detected, pausing for user approval");
+      throw error;
+    }
     
-    // On error, auto-approve to prevent blocking
+    // Real error - log and auto-approve to prevent blocking
+    console.error("[APPROVAL] Error in approval node:", error.message || error);
     console.log("[APPROVAL] Error occurred, auto-approving to prevent blocking");
+    
     const autoApprovals = {};
     const previews = state.previews || [];
     
@@ -108,7 +116,6 @@ async function approvalBatchNode(state, config) {
     }
     
     return {
-      messages: state.messages,
       approvals: autoApprovals,
       interruptMarker: null
     };
@@ -128,10 +135,10 @@ function summarizePreview(preview) {
       return `Create workflow "${spec.name}" with ${spec.steps?.length || 0} steps`;
     
     case "task":
-      return `Create task "${spec.name}" ${spec.dueDate ? `due ${spec.dueDate}` : ''}`;
+      return `Create task "${spec.subject}" ${spec.dueTime ? `due ${spec.dueTime}` : ''}`;
     
     case "appointment":
-      return `Schedule "${spec.title}" from ${spec.startTime} to ${spec.endTime}`;
+      return `Schedule "${spec.subject}" from ${spec.startTime} to ${spec.endTime}`;
     
     default:
       return `Perform ${preview.kind || preview.type} action`;

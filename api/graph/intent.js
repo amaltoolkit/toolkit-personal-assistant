@@ -38,7 +38,7 @@ async function intentNode(state, config) {
     
     if (!isHumanMessage) {
       console.log("[INTENT] No user message found, defaulting to action");
-      return { intent: "action", messages: state.messages };
+      return { intent: "action" };
     }
     
     const userQuery = String(lastMessage.content || "");
@@ -75,7 +75,6 @@ Examples:
     console.log(`[INTENT] Classified as: ${result.kind}`);
     
     return { 
-      messages: state.messages,
       intent: result.kind,
       userContext: {
         ...state.userContext,
@@ -86,7 +85,7 @@ Examples:
   } catch (error) {
     console.error("[INTENT] Error during classification:", error.message);
     // Default to action on error
-    return { intent: "action", messages: state.messages };
+    return { intent: "action" };
   }
 }
 

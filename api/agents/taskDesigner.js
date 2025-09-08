@@ -7,6 +7,13 @@
 
 const { baseDesigner, promptPatterns, validateDesignerConfig } = require('./baseDesigner');
 const { TaskSpec } = require('./agentSchemas');
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+
+// Load dayjs plugins for timezone support
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 /**
  * Prompt template for task generation
@@ -19,7 +26,18 @@ function generateTaskPrompt(params) {
 ${promptPatterns.getUserContext(userContext)}
 ${promptPatterns.getMemoryContext(memoryContext)}
 
+Current Date and Time Context:
+- Current Date/Time: ${userContext.currentDate}
+- User Timezone: ${userContext.timezone}
+
 User Request: ${userMessage}
+
+IMPORTANT DATE HANDLING:
+- If the user specifies a natural language date (like "tomorrow", "next Friday", "in 3 days"),
+  set the dateQuery field with the exact phrase and leave dueTime/startTime empty.
+- If the user provides specific dates in ISO format, use dueTime and startTime fields.
+- The system will automatically parse natural language dates based on the current date shown above.
+- Default behavior: dates are treated as due dates unless "start" keyword is present.
 
 Create a professional task with the following requirements:
 
@@ -91,17 +109,18 @@ function extractTaskParams(state, config) {
     m.role === "system" && m.content?.includes("Relevant context:")
   );
   
-  // Extract any mentioned dates from the user message
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // Get user's timezone
+  const userTimezone = config?.configurable?.user_tz || "UTC";
+  
+  // Get current time in user's timezone
+  const now = dayjs().tz(userTimezone);
   
   return {
-    userMessage,
+    userMessage, // Pass full message without extracting dates
     userContext: {
       ...config,
-      currentDate: today.toISOString(),
-      tomorrowDate: tomorrow.toISOString()
+      currentDate: now.toISOString(),
+      timezone: userTimezone
     },
     memoryContext: memoryContext || state
   };
@@ -134,29 +153,24 @@ async function design_create_task(state, config) {
     if (result.previews && result.previews[0]) {
       const preview = result.previews[0];
       
-      // Ensure ISO format for dates
+      // Log task summary
       if (preview.spec) {
-        // Convert dates to ISO if not already
-        if (preview.spec.dueTime && !preview.spec.dueTime.includes('T')) {
-          // Assume end of day if just date provided
-          preview.spec.dueTime = `${preview.spec.dueTime}T17:00:00Z`;
-        }
-        
-        if (preview.spec.startTime && !preview.spec.startTime.includes('T')) {
-          // Assume start of day if just date provided
-          preview.spec.startTime = `${preview.spec.startTime}T09:00:00Z`;
-        }
-        
-        // Log task summary
         console.log(`[TASK:DESIGNER] Generated task: "${preview.spec.subject}"`);
-        console.log(`[TASK:DESIGNER] Priority: ${preview.spec.priority}, Due: ${preview.spec.dueTime}`);
-        console.log(`[TASK:DESIGNER] Assigned to: ${preview.spec.assigneeType}`);
+        
+        if (preview.spec.dateQuery) {
+          console.log(`[TASK:DESIGNER] Natural language date: "${preview.spec.dateQuery}"`);
+        } else if (preview.spec.dueTime) {
+          console.log(`[TASK:DESIGNER] Due: ${preview.spec.dueTime}`);
+        }
+        
+        console.log(`[TASK:DESIGNER] Priority: ${preview.spec.priority}, Assigned to: ${preview.spec.assigneeType}`);
         
         // Add task metadata
         preview.metadata = {
           type: "task",
           priority: preview.spec.priority,
-          dueTime: preview.spec.dueTime,
+          hasDateQuery: !!preview.spec.dateQuery,
+          hasExactDueTime: !!preview.spec.dueTime,
           assigneeType: preview.spec.assigneeType,
           hasRollover: preview.spec.rollOver || false,
           category: preview.spec.category || "General"

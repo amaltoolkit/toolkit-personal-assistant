@@ -36,7 +36,17 @@ async function getAppState() {
     // Previews: Accumulated design previews for approval
     previews: Annotation({ 
       default: () => [], 
-      reducer: (old, new_) => old.concat(new_) // Accumulate previews
+      reducer: (old, new_) => {
+        // Deduplicate previews by actionId to prevent exponential growth
+        const byId = new Map();
+        for (const p of old || []) {
+          if (p?.actionId) byId.set(p.actionId, p);
+        }
+        for (const p of new_ || []) {
+          if (p?.actionId) byId.set(p.actionId, p);
+        }
+        return Array.from(byId.values());
+      }
     }),
     
     // Approvals: User decisions on previews
@@ -48,7 +58,26 @@ async function getAppState() {
     // Artifacts: Persistent data across nodes (e.g., created IDs)
     artifacts: Annotation({ 
       default: () => ({}),
-      reducer: (old, new_) => ({ ...old, ...new_ }) // Merge artifacts
+      reducer: (old, new_) => {
+        // Deep merge with special handling for arrays
+        const merged = { ...old, ...new_ };
+
+        // Merge doneIds as a set (union of completed actions)
+        const doneSet = new Set([...(old?.doneIds || []), ...(new_?.doneIds || [])]);
+        if (doneSet.size) merged.doneIds = Array.from(doneSet);
+
+        // Merge failedActions by actionId (deduplicate failures)
+        const failMap = new Map();
+        for (const f of old?.failedActions || []) {
+          if (f?.actionId) failMap.set(f.actionId, f);
+        }
+        for (const f of new_?.failedActions || []) {
+          if (f?.actionId) failMap.set(f.actionId, f);
+        }
+        if (failMap.size) merged.failedActions = Array.from(failMap.values());
+
+        return merged;
+      }
     }),
     
     // Intent: Classified user intent (help_kb, action, mixed)

@@ -55,20 +55,21 @@ async function planNode(state, config) {
     
     if (!isHumanMessage) {
       console.log("[PLAN] No user message found, returning empty plan");
-      return { plan: [], cursor: 0, messages: state.messages };
+      return { plan: [], cursor: 0 };
     }
     
     const userQuery = String(lastMessage.content || "");
     console.log(`[PLAN] Creating plan for: "${userQuery.substring(0, 100)}..."`);
     
-    // Initialize the planner model with structured output
+    // Initialize the planner model with JSON mode
     const model = new ChatOpenAI({
       model: process.env.LLM_PLANNER || "gpt-4o",
       temperature: 0,
-      openAIApiKey: process.env.OPENAI_API_KEY
+      openAIApiKey: process.env.OPENAI_API_KEY,
+      modelKwargs: {
+        response_format: { type: "json_object" }
+      }
     });
-    
-    const structuredModel = model.withStructuredOutput(PlanSchema);
     
     // Get any recalled memory context
     const memoryContext = state.messages
@@ -99,7 +100,8 @@ Guidelines:
 3. Actions with no dependencies can run in parallel
 4. Actions with dependencies wait for their dependencies to complete
 5. Keep the plan concise and focused on the user's request
-6. Include relevant parameters in the params object
+6. Include relevant parameters in the params object (strings, numbers, or booleans)
+7. You MUST respond with valid JSON matching the structure below
 
 Example for "Create a workflow for client onboarding and schedule a kickoff meeting":
 {
@@ -125,10 +127,36 @@ Example for "Create a workflow for client onboarding and schedule a kickoff meet
   ]
 }
 
-Note: act1 and act2 have no dependencies, so they can execute in parallel.`;
+Note: act1 and act2 have no dependencies, so they can execute in parallel.
+
+CRITICAL: You must respond with valid JSON only. No additional text or explanation.`;
     
-    // Generate the plan
-    const result = await structuredModel.invoke(planningPrompt);
+    // Generate the plan using JSON mode
+    const response = await model.invoke(planningPrompt);
+    
+    // Parse the JSON response
+    let result;
+    try {
+      const jsonStr = response.content.trim();
+      result = JSON.parse(jsonStr);
+      
+      // Validate the structure
+      if (!result.actions || !Array.isArray(result.actions)) {
+        throw new Error("Invalid plan structure: missing actions array");
+      }
+      
+      // Validate each action
+      for (const action of result.actions) {
+        if (!action.id || !action.type || !action.params || !Array.isArray(action.dependsOn)) {
+          throw new Error(`Invalid action structure: ${JSON.stringify(action)}`);
+        }
+      }
+      
+    } catch (parseError) {
+      console.error("[PLAN] Failed to parse JSON response:", parseError);
+      console.error("[PLAN] Raw response:", response.content);
+      return { plan: [], cursor: 0 };
+    }
     
     console.log(`[PLAN] Generated plan with ${result.actions.length} actions`);
     
@@ -143,7 +171,6 @@ Note: act1 and act2 have no dependencies, so they can execute in parallel.`;
     }
     
     return {
-      messages: state.messages,
       plan: result.actions,
       cursor: 0,
       artifacts: {
@@ -155,7 +182,7 @@ Note: act1 and act2 have no dependencies, so they can execute in parallel.`;
     
   } catch (error) {
     console.error("[PLAN] Error during planning:", error.message);
-    return { plan: [], cursor: 0, messages: state.messages };
+    return { plan: [], cursor: 0 };
   }
 }
 

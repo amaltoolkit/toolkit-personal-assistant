@@ -12,7 +12,7 @@ const { intentNode, routeByIntent } = require("./intent");
 const { planNode } = require("./plan");
 const { approvalBatchNode, isApprovalPending } = require("./approval");
 const { responseFinalizerNode } = require("./response");
-const { fanOutDesign, fanOutApply, routeAfterApply, markActionDone } = require("./parallel");
+const { fanOutDesign, fanOutApply, routeAfterApply, markActionDone, allActionsDone } = require("./parallel");
 
 // Import memory nodes (Phase 3, Step 5)
 const { recallMemoryNode } = require("../memory/recall");
@@ -33,7 +33,6 @@ const { apply_create_appointment } = require("../agents/appointmentApplier");
 async function kbRetrieveNode(state, config) {
   console.log("[KB:RETRIEVE] Stub - no KB search yet");
   return { 
-    messages: state.messages,
     kb: { 
       chunks: [],
       query: state.messages?.[state.messages.length - 1]?.content || ""
@@ -48,12 +47,72 @@ async function kbRetrieveNode(state, config) {
 async function kbAnswerNode(state, config) {
   console.log("[KB:ANSWER] Stub - returning placeholder answer");
   return { 
-    messages: state.messages,
     kb: { 
       answer: "This feature will search the knowledge base for answers to your questions.",
       citations: [],
       chunks: state.kb?.chunks || []
     }
+  };
+}
+
+/**
+ * Coordination node to handle mixed intent completion
+ * Ensures both KB and action paths complete before finalizing
+ */
+async function coordinationJoinNode(state, config) {
+  console.log("[COORDINATION] Checking completion status...");
+  
+  const intent = state.intent;
+  const kbComplete = state.kb?.answer != null;
+  const actionsComplete = allActionsDone(state);
+  const hasActions = state.plan && state.plan.length > 0;
+  
+  // Check if all actions were rejected (zero-approval path)
+  const approvals = state.approvals || {};
+  const hasApprovals = Object.keys(approvals).length > 0;
+  const allRejected = hasApprovals && Object.values(approvals).every(v => v === false);
+  
+  console.log(`[COORDINATION] Intent: ${intent}, KB complete: ${kbComplete}, Actions complete: ${actionsComplete}`);
+  if (allRejected) {
+    console.log("[COORDINATION] All actions were rejected - treating as complete");
+  }
+  
+  // For help_kb only - finalize when KB is done
+  if (intent === "help_kb") {
+    console.log("[COORDINATION] KB-only query, ready to finalize");
+    return { 
+      readyToFinalize: true,
+      coordinationComplete: true 
+    };
+  }
+  
+  // For action only - finalize when actions are done OR all rejected
+  if (intent === "action") {
+    const ready = allRejected || !hasActions || actionsComplete;
+    console.log(`[COORDINATION] Action-only query, ready: ${ready}`);
+    return { 
+      readyToFinalize: ready,
+      coordinationComplete: ready
+    };
+  }
+  
+  // For mixed - need both to complete (KB done AND actions done/rejected)
+  if (intent === "mixed") {
+    const actionsOk = allRejected || !hasActions || actionsComplete;
+    const ready = kbComplete && actionsOk;
+    console.log(`[COORDINATION] Mixed query, KB: ${kbComplete}, Actions OK: ${actionsOk}, Ready: ${ready}`);
+    return {
+      readyToFinalize: ready,
+      coordinationComplete: ready,
+      kbComplete,
+      actionsComplete: actionsOk
+    };
+  }
+  
+  // Default case
+  return { 
+    readyToFinalize: true,
+    coordinationComplete: true
   };
 }
 
@@ -67,7 +126,6 @@ async function design_update_task(state, config) {
   const action = state.action || state;
   
   return {
-    messages: state.messages,
     previews: [{
       actionId: action.id || "mock-id",
       kind: "task",
@@ -91,7 +149,6 @@ async function design_update_appointment(state, config) {
   const action = state.action || state;
   
   return {
-    messages: state.messages,
     previews: [{
       actionId: action.id || "mock-id",
       kind: "appointment",
@@ -112,7 +169,6 @@ async function design_update_appointment(state, config) {
 async function design_search_contacts(state, config) {
   console.log("[DESIGN:CONTACTS] Stub - mock contact search");
   return {
-    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "search",
@@ -125,7 +181,6 @@ async function design_search_contacts(state, config) {
 async function design_get_calendar(state, config) {
   console.log("[DESIGN:CALENDAR] Stub - mock calendar fetch");
   return {
-    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "fetch",
@@ -138,7 +193,6 @@ async function design_get_calendar(state, config) {
 async function design_analyze_data(state, config) {
   console.log("[DESIGN:ANALYZE] Stub - mock data analysis");
   return {
-    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "analysis",
@@ -237,6 +291,9 @@ async function buildGraph() {
       .addNode("kb_retrieve", kbRetrieveNode)
       .addNode("kb_answer", kbAnswerNode)
       
+      // Coordination node for mixed intent
+      .addNode("coordination_join", coordinationJoinNode)
+      
       // Designer nodes (all action types)
       .addNode("design_build_workflow", design_build_workflow)
       .addNode("design_create_task", design_create_task)
@@ -275,12 +332,24 @@ async function buildGraph() {
     });
     
     // Knowledge base path
-    g.addEdge("kb_retrieve", "kb_answer")
-      .addEdge("kb_answer", "response_finalizer");
+    g.addEdge("kb_retrieve", "kb_answer");
+    
+    // Route KB answer through coordination to prevent early termination
+    g.addEdge("kb_answer", "coordination_join");
     
     // Action path
-    g.addEdge("planner", "fanOutDesign")
-      .addEdge("fanOutDesign", "approval_batch");
+    g.addEdge("planner", "fanOutDesign");
+    // Note: fanOutDesign uses Send for dynamic routing, no direct edge needed
+    
+    // Add edges from all designer nodes to approval_batch
+    g.addEdge("design_build_workflow", "approval_batch")
+      .addEdge("design_create_task", "approval_batch")
+      .addEdge("design_update_task", "approval_batch")
+      .addEdge("design_create_appointment", "approval_batch")
+      .addEdge("design_update_appointment", "approval_batch")
+      .addEdge("design_search_contacts", "approval_batch")
+      .addEdge("design_get_calendar", "approval_batch")
+      .addEdge("design_analyze_data", "approval_batch");
     
     // Conditional edge after approval
     g.addConditionalEdges("approval_batch", (state) => {
@@ -292,15 +361,50 @@ async function buildGraph() {
       return "fanOutApply";
     });
     
-    // After apply, check if more actions or finalize
-    g.addConditionalEdges("fanOutApply", (state) => {
+    // Add edges from all applier nodes to a convergence point
+    // We'll create a simple passthrough node for this
+    g.addNode("apply_convergence", (state) => {
+      console.log("[ORCHESTRATOR] Apply convergence point reached");
+      // Use the shared markActionDone to properly track completion
+      const actionId = state.action?.id || state.actionId;
+      if (actionId) {
+        return markActionDone(state, actionId);
+      }
+      return {};
+    });
+    
+    // Connect all applier nodes to convergence
+    g.addEdge("apply_build_workflow", "apply_convergence")
+      .addEdge("apply_create_task", "apply_convergence")
+      .addEdge("apply_update_task", "apply_convergence")
+      .addEdge("apply_create_appointment", "apply_convergence")
+      .addEdge("apply_update_appointment", "apply_convergence")
+      .addEdge("apply_search_contacts", "apply_convergence")
+      .addEdge("apply_get_calendar", "apply_convergence")
+      .addEdge("apply_analyze_data", "apply_convergence");
+    
+    // After convergence, check if more actions or finalize
+    g.addConditionalEdges("apply_convergence", (state) => {
       const next = routeAfterApply(state);
       console.log(`[ORCHESTRATOR] After apply, routing to: ${next}`);
       return next;
     });
     
-    // Memory synthesis after actions complete
-    g.addEdge("synthesize_memory", "response_finalizer");
+    // fanOutApply no longer needs conditional edges since Send handles routing
+    
+    // Memory synthesis after actions complete - route to coordination
+    g.addEdge("synthesize_memory", "coordination_join");
+    
+    // Coordination decides when to finalize
+    g.addConditionalEdges("coordination_join", (state) => {
+      if (state.readyToFinalize || state.coordinationComplete) {
+        console.log("[ORCHESTRATOR] Coordination complete, moving to finalizer");
+        return "response_finalizer";
+      }
+      // Should never reach here - all paths should set readyToFinalize
+      console.log("[ORCHESTRATOR] ERROR: Coordination not ready, forcing completion");
+      return "response_finalizer"; // Force completion instead of looping
+    });
     
     // Final response always goes to END
     g.addEdge("response_finalizer", END);

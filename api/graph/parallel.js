@@ -46,37 +46,87 @@ async function fanOutDesign(state) {
   console.log("[PARALLEL:DESIGN] Starting fan-out for design phase");
   
   try {
-    // Dynamic import for ESM module
-    const { Send } = await import("@langchain/langgraph");
+    // Dynamic import for ESM modules
+    const { Send, Command } = await import("@langchain/langgraph");
     
     // Get actions ready for design
     const readyActions = ready(state);
     
     if (readyActions.length === 0) {
       console.log("[PARALLEL:DESIGN] No actions ready for design");
-      return {};
+      
+      // Check if we have any previews from previous iterations
+      if (state.previews && state.previews.length > 0) {
+        console.log("[PARALLEL:DESIGN] Have existing previews, routing to approval");
+        return new Command({ goto: "approval_batch" });
+      }
+      
+      // No actions and no previews - skip to coordination
+      console.log("[PARALLEL:DESIGN] No actions or previews, routing to coordination");
+      return new Command({ goto: "coordination_join" });
     }
     
-    // Create Send objects for each ready action
-    const sends = readyActions.map(action => {
+    // Track failed actions to avoid retrying them
+    const failedActions = state.artifacts?.failedActions || [];
+    const validActions = readyActions.filter(action => 
+      !failedActions.some(failed => failed.actionId === action.id)
+    );
+    
+    if (validActions.length === 0) {
+      console.log("[PARALLEL:DESIGN] All ready actions have previously failed");
+      
+      // Check if we have previews to approve
+      if (state.previews && state.previews.length > 0) {
+        console.log("[PARALLEL:DESIGN] Have previews to approve, routing to approval");
+        return new Command({ goto: "approval_batch" });
+      }
+      
+      // Nothing to do, go to coordination
+      console.log("[PARALLEL:DESIGN] No valid actions or previews, routing to coordination");
+      return new Command({ goto: "coordination_join" });
+    }
+    
+    // Create Send objects for each ready action with error boundaries
+    const sends = validActions.map(action => {
       const nodeId = `design_${action.type}`;
       console.log(`[PARALLEL:DESIGN] Sending action ${action.id} to ${nodeId}`);
       
-      // Create a Send object with the action in state
+      // Wrap state with error tracking
       return new Send(nodeId, {
         action: action,
         actionId: action.id,
         actionType: action.type,
-        actionParams: action.params
+        actionParams: action.params,
+        errorBoundary: true  // Flag for nodes to handle errors gracefully
       });
     });
     
     console.log(`[PARALLEL:DESIGN] Created ${sends.length} Send objects for parallel design`);
-    return sends;
+    
+    // Return Command with Send objects in goto property
+    return new Command({
+      goto: sends,
+      update: {
+        parallelExecutionStarted: new Date().toISOString(),
+        parallelBatchSize: sends.length
+      }
+    });
     
   } catch (error) {
-    console.error("[PARALLEL:DESIGN] Error in fanOutDesign:", error.message);
-    return {};
+    console.error("[PARALLEL:DESIGN] Critical error in fanOutDesign:", error);
+    console.error("[PARALLEL:DESIGN] Stack trace:", error.stack);
+    
+    // Add error to state for tracking
+    return {
+      artifacts: {
+        ...state.artifacts,
+        parallelError: {
+          phase: "design",
+          error: error.message,
+          timestamp: new Date().toISOString()
+        }
+      }
+    };
   }
 }
 
@@ -91,8 +141,8 @@ async function fanOutApply(state) {
   console.log("[PARALLEL:APPLY] Starting fan-out for apply phase");
   
   try {
-    // Dynamic import for ESM module
-    const { Send } = await import("@langchain/langgraph");
+    // Dynamic import for ESM modules
+    const { Send, Command } = await import("@langchain/langgraph");
     
     // Get approvals
     const approvals = state.approvals || {};
@@ -106,20 +156,41 @@ async function fanOutApply(state) {
     
     if (approvedIds.size === 0) {
       console.log("[PARALLEL:APPLY] No actions approved for execution");
-      return {};
+      
+      // All rejected or no approvals - proceed to memory synthesis
+      console.log("[PARALLEL:APPLY] Routing to synthesize_memory (no approvals)");
+      return new Command({ goto: "synthesize_memory" });
     }
     
     // Get the approved actions from the plan
     const plan = state.plan || [];
     const approvedActions = plan.filter(action => approvedIds.has(action.id));
     
-    // Create Send objects for each approved action
-    const sends = approvedActions.map(action => {
+    // Filter out any previously failed actions
+    const failedActions = state.artifacts?.failedActions || [];
+    const validActions = approvedActions.filter(action => 
+      !failedActions.some(failed => failed.actionId === action.id)
+    );
+    
+    if (validActions.length === 0) {
+      console.log("[PARALLEL:APPLY] All approved actions have previously failed");
+      
+      // Nothing left to apply - proceed to synthesis
+      console.log("[PARALLEL:APPLY] Routing to synthesize_memory (all failed)");
+      return new Command({ goto: "synthesize_memory" });
+    }
+    
+    // Create Send objects for each approved action with error boundaries
+    const sends = validActions.map(action => {
       const nodeId = `apply_${action.type}`;
       console.log(`[PARALLEL:APPLY] Sending action ${action.id} to ${nodeId}`);
       
       // Find the corresponding preview
       const preview = (state.previews || []).find(p => p.actionId === action.id);
+      
+      if (!preview) {
+        console.warn(`[PARALLEL:APPLY] No preview found for action ${action.id}`);
+      }
       
       return new Send(nodeId, {
         action: action,
@@ -127,16 +198,38 @@ async function fanOutApply(state) {
         actionType: action.type,
         actionParams: action.params,
         preview: preview,
-        spec: preview?.spec
+        spec: preview?.spec,
+        errorBoundary: true,  // Flag for nodes to handle errors gracefully
+        retryCount: 0  // Track retry attempts
       });
     });
     
     console.log(`[PARALLEL:APPLY] Created ${sends.length} Send objects for parallel execution`);
-    return sends;
+    
+    // Return Command with Send objects in goto property
+    return new Command({
+      goto: sends,
+      update: {
+        parallelApplyStarted: new Date().toISOString(),
+        parallelApplyBatchSize: sends.length
+      }
+    });
     
   } catch (error) {
-    console.error("[PARALLEL:APPLY] Error in fanOutApply:", error.message);
-    return {};
+    console.error("[PARALLEL:APPLY] Critical error in fanOutApply:", error);
+    console.error("[PARALLEL:APPLY] Stack trace:", error.stack);
+    
+    // Add error to state for tracking
+    return {
+      artifacts: {
+        ...state.artifacts,
+        parallelError: {
+          phase: "apply",
+          error: error.message,
+          timestamp: new Date().toISOString()
+        }
+      }
+    };
   }
 }
 
@@ -153,12 +246,49 @@ function markActionDone(state, actionId) {
   console.log(`[PARALLEL:DONE] Marked action ${actionId} as complete. Total done: ${doneIds.size}`);
   
   return {
-    messages: state.messages,
     artifacts: {
       ...state.artifacts,
       doneIds: Array.from(doneIds),
       lastCompleted: actionId,
       lastCompletedAt: new Date().toISOString()
+    }
+  };
+}
+
+/**
+ * Mark an action as failed with error details
+ * @param {Object} state - Current graph state
+ * @param {string} actionId - ID of failed action
+ * @param {string} error - Error message
+ * @param {string} phase - Phase where failure occurred (design/apply)
+ * @returns {Object} Updated artifacts with failure tracked
+ */
+function markActionFailed(state, actionId, error, phase = "unknown") {
+  const failedActions = state.artifacts?.failedActions || [];
+  
+  // Check if already marked as failed
+  const existingFailure = failedActions.find(f => f.actionId === actionId);
+  if (existingFailure) {
+    console.log(`[PARALLEL:FAILED] Action ${actionId} already marked as failed`);
+    return state;
+  }
+  
+  const failure = {
+    actionId,
+    error: error.substring(0, 500), // Limit error message length
+    phase,
+    timestamp: new Date().toISOString(),
+    retryable: !error.includes("FATAL") && !error.includes("CRITICAL")
+  };
+  
+  console.error(`[PARALLEL:FAILED] Marked action ${actionId} as failed in ${phase} phase:`, error);
+  
+  return {
+    artifacts: {
+      ...state.artifacts,
+      failedActions: [...failedActions, failure],
+      lastFailed: actionId,
+      lastFailedAt: new Date().toISOString()
     }
   };
 }
@@ -235,8 +365,9 @@ function routeAfterApply(state) {
     return "synthesize_memory";
   }
   
-  // Check if there are more actions ready
-  const moreReady = ready(state).length > 0;
+  // Check if there are more actions ready (exclude failed)
+  const failed = new Set((state.artifacts?.failedActions || []).map(f => f.actionId));
+  const moreReady = ready(state).filter(a => !failed.has(a.id)).length > 0;
   
   if (moreReady) {
     console.log("[PARALLEL:ROUTE] More actions ready, returning to design phase");
@@ -252,6 +383,7 @@ module.exports = {
   fanOutDesign,
   fanOutApply,
   markActionDone,
+  markActionFailed,
   allActionsDone,
   getExecutionLayers,
   routeAfterApply

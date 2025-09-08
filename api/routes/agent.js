@@ -176,13 +176,17 @@ function formatResponse(state, status) {
   // Add status-specific fields
   if (status === 'PENDING_APPROVAL') {
     response.thread_id = state.thread_id;
-    response.previews = state.previews || [];
-    response.requiresApproval = true;
     
-    // Include the response message if available
-    if (responseText) {
-      response.message = responseText;
+    // Get previews from approvalPayload or state.previews
+    if (state.approvalPayload && state.approvalPayload.previews) {
+      response.previews = state.approvalPayload.previews;
+      response.message = state.approvalPayload.message || 'Please review and approve the following actions:';
+    } else {
+      response.previews = state.previews || [];
+      response.message = responseText || 'Please review and approve the following actions:';
     }
+    
+    response.requiresApproval = true;
     
     // Include UI elements if present
     if (state.ui) {
@@ -298,15 +302,47 @@ router.post('/execute', async (req, res) => {
     const graph = await buildGraph();
     
     console.log(`[AGENT:EXECUTE:${requestId}] Invoking graph with query:`, query.substring(0, 100));
-    const state = await graph.invoke(
-      { 
-        messages: [{ 
-          role: 'human', 
-          content: query 
-        }] 
-      },
-      config
-    );
+    
+    let state;
+    try {
+      state = await graph.invoke(
+        { 
+          messages: [{ 
+            role: 'human', 
+            content: query 
+          }] 
+        },
+        config
+      );
+    } catch (error) {
+      // Check if this is an interrupt (not an error)
+      if (error && (error.resumable === true || error.when === "during")) {
+        console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval`);
+        
+        // Get the current state from the checkpoint
+        const checkpointer = graph.checkpointer;
+        if (checkpointer) {
+          const checkpoint = await checkpointer.get(config.configurable.thread_id);
+          state = checkpoint?.state;
+        }
+        
+        // If we can't get state from checkpoint, construct minimal state
+        if (!state) {
+          state = {
+            interruptMarker: 'PENDING_APPROVAL',
+            approvalPayload: error.value || error,
+            previews: error.value?.previews || []
+          };
+        }
+        
+        // Ensure we have the interrupt marker set
+        state.interruptMarker = 'PENDING_APPROVAL';
+        
+      } else {
+        // Real error, re-throw it
+        throw error;
+      }
+    }
     
     // Step 6: Check for interruption
     if (state.interruptMarker === 'PENDING_APPROVAL') {
@@ -426,11 +462,23 @@ router.post('/approve', async (req, res) => {
     // Step 4: Resume graph execution
     const graph = await buildGraph();
     
-    console.log(`[AGENT:APPROVE:${requestId}] Invoking graph with approvals`);
+    // Import Command for proper resume
+    const { Command } = await import("@langchain/langgraph");
+    
+    console.log(`[AGENT:APPROVE:${requestId}] Creating resume command with approvals`);
+    
+    // Create a Command to resume with the approvals
+    const resumeCommand = new Command({
+      resume: approvals,
+      update: {
+        interruptMarker: null,  // Clear the interrupt marker
+        approvalPayload: null   // Clear the approval payload
+      }
+    });
+    
+    console.log(`[AGENT:APPROVE:${requestId}] Invoking graph with resume command`);
     const state = await graph.invoke(
-      { 
-        approvals: approvals 
-      },
+      resumeCommand,
       config
     );
     

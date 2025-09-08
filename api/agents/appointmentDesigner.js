@@ -2,11 +2,18 @@
  * Appointment Designer Agent
  * 
  * Designs calendar appointments based on user requests.
- * Generates financial advisor-focused meeting specifications with attendees.
+ * Generates financial advisor-focused meeting specifications.
  */
 
 const { baseDesigner, promptPatterns, validateDesignerConfig } = require('./baseDesigner');
 const { AppointmentSpec } = require('./agentSchemas');
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const timezone = require('dayjs/plugin/timezone');
+
+// Load dayjs plugins for timezone support
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 /**
  * Prompt template for appointment generation
@@ -19,7 +26,20 @@ function generateAppointmentPrompt(params) {
 ${promptPatterns.getUserContext(userContext)}
 ${promptPatterns.getMemoryContext(memoryContext)}
 
+IMPORTANT - Current Date and Time Context:
+- Current Date/Time: ${userContext.currentDateTime}
+- User Timezone: ${userContext.timezone}
+- Business Hours: ${userContext.businessHoursStart} to ${userContext.businessHoursEnd}
+
 User Request: ${userMessage}
+
+IMPORTANT DATE/TIME HANDLING:
+- If the user specifies a natural language date/time (like "next Monday at 8 AM" or "tomorrow at 2pm"), 
+  set the dateQuery field with the exact phrase and leave startTime/endTime empty.
+- If the user provides specific dates/times in ISO format, use startTime and endTime fields.
+- When using dateQuery, also set duration (in minutes) if the user specifies a duration.
+- Default duration is 60 minutes if not specified.
+- The system will automatically parse natural language dates based on the current date shown above.
 
 Create a professional appointment with the following requirements:
 
@@ -30,6 +50,8 @@ Create a professional appointment with the following requirements:
    - Keep concise but informative
 
 2. Time Scheduling:
+   - ALWAYS use dates relative to the Current Date/Time shown above
+   - Default to the provided Default Start/End Times if user doesn't specify
    - Business hours: 9:00 AM - 5:00 PM (unless specified otherwise)
    - Standard durations:
      * Initial consultations: 90 minutes
@@ -46,40 +68,30 @@ Create a professional appointment with the following requirements:
    - Phone calls: Include dial-in number
    - Set locationType appropriately
 
-4. Appointment Categories:
-   - ClientMeeting: Direct client interactions, reviews, consultations
-   - InternalMeeting: Team meetings, planning sessions, training
-   - PhoneCall: Scheduled calls with clients or partners
-   - VideoConference: Virtual meetings requiring video
-   - SiteVisit: Client location visits, office visits
-   - Other: Miscellaneous appointments
+4. Meeting Duration Guidelines:
+   - Quick check-ins: 30 minutes
+   - Standard meetings: 60 minutes (default)
+   - Portfolio reviews: 60-90 minutes
+   - Annual reviews: 90-120 minutes
+   - Training sessions: 120+ minutes
+   - First-time consultations: 90 minutes
 
-5. Attendee Management:
-   - Always include relevant attendees when mentioned
-   - Types supported: Contact (clients), Company (organizations), User (team members)
-   - Set appropriate roles:
-     * Organizer: Meeting host (usually the advisor)
-     * Required: Must-attend participants
-     * Optional: Nice-to-have attendees
-   - For client meetings, always mark clients as Required
-   - For internal meetings, mark key stakeholders as Required
+5. Common Appointment Patterns:
+   - "Annual review" - 90 min, in-person preferred
+   - "Quarterly portfolio review" - 60 min, Physical location
+   - "Team planning meeting" - 60 min, conference room
+   - "New client consultation" - 90 min, office meeting
+   - "Compliance training" - 120 min, Virtual option
+   - "Quick call" - 30 min, Phone or virtual
 
-6. Common Appointment Patterns:
-   - "Annual review with [Client]" - 90 min, ClientMeeting, client as Required attendee
-   - "Quarterly portfolio review" - 60 min, ClientMeeting, Physical location
-   - "Team planning meeting" - 60 min, InternalMeeting, all team as Required
-   - "New client consultation" - 90 min, ClientMeeting, include assistant as Optional
-   - "Compliance training" - 120 min, InternalMeeting, Virtual, all staff Required
-   - "Quick call with [Client]" - 30 min, PhoneCall, client as Required
-
-7. Description Content:
+6. Description Content:
    - Meeting agenda or key discussion points
    - Preparation requirements
    - Documents to bring/review
    - Special instructions
    - Follow-up items from previous meetings
 
-8. Best Practices:
+7. Best Practices:
    - Morning meetings (9-11 AM) for important decisions
    - Afternoon slots (2-4 PM) for routine reviews
    - Virtual meetings for quick updates
@@ -87,13 +99,15 @@ Create a professional appointment with the following requirements:
    - Allow extra time for first-time client meetings
    - Schedule prep time before important presentations
 
-9. Special Considerations:
+8. Special Considerations:
    - All-day events: Set allDay=true for conferences, training days
    - Back-to-back meetings: Avoid when possible, add buffer time
    - Time zones: Ensure clarity for remote participants
    - Recurring meetings: Note pattern in description (actual recurrence handled separately)
 
 ${promptPatterns.getQualityInstructions()}
+
+FINAL REMINDER: The current date is ${userContext.currentDateTime}. Generate appointments with dates that are in the future relative to this date. If the user says "tomorrow", add 1 day to the current date. If they say "next week", calculate dates accordingly from the current date shown above.
 
 Generate an appointment that is professional, well-organized, and follows financial advisory best practices.`;
 }
@@ -109,27 +123,20 @@ function extractAppointmentParams(state, config) {
     m.role === "system" && m.content?.includes("Relevant context:")
   );
   
-  // Get current time for smart scheduling
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // Get user's timezone
+  const userTimezone = config?.configurable?.user_tz || "UTC";
   
-  // Default to tomorrow at 10 AM for new appointments
-  const defaultStart = new Date(tomorrow);
-  defaultStart.setHours(10, 0, 0, 0);
-  
-  const defaultEnd = new Date(defaultStart);
-  defaultEnd.setHours(11, 0, 0, 0); // 1 hour duration
+  // Get current time in user's timezone
+  const now = dayjs().tz(userTimezone);
   
   return {
-    userMessage,
+    userMessage, // Pass full message without extracting dates
     userContext: {
       ...config,
       currentDateTime: now.toISOString(),
-      defaultStartTime: defaultStart.toISOString(),
-      defaultEndTime: defaultEnd.toISOString(),
       businessHoursStart: "09:00",
-      businessHoursEnd: "17:00"
+      businessHoursEnd: "17:00",
+      timezone: userTimezone
     },
     memoryContext: memoryContext || state
   };
@@ -162,48 +169,27 @@ async function design_create_appointment(state, config) {
     if (result.previews && result.previews[0]) {
       const preview = result.previews[0];
       
-      // Validate and format times
+      // Log appointment summary
       if (preview.spec) {
-        // Ensure ISO format for times
-        if (preview.spec.startTime && !preview.spec.startTime.includes('T')) {
-          // Assume time is missing, add default morning time
-          preview.spec.startTime = `${preview.spec.startTime}T10:00:00Z`;
-        }
-        
-        if (preview.spec.endTime && !preview.spec.endTime.includes('T')) {
-          // Assume time is missing, add default based on start
-          preview.spec.endTime = `${preview.spec.endTime}T11:00:00Z`;
-        }
-        
-        // Validate that end time is after start time
-        const start = new Date(preview.spec.startTime);
-        const end = new Date(preview.spec.endTime);
-        
-        if (end <= start) {
-          console.warn("[APPOINTMENT:DESIGNER] Warning: End time not after start time, adjusting...");
-          end.setHours(start.getHours() + 1);
-          preview.spec.endTime = end.toISOString();
-        }
-        
-        // Calculate duration in minutes
-        const durationMs = end - start;
-        const durationMinutes = Math.round(durationMs / 60000);
-        
-        // Log appointment summary
         console.log(`[APPOINTMENT:DESIGNER] Generated appointment: "${preview.spec.subject}"`);
-        console.log(`[APPOINTMENT:DESIGNER] Time: ${preview.spec.startTime} to ${preview.spec.endTime} (${durationMinutes} min)`);
-        console.log(`[APPOINTMENT:DESIGNER] Location: ${preview.spec.location || "Not specified"} (${preview.spec.locationType})`);
-        console.log(`[APPOINTMENT:DESIGNER] Attendees: ${preview.spec.attendees?.length || 0}`);
+        
+        if (preview.spec.dateQuery) {
+          console.log(`[APPOINTMENT:DESIGNER] Natural language date: "${preview.spec.dateQuery}"`);
+          if (preview.spec.duration) {
+            console.log(`[APPOINTMENT:DESIGNER] Duration: ${preview.spec.duration} minutes`);
+          }
+        } else if (preview.spec.startTime && preview.spec.endTime) {
+          console.log(`[APPOINTMENT:DESIGNER] Time: ${preview.spec.startTime} to ${preview.spec.endTime}`);
+        }
+        
+        console.log(`[APPOINTMENT:DESIGNER] Location: ${preview.spec.location || "Not specified"} (${preview.spec.locationType || "TBD"})`);
         
         // Add appointment metadata
         preview.metadata = {
           type: "appointment",
-          category: preview.spec.appointmentCategory,
-          startTime: preview.spec.startTime,
-          endTime: preview.spec.endTime,
-          duration: durationMinutes,
+          hasDateQuery: !!preview.spec.dateQuery,
+          hasExactTimes: !!(preview.spec.startTime && preview.spec.endTime),
           locationType: preview.spec.locationType,
-          attendeeCount: preview.spec.attendees?.length || 0,
           hasLocation: !!preview.spec.location,
           isAllDay: preview.spec.allDay || false
         };

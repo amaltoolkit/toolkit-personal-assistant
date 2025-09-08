@@ -248,7 +248,7 @@ async function synthesizeMemoryNode(state, config) {
     // Check if synthesis should run
     if (!shouldSynthesize(state, config)) {
       console.log("[MEMORY:SYNTHESIZE] Skipping synthesis (conditions not met)");
-      return { messages: state.messages };
+      return {};
     }
     
     // Extract configuration
@@ -257,7 +257,7 @@ async function synthesizeMemoryNode(state, config) {
     
     if (!orgId || !userId) {
       console.log("[MEMORY:SYNTHESIZE] Missing org/user context, skipping synthesis");
-      return { messages: state.messages };
+      return {};
     }
     
     // Get synthesis configuration
@@ -273,7 +273,7 @@ async function synthesizeMemoryNode(state, config) {
     
     if (recentMessages.length < 2) {
       console.log("[MEMORY:SYNTHESIZE] Not enough messages to synthesize");
-      return { messages: state.messages };
+      return {};
     }
     
     // Format conversation for analysis
@@ -356,7 +356,6 @@ async function synthesizeMemoryNode(state, config) {
     console.error("[MEMORY:SYNTHESIZE] Error during memory synthesis:", error.message);
     // Don't fail the entire flow if synthesis fails
     return {
-      messages: state.messages,
       artifacts: {
         ...state.artifacts,
         lastSynthesisTurn: state.artifacts?.turnCount || state.messages?.length || 0,

@@ -16,8 +16,8 @@ const ActionSchema = z.object({
     "get_calendar",
     "analyze_data"
   ]).describe("The type of action to perform"),
-  params: z.record(z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Parameters for the action"),
-  dependsOn: z.array(z.string()).default([]).describe("Array of action IDs this depends on")
+  params: z.record(z.union([z.string(), z.number(), z.boolean()])).describe("Parameters for the action"),
+  dependsOn: z.array(z.string()).describe("Array of action IDs this depends on")
 });
 
 // Define the plan schema (DAG structure)

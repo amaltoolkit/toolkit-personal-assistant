@@ -16,7 +16,7 @@ const ActionSchema = z.object({
     "get_calendar",
     "analyze_data"
   ]).describe("The type of action to perform"),
-  params: z.record(z.any()).default({}).describe("Parameters for the action"),
+  params: z.record(z.union([z.string(), z.number(), z.boolean()])).default({}).describe("Parameters for the action"),
   dependsOn: z.array(z.string()).default([]).describe("Array of action IDs this depends on")
 });
 

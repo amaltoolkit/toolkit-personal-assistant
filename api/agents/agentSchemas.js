@@ -54,19 +54,19 @@ const TaskSpec = z.object({
   startTime: z.string().nullable().optional().describe("Start date/time in ISO format"),
   
   // Priority and status - BSA supported values only
-  priority: z.enum(["Low", "Normal", "High"]).default("Normal").describe("Task priority"),
+  priority: z.enum(["Low", "Normal", "High"]).optional().nullable().describe("Task priority"),
   status: z.enum(["NotStarted", "InProgress", "Completed", "WaitingOnSomeoneElse", "Deferred"])
-    .default("NotStarted").describe("Task status"),
-  percentComplete: z.number().min(0).max(100).default(0).describe("Completion percentage"),
+    .optional().nullable().describe("Task status"),
+  percentComplete: z.number().min(0).max(100).optional().nullable().describe("Completion percentage"),
   
   // Assignment - Similar to workflow pattern
   assigneeType: z.enum(["ContactsOwner", "ContactsOwnersAssistant", "SpecificUser"])
-    .default("ContactsOwner").describe("Who should be assigned the task"),
+    .optional().nullable().describe("Who should be assigned the task"),
   assigneeId: z.string().nullable().optional().describe("Specific user ID if assigneeType is SpecificUser"),
   
   // BSA specific fields
   location: z.string().nullable().optional().describe("Location for the task"),
-  rollOver: z.boolean().default(false).describe("Auto-rollover incomplete tasks to next day"),
+  rollOver: z.boolean().optional().nullable().describe("Auto-rollover incomplete tasks to next day"),
   
   // Linking to BSA entities
   contactId: z.string().nullable().optional().describe("Associated contact ID"),
@@ -90,15 +90,15 @@ const AppointmentSpec = z.object({
   startTime: z.string().optional().nullable().describe("Start date/time in ISO format"),
   endTime: z.string().optional().nullable().describe("End date/time in ISO format"),
   duration: z.number().optional().nullable().describe("Duration in minutes (used with dateQuery if endTime not specified)"),
-  allDay: z.boolean().default(false).describe("Is this an all-day event?"),
+  allDay: z.boolean().optional().nullable().describe("Is this an all-day event?"),
   
   // Location
   location: z.string().nullable().optional().describe("Meeting location, address, or video link"),
-  locationType: z.enum(["Physical", "Virtual", "Phone"]).default("Physical")
+  locationType: z.enum(["Physical", "Virtual", "Phone", "TBD"]).optional().nullable()
     .describe("Type of meeting location"),
   
   // Status - BSA doesn't use status on create, but useful for designer
-  complete: z.boolean().default(false).describe("Is the appointment completed?")
+  complete: z.boolean().optional().nullable().describe("Is the appointment completed?")
 });
 
 /**

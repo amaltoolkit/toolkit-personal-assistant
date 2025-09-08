@@ -33,6 +33,7 @@ const { apply_create_appointment } = require("../agents/appointmentApplier");
 async function kbRetrieveNode(state, config) {
   console.log("[KB:RETRIEVE] Stub - no KB search yet");
   return { 
+    messages: state.messages,
     kb: { 
       chunks: [],
       query: state.messages?.[state.messages.length - 1]?.content || ""
@@ -47,6 +48,7 @@ async function kbRetrieveNode(state, config) {
 async function kbAnswerNode(state, config) {
   console.log("[KB:ANSWER] Stub - returning placeholder answer");
   return { 
+    messages: state.messages,
     kb: { 
       answer: "This feature will search the knowledge base for answers to your questions.",
       citations: [],
@@ -65,6 +67,7 @@ async function design_update_task(state, config) {
   const action = state.action || state;
   
   return {
+    messages: state.messages,
     previews: [{
       actionId: action.id || "mock-id",
       kind: "task",
@@ -88,6 +91,7 @@ async function design_update_appointment(state, config) {
   const action = state.action || state;
   
   return {
+    messages: state.messages,
     previews: [{
       actionId: action.id || "mock-id",
       kind: "appointment",
@@ -108,6 +112,7 @@ async function design_update_appointment(state, config) {
 async function design_search_contacts(state, config) {
   console.log("[DESIGN:CONTACTS] Stub - mock contact search");
   return {
+    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "search",
@@ -120,6 +125,7 @@ async function design_search_contacts(state, config) {
 async function design_get_calendar(state, config) {
   console.log("[DESIGN:CALENDAR] Stub - mock calendar fetch");
   return {
+    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "fetch",
@@ -132,6 +138,7 @@ async function design_get_calendar(state, config) {
 async function design_analyze_data(state, config) {
   console.log("[DESIGN:ANALYZE] Stub - mock data analysis");
   return {
+    messages: state.messages,
     previews: [{
       actionId: state.action?.id || "mock-id",
       kind: "analysis",

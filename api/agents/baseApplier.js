@@ -30,6 +30,7 @@ async function baseApplier(state, config, applierConfig) {
     if (!preview) {
       console.error(`[APPLIER:${actionType}] No preview found for action ${state.action?.id}`);
       return {
+        messages: state.messages,
         artifacts: {
           ...state.artifacts,
           error: `No preview found for ${actionType}`
@@ -41,6 +42,7 @@ async function baseApplier(state, config, applierConfig) {
     if (!preview.spec) {
       console.error(`[APPLIER:${actionType}] Preview missing spec`);
       return {
+        messages: state.messages,
         artifacts: {
           ...state.artifacts,
           error: `Preview missing spec for ${actionType}`
@@ -74,6 +76,7 @@ async function baseApplier(state, config, applierConfig) {
 
     // Return updated artifacts
     return {
+      messages: state.messages,
       artifacts: {
         ...state.artifacts,
         doneIds: Array.from(doneIds),
@@ -96,6 +99,7 @@ async function baseApplier(state, config, applierConfig) {
       : error.message;
 
     return {
+      messages: state.messages,
       artifacts: {
         ...state.artifacts,
         lastApplied: {

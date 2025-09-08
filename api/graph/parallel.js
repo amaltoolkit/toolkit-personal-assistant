@@ -153,6 +153,7 @@ function markActionDone(state, actionId) {
   console.log(`[PARALLEL:DONE] Marked action ${actionId} as complete. Total done: ${doneIds.size}`);
   
   return {
+    messages: state.messages,
     artifacts: {
       ...state.artifacts,
       doneIds: Array.from(doneIds),

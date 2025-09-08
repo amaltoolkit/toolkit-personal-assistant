@@ -47,7 +47,7 @@ async function planNode(state, config) {
     
     if (!lastMessage || lastMessage.role !== "human") {
       console.log("[PLAN] No user message found, returning empty plan");
-      return { plan: [], cursor: 0 };
+      return { plan: [], cursor: 0, messages: state.messages };
     }
     
     const userQuery = String(lastMessage.content || "");
@@ -135,6 +135,7 @@ Note: act1 and act2 have no dependencies, so they can execute in parallel.`;
     }
     
     return {
+      messages: state.messages,
       plan: result.actions,
       cursor: 0,
       artifacts: {
@@ -146,7 +147,7 @@ Note: act1 and act2 have no dependencies, so they can execute in parallel.`;
     
   } catch (error) {
     console.error("[PLAN] Error during planning:", error.message);
-    return { plan: [], cursor: 0 };
+    return { plan: [], cursor: 0, messages: state.messages };
   }
 }
 

@@ -35,6 +35,7 @@ async function approvalBatchNode(state, config) {
       }
       
       return {
+        messages: state.messages,
         approvals: autoApprovals,
         interruptMarker: null // Clear any interrupt marker
       };
@@ -46,6 +47,7 @@ async function approvalBatchNode(state, config) {
     if (previews.length === 0) {
       console.log("[APPROVAL] No previews to approve, continuing");
       return {
+        messages: state.messages,
         approvals: {},
         interruptMarker: null
       };
@@ -69,6 +71,7 @@ async function approvalBatchNode(state, config) {
     // Set the interrupt marker in state
     // This will be checked by the orchestrator to detect interruption
     const updatedState = {
+      messages: state.messages,
       interruptMarker: "PENDING_APPROVAL",
       approvalPayload: interruptPayload
     };
@@ -84,6 +87,7 @@ async function approvalBatchNode(state, config) {
     console.log("[APPROVAL] Resumed with decisions:", Object.keys(decision || {}));
     
     return {
+      messages: state.messages,
       approvals: decision,
       interruptMarker: null, // Clear the interrupt marker
       approvalPayload: null // Clear the payload
@@ -104,6 +108,7 @@ async function approvalBatchNode(state, config) {
     }
     
     return {
+      messages: state.messages,
       approvals: autoApprovals,
       interruptMarker: null
     };

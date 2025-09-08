@@ -28,7 +28,15 @@ async function intentNode(state, config) {
     const messages = state.messages || [];
     const lastMessage = messages[messages.length - 1];
     
-    if (!lastMessage || lastMessage.role !== "human") {
+    // Check for HumanMessage class or role property
+    const isHumanMessage = lastMessage && (
+      lastMessage.constructor?.name === 'HumanMessage' || 
+      lastMessage._getType?.() === 'human' ||
+      lastMessage.role === 'human' ||
+      lastMessage.role === 'user'
+    );
+    
+    if (!isHumanMessage) {
       console.log("[INTENT] No user message found, defaulting to action");
       return { intent: "action", messages: state.messages };
     }

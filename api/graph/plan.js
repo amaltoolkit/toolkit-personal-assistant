@@ -45,7 +45,15 @@ async function planNode(state, config) {
     const messages = state.messages || [];
     const lastMessage = messages[messages.length - 1];
     
-    if (!lastMessage || lastMessage.role !== "human") {
+    // Check for HumanMessage class or role property
+    const isHumanMessage = lastMessage && (
+      lastMessage.constructor?.name === 'HumanMessage' || 
+      lastMessage._getType?.() === 'human' ||
+      lastMessage.role === 'human' ||
+      lastMessage.role === 'user'
+    );
+    
+    if (!isHumanMessage) {
       console.log("[PLAN] No user message found, returning empty plan");
       return { plan: [], cursor: 0, messages: state.messages };
     }

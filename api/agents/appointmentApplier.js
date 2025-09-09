@@ -28,11 +28,18 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
   let startTime = appointmentSpec.startTime;
   let endTime = appointmentSpec.endTime;
   
-  if (appointmentSpec.dateQuery && appointmentSpec.dateQuery !== null && (!startTime || !endTime)) {
+  // Always prioritize dateQuery when present - it's the source of truth for natural language dates
+  if (appointmentSpec.dateQuery && appointmentSpec.dateQuery !== null) {
     const userTimezone = bsaConfig.timezone || 'UTC';
     console.log(`[APPOINTMENT:APPLY] Parsing natural language date: "${appointmentSpec.dateQuery}"`);
     
-    const parsed = parseDateQuery(appointmentSpec.dateQuery, userTimezone);
+    // Extract just the date part by removing time patterns (e.g., "at 10 AM")
+    const datePartOnly = appointmentSpec.dateQuery
+      .replace(/\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)/gi, '')
+      .trim();
+    
+    console.log(`[APPOINTMENT:APPLY] Extracted date part: "${datePartOnly}"`);
+    const parsed = parseDateQuery(datePartOnly, userTimezone);
     if (parsed) {
       console.log(`[APPOINTMENT:APPLY] Parsed to: ${parsed.interpreted}`);
       
@@ -49,8 +56,8 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
         if (meridiem === 'pm' && hour !== 12) hour += 12;
         if (meridiem === 'am' && hour === 12) hour = 0;
         
-        // Create start time on the parsed date
-        const startDate = dayjs(parsed.startDate).tz(userTimezone)
+        // Create start time on the parsed date IN the user's timezone
+        const startDate = dayjs.tz(parsed.startDate, userTimezone)
           .hour(hour).minute(minute).second(0);
         startTime = startDate.toISOString();
         
@@ -59,7 +66,7 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
         endTime = startDate.add(duration, 'minute').toISOString();
       } else {
         // No specific time - use business hours default (10 AM)
-        const startDate = dayjs(parsed.startDate).tz(userTimezone)
+        const startDate = dayjs.tz(parsed.startDate, userTimezone)
           .hour(10).minute(0).second(0);
         startTime = startDate.toISOString();
         

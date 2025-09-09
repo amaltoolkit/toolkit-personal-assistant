@@ -284,8 +284,8 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
     
     if (normalizedQuery === `next ${day}`) {
-      const nextWeek = now.add(1, 'week');
-      const targetDay = nextWeek.day(dayMap[day]);
+      // Use dayjs overflow: day number + 7 = next week's day
+      const targetDay = now.day(dayMap[day] + 7);
       const date = formatDate(targetDay);
       return {
         startDate: date,
@@ -295,8 +295,8 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
     
     if (normalizedQuery === `last ${day}`) {
-      const lastWeek = now.subtract(1, 'week');
-      const targetDay = lastWeek.day(dayMap[day]);
+      // Use dayjs overflow: day number - 7 = last week's day
+      const targetDay = now.day(dayMap[day] - 7);
       const date = formatDate(targetDay);
       return {
         startDate: date,

@@ -33,15 +33,21 @@ IMPORTANT - Current Date and Time Context:
 
 User Request: ${userMessage}
 
-IMPORTANT DATE/TIME HANDLING:
-- If the user specifies a natural language date/time (like "next Monday at 8 AM" or "tomorrow at 2pm"), 
-  set the dateQuery field with the exact phrase and leave startTime/endTime empty.
-- If the user provides specific dates/times in ISO format, use startTime and endTime fields.
-- When using dateQuery, also set duration (in minutes) if the user specifies a duration.
-- Default duration is 60 minutes if not specified.
-- The system will automatically parse natural language dates based on the current date shown above.
+CRITICAL DATE/TIME HANDLING:
+- **USE THE EXACT DATE AND TIME THE USER SPECIFIES - DO NOT CHANGE OR OVERRIDE IT**
+- If user says "tomorrow at 8am", set dateQuery: "tomorrow at 8am" 
+- If user says "next Monday at 2pm", set dateQuery: "next Monday at 2pm"
+- If user says "Friday at 3:30 PM", set dateQuery: "Friday at 3:30 PM"
+- Only use startTime/endTime if the user provides ISO format dates
+- Default duration is 60 minutes if not specified
+- The system will parse natural language dates - just pass them through exactly
 
-Create a professional appointment with the following requirements:
+SUBJECT HANDLING:
+- If the user specifies a subject/title, use it exactly
+- If no subject is specified, use a simple descriptive title like "Meeting" or "Appointment"
+- DO NOT fabricate client names or meeting types unless explicitly mentioned
+
+Create an appointment following these requirements:
 
 1. Subject Guidelines:
    - Clear, professional meeting title
@@ -76,12 +82,12 @@ Create a professional appointment with the following requirements:
    - Training sessions: 120+ minutes
    - First-time consultations: 90 minutes
 
-5. Common Appointment Patterns:
+5. Example Patterns (ONLY use if relevant to user's actual request):
    - "Annual review" - 90 min, in-person preferred
-   - "Quarterly portfolio review" - 60 min, Physical location
-   - "Team planning meeting" - 60 min, conference room
-   - "New client consultation" - 90 min, office meeting
-   - "Compliance training" - 120 min, Virtual option
+   - "Portfolio review" - 60 min, Physical location
+   - "Team meeting" - 60 min, conference room
+   - "Client consultation" - 90 min, office meeting
+   - "Training" - 120 min, Virtual option
    - "Quick call" - 30 min, Phone or virtual
 
 6. Description Content:
@@ -107,16 +113,39 @@ Create a professional appointment with the following requirements:
 
 ${promptPatterns.getQualityInstructions()}
 
-FINAL REMINDER: The current date is ${userContext.currentDateTime}. Generate appointments with dates that are in the future relative to this date. If the user says "tomorrow", add 1 day to the current date. If they say "next week", calculate dates accordingly from the current date shown above.
+FINAL CRITICAL REMINDERS:
+1. USE THE EXACT DATE/TIME FROM THE USER'S REQUEST - DO NOT CHANGE IT
+2. If user says "tomorrow at 8am", your dateQuery MUST be "tomorrow at 8am"
+3. DO NOT fabricate meeting details, client names, or change times
+4. Keep it simple if details aren't provided - "Meeting" or "Appointment" is fine for subject
+5. The current date is ${userContext.currentDateTime} for your reference only
 
-Generate an appointment that is professional, well-organized, and follows financial advisory best practices.`;
+Generate an appointment that exactly matches what the user requested.`;
 }
 
 /**
  * Extract parameters from state for the designer
  */
 function extractAppointmentParams(state, config) {
-  const userMessage = state.messages?.at(-1)?.content || "";
+  // Priority 1: Use userQuery from action params (most reliable)
+  let userMessage = "";
+  if (state.action?.params?.userQuery) {
+    userMessage = state.action.params.userQuery;
+  } else if (state.actionParams?.userQuery) {
+    userMessage = state.actionParams.userQuery;
+  } else {
+    // Fallback: Find the last HumanMessage in the conversation
+    const messages = state.messages || [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === 'human' || msg.role === 'user' || 
+          msg.constructor?.name === 'HumanMessage' ||
+          msg._getType?.() === 'human') {
+        userMessage = msg.content || "";
+        break;
+      }
+    }
+  }
   
   // Look for memory context in state
   const memoryContext = state.messages?.find(m => 

@@ -19,7 +19,7 @@ dayjs.extend(timezone);
  * Prompt template for task generation
  */
 function generateTaskPrompt(params) {
-  const { userMessage, userContext, memoryContext } = params;
+  const { taskTitle, userMessage, userContext, memoryContext } = params;
   
   return `You are a task design specialist for financial advisors. Create a well-structured task based on the user's request.
 
@@ -30,7 +30,11 @@ Current Date and Time Context:
 - Current Date/Time: ${userContext.currentDate}
 - User Timezone: ${userContext.timezone}
 
-User Request: ${userMessage}
+CRITICAL INSTRUCTION - Task Title:
+Create a task with the subject: "${taskTitle}"
+This is the exact task that needs to be created. Do not interpret or change this title.
+
+Additional Context (for understanding only): ${userMessage || 'No additional context'}
 
 IMPORTANT DATE HANDLING:
 - If the user specifies a natural language date (like "tomorrow", "next Friday", "in 3 days"),
@@ -102,7 +106,42 @@ Generate a task that is practical, actionable, and follows financial advisory be
  * Extract parameters from state for the designer
  */
 function extractTaskParams(state, config) {
-  const userMessage = state.messages?.at(-1)?.content || "";
+  // Priority 1: Use title from action params (MOST IMPORTANT)
+  let taskTitle = "";
+  let userMessage = "";
+  
+  // Extract title - this is what the planner determined the task should be
+  if (state.action?.params?.title) {
+    taskTitle = state.action.params.title;
+    console.log(`[TASK:DESIGNER] Using title from plan: "${taskTitle}"`);
+  } else if (state.actionParams?.title) {
+    taskTitle = state.actionParams.title;
+  }
+  
+  // Extract userQuery for additional context (but not as primary input)
+  if (state.action?.params?.userQuery) {
+    userMessage = state.action.params.userQuery;
+  } else if (state.actionParams?.userQuery) {
+    userMessage = state.actionParams.userQuery;
+  } else {
+    // Fallback: Find the last HumanMessage in the conversation
+    const messages = state.messages || [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === 'human' || msg.role === 'user' || 
+          msg.constructor?.name === 'HumanMessage' ||
+          msg._getType?.() === 'human') {
+        userMessage = msg.content || "";
+        break;
+      }
+    }
+  }
+  
+  // If no title was provided, use userMessage as fallback
+  if (!taskTitle && userMessage) {
+    taskTitle = userMessage;
+    console.log(`[TASK:DESIGNER] No title provided, using userMessage as fallback`);
+  }
   
   // Look for memory context in state
   const memoryContext = state.messages?.find(m => 
@@ -116,7 +155,8 @@ function extractTaskParams(state, config) {
   const now = dayjs().tz(userTimezone);
   
   return {
-    userMessage, // Pass full message without extracting dates
+    taskTitle,    // The specific title for this task
+    userMessage,  // Full context for understanding
     userContext: {
       ...config,
       currentDate: now.toISOString(),

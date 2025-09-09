@@ -11,8 +11,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Import orchestrator
+// Import orchestrator and state management
 const { buildGraph } = require('../graph/orchestrator');
+const { getStore } = require('../graph/state');
 
 // Constants
 const RATE_LIMIT = 10; // requests
@@ -129,9 +130,9 @@ async function getUserId(sessionId) {
 /**
  * Build configuration for graph execution
  * @param {Object} params - Configuration parameters
- * @returns {Object} - RunnableConfig for LangGraph
+ * @returns {Promise<Object>} - RunnableConfig for LangGraph
  */
-function buildConfig(params) {
+async function buildConfig(params) {
   const {
     session_id,
     org_id,
@@ -142,6 +143,9 @@ function buildConfig(params) {
     passKey
   } = params;
   
+  // Get the UnifiedStore instance for this org/user
+  const store = await getStore();
+  
   return {
     configurable: {
       thread_id: thread_id || `${session_id}:${org_id}`,
@@ -150,7 +154,8 @@ function buildConfig(params) {
       user_tz: time_zone || DEFAULT_TIMEZONE,
       safe_mode: safe_mode !== false, // Default true
       passKey, // Passed via closure, never in state
-      BSA_BASE: process.env.BSA_BASE
+      BSA_BASE: process.env.BSA_BASE,
+      store // Add UnifiedStore to config for memory nodes
     }
   };
 }
@@ -285,7 +290,7 @@ router.post('/execute', async (req, res) => {
     console.log(`[AGENT:EXECUTE:${requestId}] User ID:`, user_id || 'not found');
     
     // Step 4: Build configuration
-    const config = buildConfig({
+    const config = await buildConfig({
       session_id,
       org_id,
       thread_id,
@@ -447,7 +452,7 @@ router.post('/approve', async (req, res) => {
     const user_id = await getUserId(session_id);
     
     // Step 3: Build config (must match original)
-    const config = buildConfig({
+    const config = await buildConfig({
       session_id,
       org_id,
       thread_id, // Use the provided thread_id

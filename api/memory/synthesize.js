@@ -5,17 +5,18 @@
  * Uses LLM to identify memorable information and stores with appropriate metadata
  */
 
-const { PgMemoryStore } = require('./storeAdapter');
+const crypto = require('crypto');
 const { ChatOpenAI } = require('@langchain/openai');
 const { z } = require('zod');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
+// Note: PgMemoryStore import removed - now using UnifiedStore from config
 
 // Memory item schema for structured extraction
 const MemoryItemSchema = z.object({
   text: z.string().min(10).max(500).describe("The specific fact or information to remember"),
   kind: z.enum(["fact", "preference", "instruction", "context"]).describe("The type of memory"),
   importance: z.number().min(1).max(5).describe("Importance score from 1 (trivial) to 5 (critical)"),
-  subjectId: z.string().optional().describe("Related entity ID if applicable (contact, company, etc)")
+  subjectId: z.string().nullable().describe("Related entity ID if applicable (contact, company, etc)")
 });
 
 const MemoryBatchSchema = z.object({
@@ -166,9 +167,12 @@ async function storeMemories(memories, store, namespace) {
     try {
       const ttlDays = TTL_BY_KIND[memory.kind] || 90;
       
-      const key = await store.put(
+      // Generate key since put() no longer returns it (Store API compliance)
+      const key = crypto.randomUUID();
+      
+      await store.put(
         namespace,
-        null, // auto-generate key
+        key,
         {
           text: memory.text,
           kind: memory.kind,
@@ -263,8 +267,13 @@ async function synthesizeMemoryNode(state, config) {
     // Get synthesis configuration
     const synthConfig = { ...DEFAULT_CONFIG, ...config?.configurable?.synthesis };
     
-    // Initialize memory store
-    const store = new PgMemoryStore(orgId, userId);
+    // Get UnifiedStore from config
+    const store = config?.configurable?.store;
+    if (!store) {
+      console.warn("[MEMORY:SYNTHESIZE] No store in config, skipping memory synthesis");
+      return {};
+    }
+    
     const namespace = [orgId, userId, "memories"];
     
     // Get recent messages to analyze
@@ -370,7 +379,7 @@ async function synthesizeMemoryNode(state, config) {
  * @param {Array} messages - Messages to analyze
  * @param {string} orgId - Organization ID
  * @param {string} userId - User ID
- * @param {Object} options - Synthesis options
+ * @param {Object} options - Synthesis options (including optional store)
  * @returns {Array} Stored memories
  */
 async function synthesizeMemories(messages, orgId, userId, options = {}) {
@@ -379,10 +388,19 @@ async function synthesizeMemories(messages, orgId, userId, options = {}) {
     artifacts: { turnCount: messages.length }
   };
   
+  // Use provided store or create one for backward compatibility
+  let store = options.store;
+  if (!store) {
+    // Fallback for testing - import only when needed
+    const { PgMemoryStore } = require('./storeAdapter');
+    store = new PgMemoryStore(orgId, userId);
+  }
+  
   const config = {
     configurable: {
       orgId,
       userId,
+      store,
       synthesis: { ...DEFAULT_CONFIG, ...options, enableAutoSynthesis: true }
     }
   };

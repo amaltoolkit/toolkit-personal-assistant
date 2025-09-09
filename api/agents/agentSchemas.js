@@ -103,10 +103,11 @@ const AppointmentSpec = z.object({
 
 /**
  * Memory Batch Schema - For memory synthesis
+ * Aligned with synthesize.js memory kinds
  */
 const MemoryBatch = z.object({
   memories: z.array(z.object({
-    kind: z.enum(["user_pref", "team_info", "client_note", "fact"]).describe("Type of memory"),
+    kind: z.enum(["fact", "preference", "instruction", "context"]).describe("Type of memory: fact (objective info), preference (likes/dislikes), instruction (how-to), context (situational)"),
     text: z.string().min(8).max(500).describe("The memory text to store"),
     subjectId: z.string().nullable().optional().describe("ID of related entity (contact, account, etc.)"),
     importance: z.number().min(1).max(5).default(3).describe("Importance level (1-5)"),

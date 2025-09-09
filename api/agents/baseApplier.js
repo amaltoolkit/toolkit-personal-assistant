@@ -74,7 +74,11 @@ async function baseApplier(state, config, applierConfig) {
 
     // Mark action as done
     const doneIds = new Set(state.artifacts?.doneIds || []);
-    doneIds.add(state.action?.id);
+    const actionId = state.actionId || state.action?.id;
+    if (actionId) {
+      doneIds.add(actionId);
+      console.log(`[APPLIER:${actionType}] Marking action ${actionId} as done`);
+    }
 
     // Extract result data for artifacts
     const resultData = extractResult ? extractResult(result) : result;
@@ -86,7 +90,7 @@ async function baseApplier(state, config, applierConfig) {
         doneIds: Array.from(doneIds),
         [actionType]: resultData,
         lastApplied: {
-          actionId: state.action?.id,
+          actionId: actionId || state.action?.id,
           type: actionType,
           timestamp: new Date().toISOString(),
           success: true

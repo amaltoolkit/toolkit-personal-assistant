@@ -49,6 +49,7 @@ function cacheElements() {
     getStartedBtn: document.getElementById('get-started-btn'),
     continueBtn: document.getElementById('continue-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    resetBtn: document.getElementById('reset-btn'),
     sendBtn: document.getElementById('send-btn'),
     
     // Chat elements
@@ -92,6 +93,9 @@ function setupEventListeners() {
   
   // Logout
   elements.logoutBtn?.addEventListener('click', handleLogout);
+  
+  // Reset conversation
+  elements.resetBtn?.addEventListener('click', handleResetConversation);
 }
 
 // Initialize the application
@@ -1006,6 +1010,69 @@ async function handleLogout() {
   
   // Reset UI - show welcome screen with clean state
   showWelcomeScreen();
+}
+
+// Handle reset conversation
+async function handleResetConversation() {
+  if (!currentSessionId) {
+    console.log('[RESET] No session ID available');
+    return;
+  }
+  
+  // Confirm with user
+  if (!confirm('Start a new conversation? This will clear the current conversation history but keep your login and memories.')) {
+    return;
+  }
+  
+  try {
+    showLoading(true);
+    
+    const response = await fetch(`${API_BASE}/api/reset-conversation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        session_id: currentSessionId
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to reset conversation');
+    }
+    
+    const result = await response.json();
+    console.log('[RESET] Conversation reset successful:', result);
+    
+    // Clear chat messages in UI
+    chatMessages = [];
+    elements.chatMessages.innerHTML = '';
+    
+    // Add welcome message
+    const welcomeMessage = `
+      <div class="message assistant-message">
+        <div class="message-bubble">
+          <p>Conversation reset! How can I help you today?</p>
+          <p>I can help you with:</p>
+          <ul>
+            <li>📅 Your upcoming appointments &amp; tasks</li>
+            <li>⚙️ Building smart processes or reviewing them</li>
+          </ul>
+        </div>
+      </div>
+    `;
+    elements.chatMessages.innerHTML = welcomeMessage;
+    
+    // Focus on input
+    elements.chatInput?.focus();
+    
+  } catch (error) {
+    console.error('[RESET] Failed to reset conversation:', error);
+    showError(`Failed to reset conversation: ${error.message}`);
+  } finally {
+    showLoading(false);
+  }
 }
 
 // ============================================

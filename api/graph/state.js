@@ -3,7 +3,6 @@
 
 // Module-level cache for singleton instances
 let checkpointerInstance = null;
-let storeInstance = null;
 let AppState = null;
 
 /**
@@ -63,8 +62,20 @@ async function getAppState() {
         const merged = { ...old, ...new_ };
 
         // Merge doneIds as a set (union of completed actions)
-        const doneSet = new Set([...(old?.doneIds || []), ...(new_?.doneIds || [])]);
-        if (doneSet.size) merged.doneIds = Array.from(doneSet);
+        // BUT if new explicitly sets empty array, respect that (plan reset)
+        if (new_?.doneIds !== undefined) {
+          if (new_.doneIds.length === 0) {
+            // Explicitly clearing doneIds (new plan)
+            merged.doneIds = [];
+          } else {
+            // Merge with existing
+            const doneSet = new Set([...(old?.doneIds || []), ...(new_.doneIds || [])]);
+            merged.doneIds = Array.from(doneSet);
+          }
+        } else if (old?.doneIds) {
+          // Keep existing if not specified in new
+          merged.doneIds = old.doneIds;
+        }
 
         // Merge failedActions by actionId (deduplicate failures)
         const failMap = new Map();
@@ -144,29 +155,35 @@ async function getCheckpointer() {
 }
 
 /**
- * Get or create the InMemoryStore for ephemeral per-process needs
- * For persistent long-term memory, we use PgMemoryStore adapter with ltm_memories table
- * When PostgresStore becomes available in JS, we can swap the implementation
+ * Get or create the UnifiedStore for all memory operations
+ * This bridges InMemoryStore (dev) and PgMemoryStore (production)
+ * Provides consistent API while we wait for PostgresStore in LangGraph JS
+ * 
+ * @param {Object} config - Optional configuration with orgId/userId
+ * @returns {UnifiedStore} Store instance for memory operations
  */
-async function getStore() {
-  if (storeInstance) return storeInstance;
+async function getStore(config = {}) {
+  // Extract org/user context from config if provided
+  const orgId = config?.orgId || process.env.DEFAULT_ORG_ID || null;
+  const userId = config?.userId || process.env.DEFAULT_USER_ID || null;
   
-  try {
-    const { InMemoryStore } = await import("@langchain/langgraph");
-    
-    console.log("[STATE] Creating InMemoryStore for ephemeral storage...");
-    
-    storeInstance = new InMemoryStore();
-    
-    console.log("[STATE] InMemoryStore ready (ephemeral, per-process)");
-    console.log("[STATE] Note: Persistent memory uses PgMemoryStore adapter with ltm_memories table");
-    console.log("[STATE] This provides full vector search via pgvector");
-    return storeInstance;
-    
-  } catch (error) {
-    console.error("[STATE] Failed to create store:", error);
-    throw error;
-  }
+  // Use UnifiedStore for all memory operations
+  const { getUnifiedStore } = require("./unifiedStore");
+  
+  const storeConfig = {
+    orgId,
+    userId,
+    isDev: process.env.NODE_ENV === 'development',
+    debug: process.env.DEBUG === 'true'
+  };
+  
+  const store = getUnifiedStore(storeConfig);
+  
+  console.log("[STATE] UnifiedStore ready - bridging InMemoryStore and PgMemoryStore");
+  console.log("[STATE] PgMemoryStore provides persistent memory with vector search");
+  console.log("[STATE] InMemoryStore provides development fallback");
+  
+  return store;
 }
 
 /**
@@ -195,8 +212,10 @@ async function createEmbedding(text) {
  */
 function clearCache() {
   checkpointerInstance = null;
-  storeInstance = null;
   AppState = null;
+  // Also clear UnifiedStore cache
+  const { clearStoreCache } = require("./unifiedStore");
+  clearStoreCache();
   console.log("[STATE] Cache cleared");
 }
 

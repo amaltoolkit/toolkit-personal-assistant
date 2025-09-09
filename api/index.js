@@ -1,3 +1,8 @@
+// Load environment variables in development
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
 // Ensure LangSmith callbacks complete in serverless environment
 // This MUST be set before any LangChain imports for proper tracing
 if (!process.env.LANGCHAIN_CALLBACKS_BACKGROUND) {
@@ -80,6 +85,29 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// PostgreSQL connection pool for direct database operations
+// Lazy initialized on first use to avoid issues if POSTGRES_CONNECTION_STRING is not set
+let pgPool = null;
+function getPgPool() {
+  if (!pgPool && process.env.POSTGRES_CONNECTION_STRING) {
+    const { Pool } = require('pg');
+    pgPool = new Pool({
+      connectionString: process.env.POSTGRES_CONNECTION_STRING,
+      ssl: { rejectUnauthorized: false },
+      max: 10, // Maximum number of clients in the pool
+      idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+      connectionTimeoutMillis: 2000, // Timeout for new connections
+    });
+    
+    pgPool.on('error', (err) => {
+      console.error('[PG_POOL] Unexpected error on idle client', err);
+    });
+    
+    console.log('[PG_POOL] PostgreSQL connection pool initialized');
+  }
+  return pgPool;
+}
 
 // Environment variables
 const BSA_BASE = process.env.BSA_BASE;
@@ -914,6 +942,15 @@ if (process.env.USE_NEW_ARCHITECTURE === 'true') {
   console.log('[SERVER] New architecture disabled - using legacy endpoints');
 }
 
+// Monitoring Routes (Always available)
+try {
+  const monitoringRoutes = require('./routes/monitoring');
+  app.use('/api', monitoringRoutes);
+  console.log('[SERVER] Monitoring routes loaded');
+} catch (error) {
+  console.error('[SERVER] Error loading monitoring routes:', error.message);
+}
+
 // Orchestrator API endpoint - Unified multi-agent interface
 app.post("/api/orchestrator/query", async (req, res) => {
   try {
@@ -1014,6 +1051,102 @@ app.use((err, _, res, __) => {
   // Send generic error response to client
   // Don't expose internal error details for security
   res.status(500).json({ error: "internal server error" });
+});
+
+// Reset conversation endpoint - clears checkpoint data
+app.post("/api/reset-conversation", async (req, res) => {
+  const requestId = crypto.randomBytes(4).toString("hex");
+  console.log(`[RESET:${requestId}] Starting conversation reset`);
+  
+  try {
+    const { session_id } = req.body;
+    
+    if (!session_id) {
+      return res.status(400).json({ error: "session_id required" });
+    }
+    
+    // Get user_id from session
+    const { data: tokenData, error: tokenError } = await supabase
+      .from("bsa_tokens")
+      .select("user_id")
+      .eq("session_id", session_id)
+      .single();
+    
+    if (tokenError || !tokenData) {
+      console.error(`[RESET:${requestId}] Invalid session:`, tokenError);
+      return res.status(401).json({ error: "Invalid session" });
+    }
+    
+    const userId = tokenData.user_id;
+    const threadId = `${session_id}:${userId}`;
+    
+    console.log(`[RESET:${requestId}] Clearing checkpoints for thread: ${threadId}`);
+    
+    // Get the shared connection pool
+    const pool = getPgPool();
+    if (!pool) {
+      console.error(`[RESET:${requestId}] PostgreSQL connection not configured`);
+      return res.status(500).json({ error: "Database connection not configured" });
+    }
+    
+    // Use a transaction for atomic deletion
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Clear all checkpoint-related data for this thread
+      // Track deletion counts for each table
+      const writesResult = await client.query('DELETE FROM checkpoint_writes WHERE thread_id = $1', [threadId]);
+      const blobsResult = await client.query('DELETE FROM checkpoint_blobs WHERE thread_id = $1', [threadId]);
+      const checkpointsResult = await client.query('DELETE FROM checkpoints WHERE thread_id = $1', [threadId]);
+      
+      // Also clear checkpoint_migrations if any exist for this thread
+      // Note: checkpoint_migrations might not have thread_id column, so we check first
+      let migrationsDeleted = 0;
+      try {
+        const migrationCheckResult = await client.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_name = 'checkpoint_migrations' AND column_name = 'thread_id'"
+        );
+        if (migrationCheckResult.rows.length > 0) {
+          const migrationsResult = await client.query('DELETE FROM checkpoint_migrations WHERE thread_id = $1', [threadId]);
+          migrationsDeleted = migrationsResult.rowCount;
+        }
+      } catch (migrationErr) {
+        console.log(`[RESET:${requestId}] Note: checkpoint_migrations table may not have thread_id column`);
+      }
+      
+      // Commit the transaction
+      await client.query('COMMIT');
+      
+      const deletionCounts = {
+        checkpoint_writes: writesResult.rowCount,
+        checkpoint_blobs: blobsResult.rowCount,
+        checkpoints: checkpointsResult.rowCount,
+        checkpoint_migrations: migrationsDeleted
+      };
+      
+      console.log(`[RESET:${requestId}] Successfully cleared checkpoints:`, deletionCounts);
+      
+      res.json({ 
+        success: true, 
+        message: "Conversation reset successfully",
+        thread_id: threadId,
+        deleted: deletionCounts
+      });
+      
+    } catch (err) {
+      // Rollback transaction on error
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      // Release the client back to the pool
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error(`[RESET:${requestId}] Error:`, error);
+    res.status(500).json({ error: "Failed to reset conversation" });
+  }
 });
 
 // Module exports for Vercel

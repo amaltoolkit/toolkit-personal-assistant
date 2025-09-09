@@ -100,8 +100,10 @@ Guidelines:
 3. Actions with no dependencies can run in parallel
 4. Actions with dependencies wait for their dependencies to complete
 5. Keep the plan concise and focused on the user's request
-6. Include relevant parameters in the params object (strings, numbers, or booleans)
-7. You MUST respond with valid JSON matching the structure below
+6. CRITICAL: Always include "userQuery" in params with the EXACT user request text
+7. Do NOT parse or interpret dates - pass them as-is in the userQuery
+8. Include other relevant parameters in params as needed
+9. You MUST respond with valid JSON matching the structure below
 
 Example for "Create a workflow for client onboarding and schedule a kickoff meeting":
 {
@@ -110,6 +112,7 @@ Example for "Create a workflow for client onboarding and schedule a kickoff meet
       "id": "act1",
       "type": "build_workflow",
       "params": {
+        "userQuery": "Create a workflow for client onboarding and schedule a kickoff meeting",
         "name": "Client Onboarding",
         "description": "Standard process for new client onboarding"
       },
@@ -119,8 +122,8 @@ Example for "Create a workflow for client onboarding and schedule a kickoff meet
       "id": "act2",
       "type": "create_appointment",
       "params": {
-        "title": "Client Kickoff Meeting",
-        "duration": 60
+        "userQuery": "Create a workflow for client onboarding and schedule a kickoff meeting",
+        "title": "Client Kickoff Meeting"
       },
       "dependsOn": []
     }
@@ -173,10 +176,13 @@ CRITICAL: You must respond with valid JSON only. No additional text or explanati
     return {
       plan: result.actions,
       cursor: 0,
+      previews: [], // Clear old previews for new plan
+      approvals: null, // Clear old approvals
       artifacts: {
         ...state.artifacts,
         planGenerated: new Date().toISOString(),
-        doneIds: [] // Reset completed actions
+        doneIds: [], // Reset completed actions
+        failedActions: [] // Clear failed actions from previous plan
       }
     };
     

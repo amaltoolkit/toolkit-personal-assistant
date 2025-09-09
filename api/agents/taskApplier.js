@@ -27,11 +27,18 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
   let dueTime = taskSpec.dueTime;
   let startTime = taskSpec.startTime;
   
-  if (taskSpec.dateQuery && taskSpec.dateQuery !== null && !dueTime) {
+  // Always prioritize dateQuery when present - it's the source of truth for natural language dates
+  if (taskSpec.dateQuery && taskSpec.dateQuery !== null) {
     const userTimezone = bsaConfig.timezone || 'UTC';
     console.log(`[TASK:APPLY] Parsing natural language date: "${taskSpec.dateQuery}"`);
     
-    const parsed = parseDateQuery(taskSpec.dateQuery, userTimezone);
+    // Extract just the date part by removing time patterns (e.g., "at 10 AM")
+    const datePartOnly = taskSpec.dateQuery
+      .replace(/\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)/gi, '')
+      .trim();
+    
+    console.log(`[TASK:APPLY] Extracted date part: "${datePartOnly}"`);
+    const parsed = parseDateQuery(datePartOnly, userTimezone);
     if (parsed) {
       console.log(`[TASK:APPLY] Parsed to: ${parsed.interpreted}`);
       
@@ -39,8 +46,8 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
       const dueKeywords = /\b(due|by|before|deadline|complete by|finish by)\b/i;
       const startKeywords = /\b(start|begin|starting)\b/i;
       
-      // Parse the date in user's timezone
-      const parsedDate = dayjs(parsed.startDate).tz(userTimezone);
+      // Parse the date IN the user's timezone (not as UTC then converted)
+      const parsedDate = dayjs.tz(parsed.startDate, userTimezone);
       
       if (startKeywords.test(taskSpec.dateQuery)) {
         // It's a start date - set to beginning of business day (9 AM)

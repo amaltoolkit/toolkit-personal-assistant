@@ -5,8 +5,8 @@
  * Uses semantic search to find the most contextually relevant memories
  */
 
-const { PgMemoryStore } = require('./storeAdapter');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
+// Note: PgMemoryStore import removed - now using UnifiedStore from config
 
 /**
  * Format memories into a system message for context
@@ -122,8 +122,13 @@ async function recallMemoryNode(state, config) {
       return {};
     }
     
-    // Initialize memory store
-    const store = new PgMemoryStore(orgId, userId);
+    // Get UnifiedStore from config
+    const store = config?.configurable?.store;
+    if (!store) {
+      console.warn("[MEMORY:RECALL] No store in config, skipping memory recall");
+      return {};
+    }
+    
     const namespace = [orgId, userId, "memories"];
     
     // Extract the user's query
@@ -196,11 +201,18 @@ async function recallMemoryNode(state, config) {
  * @param {string} query - The query to search for
  * @param {string} orgId - Organization ID
  * @param {string} userId - User ID
- * @param {Object} options - Search options
+ * @param {Object} options - Search options (including optional store)
  * @returns {Array} Array of memories
  */
 async function recallMemories(query, orgId, userId, options = {}) {
-  const store = new PgMemoryStore(orgId, userId);
+  // Use provided store or create a new one for backward compatibility
+  let store = options.store;
+  if (!store) {
+    // Fallback for testing - import only when needed
+    const { PgMemoryStore } = require('./storeAdapter');
+    store = new PgMemoryStore(orgId, userId);
+  }
+  
   const namespace = [orgId, userId, "memories"];
   
   const searchOptions = {

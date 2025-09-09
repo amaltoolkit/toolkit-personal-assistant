@@ -91,12 +91,23 @@ async function fanOutDesign(state) {
       const nodeId = `design_${action.type}`;
       console.log(`[PARALLEL:DESIGN] Sending action ${action.id} to ${nodeId}`);
       
-      // Wrap state with error tracking
+      // Pass only necessary state to avoid confusion
+      // Don't send full message history which causes designers to misinterpret
       return new Send(nodeId, {
-        action: action,
+        // Only pass essential state, not full message history
+        plan: state.plan,
+        cursor: state.cursor,
+        previews: state.previews || [],
+        approvals: state.approvals,
+        artifacts: state.artifacts,
+        intent: state.intent,
+        kb: state.kb,
+        userContext: state.userContext,
+        // Action details
+        action: action,  // Full action object with title
         actionId: action.id,
         actionType: action.type,
-        actionParams: action.params,
+        actionParams: action.params,  // Critical: includes title and userQuery
         errorBoundary: true  // Flag for nodes to handle errors gracefully
       });
     });
@@ -193,10 +204,18 @@ async function fanOutApply(state) {
       }
       
       return new Send(nodeId, {
+        // Only pass necessary state for appliers
+        plan: state.plan,
+        cursor: state.cursor,
+        previews: state.previews || [],
+        approvals: state.approvals,
+        artifacts: state.artifacts,
+        userContext: state.userContext,
+        // Action and preview details
         action: action,
         actionId: action.id,
         actionType: action.type,
-        actionParams: action.params,
+        actionParams: action.params,  // Critical: includes title and userQuery
         preview: preview,
         spec: preview?.spec,
         errorBoundary: true,  // Flag for nodes to handle errors gracefully

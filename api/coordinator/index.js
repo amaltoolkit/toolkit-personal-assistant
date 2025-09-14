@@ -48,6 +48,10 @@ const CoordinatorStateChannels = {
     value: (x, y) => y ? y : x,
     default: () => null
   },
+  interrupt: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
   // Context fields that need to be preserved through the coordinator flow
   session_id: {
     value: (x, y) => y ? y : x,

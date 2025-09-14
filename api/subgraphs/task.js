@@ -67,6 +67,28 @@ const TaskStateChannels = {
   error: {
     value: (x, y) => y ? y : x,
     default: () => null
+  },
+
+  // Context fields (required for authentication and state management)
+  session_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  org_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  user_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  thread_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  timezone: {
+    value: (x, y) => y ? y : x,
+    default: () => 'UTC'
   }
 };
 
@@ -306,7 +328,7 @@ class TaskSubgraph {
       
       // Search for the first mentioned contact
       const contactName = linked_contacts[0];
-      const contacts = await this.contactResolver.search(contactName, 3, passKey);
+      const contacts = await this.contactResolver.search(contactName, 3, passKey, orgId);
       
       if (contacts.length === 0) {
         console.log(`[TASK:ASSIGNEE] No contact found for "${contactName}"`);

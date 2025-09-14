@@ -68,6 +68,28 @@ const ContactStateChannels = {
   error: {
     value: (x, y) => y || x,
     default: () => null
+  },
+
+  // Context fields (required for authentication and state management)
+  session_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  org_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  user_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  thread_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  timezone: {
+    value: (x, y) => y || x,
+    default: () => 'UTC'
   }
 };
 
@@ -278,10 +300,39 @@ class ContactSubgraph {
   async searchBSAContacts(state, config) {
     console.log("[CONTACT:SEARCH] Searching BSA for contacts");
     this.metrics.startTimer("contact_bsa_search");
-    
+
     try {
+      // Validate config exists
+      if (!config?.configurable) {
+        console.error("[CONTACT:SEARCH] Missing config or configurable");
+        return {
+          ...state,
+          error: "Authentication configuration missing",
+          candidates: []
+        };
+      }
+
       const passKey = await config.configurable.getPassKey();
       const orgId = config.configurable.org_id;
+
+      // Validate required fields
+      if (!passKey) {
+        console.error("[CONTACT:SEARCH] No valid PassKey available");
+        return {
+          ...state,
+          error: "Authentication failed - no valid PassKey",
+          candidates: []
+        };
+      }
+
+      if (!orgId) {
+        console.error("[CONTACT:SEARCH] No organization ID available");
+        return {
+          ...state,
+          error: "Organization ID missing",
+          candidates: []
+        };
+      }
       
       // Search with retry logic
       const contacts = await this.errorHandler.executeWithRetry(

@@ -115,28 +115,28 @@ async function createAppointment(data, passKey, orgId) {
     reminder = 15,
     contactIds = []
   } = data;
-  
+
   console.log("[BSA:APPOINTMENTS] Creating appointment:", subject);
-  
-  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/updateAppointment.json';
+
+  // Use the correct OrgData endpoint for creation
+  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json';
   const payload = {
-    OrgId: orgId,
-    Activity: {
-      EntityName: "Activity",
+    IncludeExtendedProperties: false,
+    DataObject: {
       Subject: subject,
       StartTime: startTime,
       EndTime: endTime,
       Location: location || "",
       Description: description || "",
-      TypeCode: "appointment",
-      IsAllDayEvent: isAllDay,
-      AppointmentBookId: "default",
-      ReminderMinutesBeforeStart: reminder,
-      Priority: "normal",
-      ShowAs: "busy"
-    }
+      AllDay: isAllDay,
+      RollOver: false,
+      Complete: false
+    },
+    OrganizationId: orgId,
+    PassKey: passKey,
+    ObjectName: "appointment"
   };
-  
+
   try {
     const response = await axios.post(
       bsaConfig.buildEndpoint(endpoint),
@@ -149,20 +149,21 @@ async function createAppointment(data, passKey, orgId) {
         timeout: 10000
       }
     );
-    
+
     const normalized = normalizeBSAResponse(response.data);
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to create appointment');
     }
-    
-    const appointment = normalized.Activity;
+
+    // Response contains DataObject, not Activity
+    const appointment = normalized.DataObject;
     console.log("[BSA:APPOINTMENTS] Created appointment ID:", appointment.Id);
-    
+
     // Link contacts if provided
     if (contactIds.length > 0 && appointment.Id) {
       await linkAttendees(appointment.Id, contactIds, passKey, orgId);
     }
-    
+
     return appointment;
   } catch (error) {
     console.error('[BSA:APPOINTMENTS] Error creating:', error.message);
@@ -180,25 +181,27 @@ async function createAppointment(data, passKey, orgId) {
  */
 async function updateAppointment(appointmentId, updates, passKey, orgId) {
   console.log("[BSA:APPOINTMENTS] Updating appointment:", appointmentId);
-  
+
   // First fetch the existing appointment
   const existing = await getAppointmentById(appointmentId, passKey, orgId);
   if (!existing) {
     throw new Error(`Appointment ${appointmentId} not found`);
   }
-  
-  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/updateAppointment.json';
+
+  // Use the OrgData endpoint for updates
+  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/update.json';
   const payload = {
-    OrgId: orgId,
-    Activity: {
+    IncludeExtendedProperties: false,
+    DataObject: {
       ...existing,
       ...updates,
-      Id: appointmentId,
-      EntityName: "Activity",
-      TypeCode: "appointment"
-    }
+      Id: appointmentId
+    },
+    OrganizationId: orgId,
+    PassKey: passKey,
+    ObjectName: "appointment"
   };
-  
+
   try {
     const response = await axios.post(
       bsaConfig.buildEndpoint(endpoint),
@@ -211,13 +214,14 @@ async function updateAppointment(appointmentId, updates, passKey, orgId) {
         timeout: 10000
       }
     );
-    
+
     const normalized = normalizeBSAResponse(response.data);
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to update appointment');
     }
-    
-    return normalized.Activity;
+
+    // Response contains DataObject, not Activity
+    return normalized.DataObject;
   } catch (error) {
     console.error('[BSA:APPOINTMENTS] Error updating:', error.message);
     throw error;
@@ -264,7 +268,7 @@ async function getAppointmentById(appointmentId, passKey, orgId) {
 }
 
 /**
- * Link attendees to an appointment
+ * Link attendees to an appointment using the correct BSA linker pattern
  * @param {string} appointmentId - Appointment ID
  * @param {Array<string>} contactIds - Array of contact IDs
  * @param {string} passKey - BSA authentication key
@@ -273,42 +277,72 @@ async function getAppointmentById(appointmentId, passKey, orgId) {
  */
 async function linkAttendees(appointmentId, contactIds, passKey, orgId) {
   console.log(`[BSA:APPOINTMENTS] Linking ${contactIds.length} attendees to appointment ${appointmentId}`);
-  
-  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/updateActivityLinks.json';
-  const payload = {
-    OrgId: orgId,
-    Id: appointmentId,
-    TypeCode: "appointment",
-    LinkerName: "ActivityContactLinker",
-    LinkedEntitySchemaName: "Contact",
-    Action: 1, // Add links
-    ItemIds: contactIds
-  };
-  
-  try {
-    const response = await axios.post(
-      bsaConfig.buildEndpoint(endpoint),
-      payload,
-      {
-        headers: {
-          'Authorization': `Bearer ${passKey}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 10000
+
+  // Use the correct OrgData link endpoint
+  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json';
+  const linkerName = 'linker_appointments_contacts';
+
+  // Track results for each contact
+  const linkResults = [];
+  const errors = [];
+
+  // Link each contact individually (BSA link endpoint doesn't support batch)
+  for (const contactId of contactIds) {
+    const payload = {
+      LeftObjectName: 'appointment',
+      LeftId: appointmentId,
+      ObjectName: linkerName,
+      RightObjectName: 'contact',
+      RightId: contactId,
+      OrganizationId: orgId,
+      PassKey: passKey
+    };
+
+    try {
+      const response = await axios.post(
+        bsaConfig.buildEndpoint(endpoint),
+        payload,
+        {
+          headers: {
+            'Authorization': `Bearer ${passKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+
+      const normalized = normalizeBSAResponse(response.data);
+      if (!normalized.valid) {
+        errors.push({ contactId, error: normalized.error || 'Failed to link' });
+        console.error(`[BSA:APPOINTMENTS] Failed to link contact ${contactId}`);
+      } else {
+        linkResults.push({ contactId, linked: true });
+        console.log(`[BSA:APPOINTMENTS] Successfully linked contact ${contactId}`);
       }
-    );
-    
-    const normalized = normalizeBSAResponse(response.data);
-    if (!normalized.valid) {
-      throw new Error(normalized.error || 'Failed to link attendees');
+    } catch (error) {
+      console.error(`[BSA:APPOINTMENTS] Error linking contact ${contactId}:`, error.message);
+      errors.push({ contactId, error: error.message });
     }
-    
-    console.log("[BSA:APPOINTMENTS] Successfully linked attendees");
-    return { linked: true, appointmentId, contactIds };
-  } catch (error) {
-    console.error('[BSA:APPOINTMENTS] Error linking attendees:', error.message);
-    throw error;
   }
+
+  // Return summary of results
+  const result = {
+    linked: linkResults.length > 0,
+    appointmentId,
+    successful: linkResults,
+    failed: errors,
+    totalContacts: contactIds.length,
+    successCount: linkResults.length,
+    failureCount: errors.length
+  };
+
+  if (errors.length > 0) {
+    console.warn(`[BSA:APPOINTMENTS] Linked ${linkResults.length}/${contactIds.length} contacts, ${errors.length} failed`);
+  } else {
+    console.log(`[BSA:APPOINTMENTS] Successfully linked all ${linkResults.length} attendees`);
+  }
+
+  return result;
 }
 
 /**
@@ -320,13 +354,16 @@ async function linkAttendees(appointmentId, contactIds, passKey, orgId) {
  */
 async function deleteAppointment(appointmentId, passKey, orgId) {
   console.log("[BSA:APPOINTMENTS] Deleting appointment:", appointmentId);
-  
-  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/deleteActivity.json';
+
+  // Use the OrgData endpoint for deletion
+  const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/delete.json';
   const payload = {
-    OrgId: orgId,
-    ActivityId: appointmentId
+    DataObjectId: appointmentId,
+    OrganizationId: orgId,
+    PassKey: passKey,
+    ObjectName: "appointment"
   };
-  
+
   try {
     const response = await axios.post(
       bsaConfig.buildEndpoint(endpoint),
@@ -339,12 +376,12 @@ async function deleteAppointment(appointmentId, passKey, orgId) {
         timeout: 10000
       }
     );
-    
+
     const normalized = normalizeBSAResponse(response.data);
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to delete appointment');
     }
-    
+
     console.log("[BSA:APPOINTMENTS] Successfully deleted");
     return { deleted: true, appointmentId };
   } catch (error) {

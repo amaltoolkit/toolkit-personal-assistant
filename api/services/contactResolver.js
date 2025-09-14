@@ -21,9 +21,10 @@ class ContactResolver {
    * @param {string} query - Search query (name, email, etc.)
    * @param {number} limit - Maximum results
    * @param {string} passKey - BSA authentication key
+   * @param {string} orgId - Organization ID
    * @returns {Promise<Array>} Array of matching contacts
    */
-  async search(query, limit = 5, passKey) {
+  async search(query, limit = 5, passKey, orgId) {
     // Check cache first
     const cacheKey = `search:${query}:${limit}`;
     if (this.cache.has(cacheKey)) {
@@ -36,13 +37,18 @@ class ContactResolver {
 
     console.log(`[CONTACT:SEARCH] Searching for "${query}"`);
 
-    // Search BSA contacts
-    const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.portal.VCPortalEndpoint/doRetrieveCRMData.json';
+    // Use the correct OrgData endpoint for search
+    const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/search.json';
     const payload = {
-      entity: "Contact",
-      searchText: query,
-      maxResults: limit,
-      fields: ["id", "name", "email", "phone", "company", "title"]
+      IncludeExtendedProperties: false,
+      OrderBy: "LastName, FirstName",
+      AscendingOrder: true,
+      ResultsPerPage: limit,
+      OrganizationId: orgId,
+      PassKey: passKey,
+      SearchTerm: query,
+      PageOffset: 1,
+      ObjectName: "contact"
     };
 
     try {
@@ -61,15 +67,20 @@ class ContactResolver {
         return [];
       }
 
-      const contacts = (normalized.Results || normalized.contacts || []).map(c => ({
-        id: c.id || c.Id,
-        name: c.name || c.Name || c.DisplayName,
-        email: c.email || c.Email,
-        phone: c.phone || c.Phone,
-        company: c.company || c.Company || c.AccountName,
-        title: c.title || c.Title || c.JobTitle
+      // Map BSA contact fields to our format
+      const contacts = (normalized.Results || []).map(c => ({
+        id: c.Id,
+        name: c.FullName || `${c.FirstName || ''} ${c.LastName || ''}`.trim(),
+        email: c.EMailAddress1 || c.EMailAddress2 || c.EMailAddress3,
+        phone: c.MobilePhone || c.Telephone1 || c.Telephone2,
+        company: c.CompanyName,
+        title: c.JobTitle,
+        // Additional useful fields
+        firstName: c.FirstName,
+        lastName: c.LastName,
+        clientSince: c.ClientSince
       }));
-      
+
       // Cache results
       this.cache.set(cacheKey, {
         data: contacts,
@@ -255,7 +266,7 @@ class ContactResolver {
   }
 
   /**
-   * Link a contact to an activity
+   * Link a contact to an activity using the correct BSA linker pattern
    * @param {string} type - Activity type ('appointment' or 'task')
    * @param {string} activityId - Activity ID
    * @param {string} contactId - Contact ID
@@ -264,19 +275,31 @@ class ContactResolver {
    * @returns {Promise<Object>} Link result
    */
   async linkActivity(type, activityId, contactId, passKey, orgId) {
-    const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/updateActivityLinks.json';
-    const payload = {
-      OrgId: orgId,
-      Id: activityId,
-      TypeCode: type,
-      LinkerName: "ActivityContactLinker",
-      LinkedEntitySchemaName: "Contact",
-      Action: 1, // Add link
-      ItemIds: [contactId]
+    // Map activity types to correct linker names (from listLinkerTypes documentation)
+    const LINKER_NAMES = {
+      'appointment': 'linker_appointments_contacts',
+      'task': 'linker_tasks_contacts'
     };
-    
-    console.log(`[CONTACT:LINK] Linking contact ${contactId} to ${type} ${activityId}`);
-    
+
+    const linkerName = LINKER_NAMES[type];
+    if (!linkerName) {
+      throw new Error(`Unknown activity type for linking: ${type}`);
+    }
+
+    // Use the correct OrgData link endpoint
+    const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json';
+    const payload = {
+      LeftObjectName: type,           // 'appointment' or 'task'
+      LeftId: activityId,             // The appointment/task ID
+      ObjectName: linkerName,         // The specific linker type
+      RightObjectName: 'contact',     // Always linking to contact
+      RightId: contactId,             // The contact ID
+      OrganizationId: orgId,
+      PassKey: passKey
+    };
+
+    console.log(`[CONTACT:LINK] Linking contact ${contactId} to ${type} ${activityId} using ${linkerName}`);
+
     try {
       const response = await axios.post(
         bsaConfig.buildEndpoint(endpoint),
@@ -286,14 +309,14 @@ class ContactResolver {
           timeout: 10000
         }
       );
-      
+
       const normalized = normalizeBSAResponse(response.data);
       if (!normalized.valid) {
         throw new Error(normalized.error || 'Failed to link contact');
       }
-      
-      console.log(`[CONTACT:LINK] Successfully linked`);
-      return { linked: true, type, activityId, contactId };
+
+      console.log(`[CONTACT:LINK] Successfully linked using linker: ${linkerName}`);
+      return { linked: true, type, activityId, contactId, linkerName };
     } catch (error) {
       console.error('[CONTACT:LINK] Error:', error.message);
       throw error;

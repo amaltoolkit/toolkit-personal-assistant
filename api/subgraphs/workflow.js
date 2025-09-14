@@ -79,6 +79,28 @@ const WorkflowStateChannels = {
   error: {
     value: (x, y) => y || x,
     default: () => null
+  },
+
+  // Context fields (required for authentication and state management)
+  session_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  org_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  user_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  thread_id: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  timezone: {
+    value: (x, y) => y || x,
+    default: () => 'UTC'
   }
 };
 

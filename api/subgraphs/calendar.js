@@ -17,39 +17,89 @@ const { getContactResolver } = require("../services/contactResolver");
 const { getApprovalBatcher } = require("../services/approvalBatcher");
 const { getMem0Service } = require("../services/mem0Service");
 
-// State schema for calendar operations
-const CalendarState = z.object({
-  messages: z.array(z.object({
-    role: z.enum(["user", "assistant", "system"]),
-    content: z.string()
-  })),
-  memory_context: z.record(z.any()).optional(),
-  entities: z.record(z.any()).optional(),
-  
-  // Calendar-specific state
-  action: z.enum(["view", "create", "update", "delete"]).optional(),
-  date_range: z.object({
-    start: z.string().optional(),
-    end: z.string().optional()
-  }).optional(),
-  appointments: z.array(z.any()).optional(),
-  appointment_data: z.object({
-    subject: z.string().optional(),
-    description: z.string().optional(),
-    startTime: z.string().optional(),
-    endTime: z.string().optional(),
-    location: z.string().optional(),
-    isAllDay: z.boolean().optional(),
-    attendees: z.array(z.string()).optional()
-  }).optional(),
-  contacts_to_resolve: z.array(z.string()).optional(),
-  resolved_contacts: z.array(z.any()).optional(),
-  conflicts: z.array(z.any()).optional(),
-  preview: z.any().optional(),
-  approved: z.boolean().optional(),
-  response: z.string().optional(),
-  error: z.string().optional()
-});
+// State channels for calendar operations (LangGraph compatible)
+const CalendarStateChannels = {
+  messages: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  memory_context: {
+    value: (x, y) => y ? y : x,
+    default: () => ({})
+  },
+  entities: {
+    value: (x, y) => y ? y : x,
+    default: () => ({})
+  },
+
+  // Calendar-specific fields
+  action: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  date_range: {
+    value: (x, y) => y ? y : x,
+    default: () => ({ start: null, end: null })
+  },
+  appointments: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  appointment_data: {
+    value: (x, y) => y ? y : x,
+    default: () => ({})
+  },
+  contacts_to_resolve: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  resolved_contacts: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  conflicts: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  preview: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  approved: {
+    value: (x, y) => y ? y : x,
+    default: () => false
+  },
+  response: {
+    value: (x, y) => y ? y : x,
+    default: () => ""
+  },
+  error: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+
+  // Context fields (required for authentication and state management)
+  session_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  org_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  user_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  thread_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  timezone: {
+    value: (x, y) => y ? y : x,
+    default: () => 'UTC'
+  }
+};
 
 class CalendarSubgraph {
   constructor(checkpointer = null) {
@@ -68,7 +118,7 @@ class CalendarSubgraph {
 
   buildGraph() {
     const workflow = new StateGraph({
-      channels: CalendarState
+      channels: CalendarStateChannels  // Use state channels instead of Zod schema
     });
 
     // Add nodes
@@ -91,11 +141,19 @@ class CalendarSubgraph {
     workflow.addConditionalEdges(
       "parse_request",
       (state) => {
+        console.log("[CALENDAR:ROUTER] After parse_request:", {
+          hasError: !!state.error,
+          action: state.action,
+          contactsToResolve: state.contacts_to_resolve?.length || 0
+        });
+
         if (state.error) return "format_response";
         if (state.action === "view") return "fetch_appointments";
         if (state.action === "create") {
-          return state.contacts_to_resolve?.length > 0 ? 
+          const nextNode = state.contacts_to_resolve?.length > 0 ?
             "resolve_contacts" : "check_conflicts";
+          console.log(`[CALENDAR:ROUTER] Create action routing to: ${nextNode}`);
+          return nextNode;
         }
         if (state.action === "update") return "fetch_appointments";
         return "format_response";
@@ -165,6 +223,16 @@ class CalendarSubgraph {
    */
   async parseRequest(state) {
     console.log("[CALENDAR:PARSE] Parsing user request");
+
+    // Safety check for messages array
+    if (!state.messages || !Array.isArray(state.messages) || state.messages.length === 0) {
+      console.error("[CALENDAR:PARSE] No messages in state:", {
+        hasMessages: !!state.messages,
+        isArray: Array.isArray(state.messages),
+        length: state.messages?.length || 0
+      });
+      return { ...state, error: "No messages found in state" };
+    }
 
     const lastMessage = state.messages[state.messages.length - 1];
     if (!lastMessage || lastMessage.role !== "user") {
@@ -286,13 +354,23 @@ class CalendarSubgraph {
         }
       }
 
-      return {
+      const result = {
         ...state,
         action: parsed.action,
         date_range: dateRange,
         appointment_data: appointmentData,
         contacts_to_resolve: parsed.contacts || []
       };
+
+      console.log("[CALENDAR:PARSE] Returning state:", {
+        action: result.action,
+        hasDateRange: !!result.date_range,
+        hasAppointmentData: !!result.appointment_data,
+        contactsToResolve: result.contacts_to_resolve?.length || 0,
+        hasError: !!result.error
+      });
+
+      return result;
 
     } catch (error) {
       console.error("[CALENDAR:PARSE] Error parsing request:", error);
@@ -308,6 +386,8 @@ class CalendarSubgraph {
    */
   async resolveContacts(state, config) {
     console.log("[CALENDAR:CONTACTS] Resolving contacts");
+    console.log("[CALENDAR:CONTACTS] Contacts to resolve:", state.contacts_to_resolve);
+    console.log("[CALENDAR:CONTACTS] Config available:", !!config);
 
     // Check if we're resuming from a contact selection
     if (state.contact_selected && state.resolved_contacts) {
@@ -336,7 +416,8 @@ class CalendarSubgraph {
         const candidates = await this.contactResolver.search(
           contactName,
           5,
-          passKey
+          passKey,
+          config.configurable.org_id
         );
 
         if (candidates.length === 0) {
@@ -395,7 +476,7 @@ class CalendarSubgraph {
    */
   async fetchAppointments(state, config) {
     console.log("[CALENDAR:FETCH] Fetching appointments");
-    
+
     if (!state.date_range?.start) {
       // Default to today
       const today = new Date();
@@ -406,8 +487,34 @@ class CalendarSubgraph {
     }
 
     try {
+      // Validate config exists
+      if (!config?.configurable) {
+        console.error("[CALENDAR:FETCH] Missing config or configurable");
+        return {
+          ...state,
+          error: "Authentication configuration missing"
+        };
+      }
+
       const passKey = await config.configurable.getPassKey();
       const orgId = config.configurable.org_id;
+
+      // Validate required fields
+      if (!passKey) {
+        console.error("[CALENDAR:FETCH] No valid PassKey available");
+        return {
+          ...state,
+          error: "Authentication failed - no valid PassKey"
+        };
+      }
+
+      if (!orgId) {
+        console.error("[CALENDAR:FETCH] No organization ID available");
+        return {
+          ...state,
+          error: "Organization ID missing"
+        };
+      }
       
       const result = await getAppointments({
         startDate: state.date_range.start,

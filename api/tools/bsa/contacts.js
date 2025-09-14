@@ -430,22 +430,31 @@ async function linkContactToActivity(activityType, activityId, contactId, passKe
     throw new Error('Activity ID and Contact ID are required');
   }
 
-  const linkerName = activityType === 'task' ? 'TaskContactLinker' : 'ActivityContactLinker';
-  
+  // Map activity types to correct linker names (from listLinkerTypes documentation)
+  const LINKER_NAMES = {
+    'appointment': 'linker_appointments_contacts',
+    'task': 'linker_tasks_contacts'
+  };
+
+  const linkerName = LINKER_NAMES[activityType];
+  if (!linkerName) {
+    throw new Error(`Unknown activity type for linking: ${activityType}`);
+  }
+
   console.log(`[BSA:CONTACTS:LINK] Linking contact ${contactId} to ${activityType} ${activityId}`);
-  
+
   const axios = require('axios');
-  
+
+  // Use the correct OrgData link endpoint with proper payload structure
   const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json');
   const payload = {
+    LeftObjectName: activityType,      // 'appointment' or 'task'
+    LeftId: activityId,                 // The activity ID
+    ObjectName: linkerName,             // The specific linker type
+    RightObjectName: 'contact',         // Always linking to contact
+    RightId: contactId,                 // The contact ID
     OrganizationId: orgId,
-    PassKey: passKey,
-    ParentEntitySchemaName: activityType === 'task' ? 'Task' : 'Activity',
-    ParentItemId: activityId,
-    LinkerName: linkerName,
-    LinkedEntitySchemaName: 'Contact',
-    Action: 1, // 1 = Add link
-    ItemIds: [contactId]
+    PassKey: passKey
   };
 
   try {
@@ -460,7 +469,7 @@ async function linkContactToActivity(activityType, activityId, contactId, passKe
       return false;
     }
 
-    console.log(`[BSA:CONTACTS:LINK] Successfully linked contact ${contactId} to ${activityType} ${activityId}`);
+    console.log(`[BSA:CONTACTS:LINK] Successfully linked contact ${contactId} to ${activityType} ${activityId} using ${linkerName}`);
     return true;
     
   } catch (error) {

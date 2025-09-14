@@ -47,6 +47,27 @@ const CoordinatorStateChannels = {
   error: {
     value: (x, y) => y ? y : x,
     default: () => null
+  },
+  // Context fields that need to be preserved through the coordinator flow
+  session_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  org_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  user_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  thread_id: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  timezone: {
+    value: (x, y) => y ? y : x,
+    default: () => 'UTC'
   }
 };
 
@@ -272,11 +293,40 @@ class Coordinator {
    */
   async executeSubgraphs(state) {
     console.log("[COORDINATOR:EXECUTOR] Executing subgraphs");
-    
+
+    // Debug state to understand what's available
+    console.log("[COORDINATOR:EXECUTOR] State debug:", {
+      has_session_id: !!state.session_id,
+      has_org_id: !!state.org_id,
+      session_id_value: state.session_id,
+      org_id_value: state.org_id,
+      state_keys: Object.keys(state)
+    });
+
     const results = {};
     const { execution_plan, session_id, org_id } = state;
-    
+
     try {
+      // Validate required fields
+      if (!session_id) {
+        console.error("[COORDINATOR:EXECUTOR] Missing session_id in state");
+        return {
+          ...state,
+          error: "Missing session ID",
+          requiresReauth: true,
+          subgraph_results: {}
+        };
+      }
+
+      if (!org_id) {
+        console.error("[COORDINATOR:EXECUTOR] Missing org_id in state");
+        return {
+          ...state,
+          error: "Missing organization ID",
+          subgraph_results: {}
+        };
+      }
+
       // Get PassKey for BSA operations with error recovery
       let passKey;
       try {
@@ -330,18 +380,29 @@ class Coordinator {
             };
           }
           
-          // Prepare subgraph state
+          // Prepare subgraph state with all context fields
           const subgraphState = {
             messages: state.messages,
             memory_context: state.memory_context,
             entities: state.entities || {},
-            timezone: state.timezone
+            timezone: state.timezone,
+            // Pass through context fields for authentication
+            session_id: state.session_id,
+            org_id: state.org_id,
+            user_id: state.user_id,
+            thread_id: state.thread_id
           };
 
           // Execute subgraph and handle interrupts
           try {
             const result = await subgraph.invoke(subgraphState, config);
-            return { domain, result };
+            console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, result ? 'result exists' : 'undefined');
+
+            // Ensure result is not undefined
+            return {
+              domain,
+              result: result || { error: `${domain} subgraph returned no result` }
+            };
           } catch (error) {
             // Re-throw interrupts with proper structure
             if (error && error.name === 'GraphInterrupt') {
@@ -350,14 +411,21 @@ class Coordinator {
               error.domain = domain;
               throw error;
             }
-            return { domain, error: error.message };
+            console.error(`[COORDINATOR:EXECUTOR] Error in ${domain} subgraph:`, error);
+            // Return proper error object instead of just error property
+            return {
+              domain,
+              result: { error: error.message || "Unknown error occurred" }
+            };
           }
         });
         
         const parallelResults = await Promise.all(parallelPromises);
         parallelResults.forEach(({ domain, result }) => {
-          results[domain] = result;
-          // Merge entities from subgraph
+          // Ensure result exists before storing
+          results[domain] = result || { error: `No result returned from ${domain} subgraph` };
+
+          // Merge entities from subgraph safely
           if (result && result.entities) {
             state.entities = { ...state.entities, ...result.entities };
           }
@@ -382,6 +450,11 @@ class Coordinator {
             memory_context: state.memory_context,
             entities: state.entities || {},
             timezone: state.timezone,
+            // Pass through context fields for authentication
+            session_id: state.session_id,
+            org_id: state.org_id,
+            user_id: state.user_id,
+            thread_id: state.thread_id,
             dependencies: step.depends_on?.reduce((acc, dep) => {
               acc[dep] = results[dep];
               return acc;
@@ -391,9 +464,12 @@ class Coordinator {
           // Execute subgraph and handle interrupts
           try {
             const result = await subgraph.invoke(subgraphState, config);
-            results[step.domain] = result;
+            console.log(`[COORDINATOR:EXECUTOR] ${step.domain} subgraph returned:`, result ? 'result exists' : 'undefined');
 
-            // Merge entities from subgraph
+            // Ensure result is not undefined before storing
+            results[step.domain] = result || { error: `${step.domain} subgraph returned no result` };
+
+            // Merge entities from subgraph safely
             if (result && result.entities) {
               state.entities = { ...state.entities, ...result.entities };
             }
@@ -407,7 +483,7 @@ class Coordinator {
             }
             console.error(`[COORDINATOR:EXECUTOR] Error in ${step.domain} subgraph:`, error);
             this.metrics.endTimer(step.domain, false, { error: error.message });
-            results[step.domain] = { error: error.message };
+            results[step.domain] = { error: error.message || "Unknown error occurred" };
           }
         }
       }
@@ -484,14 +560,25 @@ class Coordinator {
       
       // Aggregate results from subgraphs
       const aggregatedResults = [];
-      
+
       for (const [domain, result] of Object.entries(state.subgraph_results)) {
+        // Add null/undefined check to prevent crashes
+        if (!result) {
+          console.warn(`[COORDINATOR:FINALIZER] No result for domain: ${domain}`);
+          aggregatedResults.push(`${domain}: No response received`);
+          continue;
+        }
+
         if (result.error) {
           aggregatedResults.push(`${domain}: Error - ${result.error}`);
         } else if (result.response) {
           aggregatedResults.push(result.response);
         } else if (result.data) {
           aggregatedResults.push(`${domain}: ${JSON.stringify(result.data)}`);
+        } else {
+          // Handle case where result exists but has no recognized properties
+          console.warn(`[COORDINATOR:FINALIZER] Unexpected result structure for ${domain}:`, result);
+          aggregatedResults.push(`${domain}: Processing incomplete`);
         }
       }
       
@@ -582,6 +669,15 @@ class Coordinator {
    */
   async processQuery(query, context = {}) {
     console.log("[COORDINATOR] Processing query:", query);
+
+    // Debug context to ensure it's being passed correctly
+    console.log("[COORDINATOR] Context debug:", {
+      has_session_id: !!context.session_id,
+      has_org_id: !!context.org_id,
+      session_id: context.session_id,
+      org_id: context.org_id,
+      user_id: context.user_id
+    });
 
     // Start total execution timer
     this.metrics.startTimer('total');

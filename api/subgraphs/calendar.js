@@ -11,7 +11,7 @@
 const { StateGraph, END } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { z } = require("zod");
-const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/dateParser");
+const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/chronoParser");
 const { getAppointments, createAppointment, updateAppointment } = require("../tools/bsa/appointments");
 const { getContactResolver } = require("../services/contactResolver");
 const { getApprovalBatcher } = require("../services/approvalBatcher");

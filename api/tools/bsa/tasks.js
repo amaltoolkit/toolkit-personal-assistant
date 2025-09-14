@@ -5,7 +5,7 @@
 
 const axios = require('axios');
 const { normalizeBSAResponse, buildBSAHeaders, formatBSADateTime } = require('./common');
-const { parseDateQuery } = require('../../lib/dateParser');
+const { parseDateQuery } = require('../../lib/chronoParser');
 const bsaConfig = require('../../config/bsa');
 
 /**

@@ -13,6 +13,9 @@ const { z } = require("zod");
 const { getTasks, createTask, updateTask, completeTask, deleteTask } = require("../tools/bsa/tasks");
 const { searchContacts, linkContactToActivity } = require("../tools/bsa/contacts");
 
+// Import date parser for natural language due dates
+const { parseTaskDueDate } = require("../lib/chronoParser");
+
 // Import services
 const { getContactResolver } = require("../services/contactResolver");
 const { getApprovalBatcher } = require("../services/approvalBatcher");
@@ -251,9 +254,18 @@ class TaskSubgraph {
       }
       
       const result = JSON.parse(parsed);
-      
+
       console.log("[TASK:PARSE] Detected action:", result.action);
-      
+
+      // Parse natural language due dates using Chrono
+      if (result.task && lastMessage.content) {
+        const dueDateParsed = parseTaskDueDate(lastMessage.content, state.timezone || 'UTC');
+        if (dueDateParsed) {
+          result.task.dueDate = dueDateParsed;
+          console.log("[TASK:PARSE] Parsed due date from natural language:", dueDateParsed);
+        }
+      }
+
       return {
         action: result.action,
         task_details: result.task || {},

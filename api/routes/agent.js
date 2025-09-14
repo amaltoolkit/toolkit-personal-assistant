@@ -340,30 +340,41 @@ router.post('/execute', async (req, res) => {
       } catch (error) {
         // Handle V2 interrupts (for approvals and contact disambiguation)
         if (error && error.name === 'GraphInterrupt') {
-          console.log(`[AGENT:EXECUTE:${requestId}] GraphInterrupt caught:`, error.value?.type);
+          // Extract interrupt value from the nested structure
+          // LangGraph interrupts have the structure: error.interrupts[0].value.value
+          const interruptData = error.interrupts?.[0]?.value?.value ||
+                               error.interrupts?.[0]?.value ||
+                               error.value || {};
+
+          console.log(`[AGENT:EXECUTE:${requestId}] GraphInterrupt caught:`, {
+            type: interruptData.type,
+            hasPreview: !!interruptData.preview,
+            domain: interruptData.domain
+          });
 
           // Structure the interrupt data properly
-          const interruptValue = error.value || {};
           state = {
             interruptMarker: 'PENDING_APPROVAL',
             thread_id: config.configurable.thread_id
           };
 
           // Handle different interrupt types
-          if (interruptValue.type === 'contact_disambiguation') {
+          if (interruptData.type === 'contact_disambiguation') {
             state.interrupt = {
               type: 'contact_disambiguation',
-              candidates: interruptValue.candidates,
-              message: interruptValue.message,
+              candidates: interruptData.candidates,
+              message: interruptData.message,
               thread_id: config.configurable.thread_id
             };
-          } else if (interruptValue.type === 'approval') {
-            state.approvalPayload = interruptValue;
-            state.previews = [interruptValue.preview]; // Wrap single preview in array
+          } else if (interruptData.type === 'approval') {
+            state.approvalPayload = interruptData;
+            state.previews = [interruptData.preview]; // Wrap single preview in array
+            state.approvalContext = interruptData; // Store full context
           } else {
             // Generic interrupt handling
-            state.approvalPayload = interruptValue;
-            state.previews = interruptValue.previews || [];
+            state.approvalPayload = interruptData;
+            state.previews = interruptData.previews || [];
+            state.approvalContext = interruptData;
           }
         } else {
           throw error;

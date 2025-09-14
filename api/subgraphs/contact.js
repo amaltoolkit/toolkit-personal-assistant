@@ -177,9 +177,10 @@ class ContactSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[CONTACT] Compiling graph WITH checkpointer");
+      const checkpointerType = this.checkpointer.constructor?.name || 'Unknown';
+      console.log(`[CONTACT] Compiling graph WITH checkpointer (${checkpointerType})`);
     } else {
-      console.log("[CONTACT] Compiling graph WITHOUT checkpointer (stateless mode)");
+      console.log("[CONTACT] Compiling graph WITHOUT checkpointer (interrupts disabled)");
     }
 
     return workflow.compile(compileOptions);
@@ -896,6 +897,10 @@ class ContactSubgraph {
 }
 
 // Export factory function for coordinator
+/**
+ * Factory function to create contact subgraph
+ * @param {Object} checkpointer - The checkpointer (propagated from parent)
+ */
 async function createSubgraph(checkpointer = null) {
   const subgraph = new ContactSubgraph(checkpointer);
   return subgraph.graph;

@@ -212,9 +212,10 @@ class CalendarSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[CALENDAR] Compiling graph WITH checkpointer");
+      const checkpointerType = this.checkpointer.constructor?.name || 'Unknown';
+      console.log(`[CALENDAR] Compiling graph WITH checkpointer (${checkpointerType})`);
     } else {
-      console.log("[CALENDAR] Compiling graph WITHOUT checkpointer (stateless mode)");
+      console.log("[CALENDAR] Compiling graph WITHOUT checkpointer (interrupts disabled)");
     }
 
     return workflow.compile(compileOptions);
@@ -877,6 +878,7 @@ class CalendarSubgraph {
 
 /**
  * Factory function to create calendar subgraph
+ * @param {Object} checkpointer - The checkpointer (propagated from parent)
  */
 async function createSubgraph(checkpointer = null) {
   const subgraph = new CalendarSubgraph(checkpointer);

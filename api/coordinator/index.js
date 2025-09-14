@@ -358,6 +358,7 @@ class Coordinator {
           thread_id: state.thread_id || `${session_id}:${org_id}`, // Ensure fallback
           checkpoint_id: state.checkpoint_id,
           checkpoint_ns: "", // Default namespace
+          checkpointer: this.checkpointer, // Propagate checkpointer to subgraphs
           // PassKey getter for thread-safe access
           getPassKey: async () => await this.passKeyManager.getPassKey(session_id),
           org_id,
@@ -370,7 +371,7 @@ class Coordinator {
         console.log("[COORDINATOR:EXECUTOR] Running parallel subgraphs:", execution_plan.parallel);
         
         const parallelPromises = execution_plan.parallel.map(async (domain) => {
-          const subgraph = await this.loadSubgraph(domain);
+          const subgraph = await this.loadSubgraph(domain, config);
           if (!subgraph) {
             console.warn(`[COORDINATOR:EXECUTOR] Subgraph not found: ${domain}`);
             return {
@@ -437,7 +438,7 @@ class Coordinator {
         console.log("[COORDINATOR:EXECUTOR] Running sequential subgraphs");
         
         for (const step of execution_plan.sequential) {
-          const subgraph = await this.loadSubgraph(step.domain);
+          const subgraph = await this.loadSubgraph(step.domain, config);
           if (!subgraph) {
             console.warn(`[COORDINATOR:EXECUTOR] Subgraph not found: ${step.domain}`);
             results[step.domain] = { error: "Subgraph not implemented" };
@@ -506,24 +507,39 @@ class Coordinator {
 
   /**
    * Load a domain subgraph dynamically
+   * @param {string} domain - The domain name
+   * @param {Object} config - The config containing checkpointer
    */
-  async loadSubgraph(domain) {
+  async loadSubgraph(domain, config) {
+    // Create cache key that includes config identity
+    // We need separate instances per config to avoid mixing checkpointers
+    const cacheKey = `${domain}_${config?.configurable?.thread_id || 'default'}`;
+
     // Check cache
-    if (this.subgraphs.has(domain)) {
-      return this.subgraphs.get(domain);
+    if (this.subgraphs.has(cacheKey)) {
+      return this.subgraphs.get(cacheKey);
     }
 
     try {
       // Dynamically import subgraph
       const subgraphModule = require(`../subgraphs/${domain}`);
+
+      // Pass the checkpointer from config to subgraph
+      // This allows the parent's checkpointer to be propagated
+      const checkpointer = config?.configurable?.checkpointer || this.checkpointer;
+
       const subgraph = subgraphModule.createSubgraph ?
-        await subgraphModule.createSubgraph(null) :  // Pass null - subgraphs run stateless
+        await subgraphModule.createSubgraph(checkpointer) :  // Pass checkpointer for interrupts
         subgraphModule.default;
 
       // Cache for future use
-      this.subgraphs.set(domain, subgraph);
+      this.subgraphs.set(cacheKey, subgraph);
 
-      console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITHOUT checkpointer (stateless mode)`);
+      if (checkpointer) {
+        console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITH checkpointer (interrupts enabled)`);
+      } else {
+        console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITHOUT checkpointer (stateless mode)`);
+      }
       return subgraph;
 
     } catch (error) {

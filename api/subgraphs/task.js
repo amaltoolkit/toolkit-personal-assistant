@@ -200,9 +200,10 @@ class TaskSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[TASK] Compiling graph WITH checkpointer");
+      const checkpointerType = this.checkpointer.constructor?.name || 'Unknown';
+      console.log(`[TASK] Compiling graph WITH checkpointer (${checkpointerType})`);
     } else {
-      console.log("[TASK] Compiling graph WITHOUT checkpointer (stateless mode)");
+      console.log("[TASK] Compiling graph WITHOUT checkpointer (interrupts disabled)");
     }
 
     return workflow.compile(compileOptions);
@@ -745,6 +746,10 @@ class TaskSubgraph {
 }
 
 // Export factory function
+/**
+ * Factory function to create task subgraph
+ * @param {Object} checkpointer - The checkpointer (propagated from parent)
+ */
 async function createSubgraph(checkpointer = null) {
   return new TaskSubgraph(checkpointer).graph;
 }

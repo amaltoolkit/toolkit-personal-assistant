@@ -306,6 +306,29 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
   }
   
+  // Helper to normalize date strings for parsing (capitalize months, lowercase ordinals)
+  const normalizeDateString = (str) => {
+    // First, lowercase ordinal suffixes (1ST -> 1st, 2ND -> 2nd, etc.)
+    let result = str.replace(/(\d+)(ST|ND|RD|TH)/gi, (match, num, suffix) => {
+      return num + suffix.toLowerCase();
+    });
+
+    // Then capitalize month names
+    const months = ['january', 'february', 'march', 'april', 'may', 'june',
+                    'july', 'august', 'september', 'october', 'november', 'december',
+                    'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                    'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+    months.forEach(month => {
+      const regex = new RegExp(`\\b${month}\\b`, 'gi');
+      result = result.replace(regex, match =>
+        match.charAt(0).toUpperCase() + match.slice(1).toLowerCase()
+      );
+    });
+
+    return result;
+  };
+
   // Check if it's a specific date in various formats
   const dateFormats = [
     'YYYY-MM-DD',
@@ -327,13 +350,26 @@ function parseDateQuery(query, userTimezone = 'UTC') {
   ];
   
   for (const format of dateFormats) {
-    const parsed = dayjs(normalizedQuery, format, true);
+    // Try parsing with original case first, then with capitalized months
+    const parsed = dayjs(query.trim(), format, true);
     if (parsed.isValid()) {
       const date = formatDate(parsed);
       return {
         startDate: date,
         endDate: date,
         interpreted: `${parsed.format('MMMM D, YYYY')} (${date})`
+      };
+    }
+
+    // If that fails, try with normalized date string
+    const normalizedQuery = normalizeDateString(query.trim());
+    const parsedCapitalized = dayjs(normalizedQuery, format, true);
+    if (parsedCapitalized.isValid()) {
+      const date = formatDate(parsedCapitalized);
+      return {
+        startDate: date,
+        endDate: date,
+        interpreted: `${parsedCapitalized.format('MMMM D, YYYY')} (${date})`
       };
     }
   }

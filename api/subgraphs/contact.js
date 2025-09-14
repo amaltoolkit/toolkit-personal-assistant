@@ -279,20 +279,60 @@ class ContactSubgraph {
       `;
       
       const response = await this.llm.invoke(prompt);
-      const extracted = JSON.parse(response.content);
-      
+      let content = response.content;
+
+      // Strip markdown formatting if present
+      if (content.includes('```json')) {
+        content = content.split('```json')[1].split('```')[0].trim();
+      } else if (content.includes('```')) {
+        content = content.split('```')[1].split('```')[0].trim();
+      }
+
+      const extracted = JSON.parse(content);
+
       console.log("[CONTACT:EXTRACT] Extracted:", extracted);
-      
+
       return {
         ...state,
         searchQuery: extracted.name || query,
         extractedContext: extracted.context
       };
-      
+
     } catch (error) {
       console.error("[CONTACT:EXTRACT] Error extracting name:", error);
-      // Continue with original query
-      return state;
+
+      // Try basic extraction as fallback
+      const query = state.searchQuery || state.messages?.[0]?.content || '';
+
+      // Look for common patterns like "with NAME" or "and NAME"
+      const patterns = [
+        /with\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+        /and\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+        /[Cc]ontact\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+        /meet\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
+        /call\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+        /email\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i
+      ];
+
+      for (const pattern of patterns) {
+        const match = query.match(pattern);
+        if (match) {
+          console.log("[CONTACT:EXTRACT] Fallback extracted:", match[1]);
+          return {
+            ...state,
+            searchQuery: match[1],
+            extractedContext: {}
+          };
+        }
+      }
+
+      // If no pattern matches, return empty to avoid bad search
+      console.log("[CONTACT:EXTRACT] No name found, skipping search");
+      return {
+        ...state,
+        searchQuery: null,
+        error: "Could not extract contact name from query"
+      };
     }
   }
 
@@ -304,6 +344,25 @@ class ContactSubgraph {
     this.metrics.startTimer("contact_bsa_search");
 
     try {
+      // Validate search query
+      if (!state.searchQuery) {
+        console.log("[CONTACT:SEARCH] No search query available, skipping search");
+        return {
+          ...state,
+          candidates: []
+        };
+      }
+
+      // Prevent searching with full query - should only be a name
+      if (state.searchQuery.length > 50) {
+        console.error("[CONTACT:SEARCH] Search query too long, likely full sentence instead of name");
+        return {
+          ...state,
+          error: "Could not extract a valid contact name from the query",
+          candidates: []
+        };
+      }
+
       // Validate config exists
       if (!config?.configurable) {
         console.error("[CONTACT:SEARCH] Missing config or configurable");
@@ -335,7 +394,9 @@ class ContactSubgraph {
           candidates: []
         };
       }
-      
+
+      console.log(`[CONTACT:SEARCH] Searching for: "${state.searchQuery}"`);
+
       // Search with retry logic
       const contacts = await this.errorHandler.executeWithRetry(
         async () => await searchContacts(
@@ -350,19 +411,19 @@ class ContactSubgraph {
           circuitBreakerKey: "bsa_contacts"
         }
       );
-      
+
       console.log(`[CONTACT:SEARCH] Found ${contacts.length} contacts`);
       this.metrics.endTimer("contact_bsa_search", true, { count: contacts.length });
-      
+
       return {
         ...state,
         candidates: contacts
       };
-      
+
     } catch (error) {
       console.error("[CONTACT:SEARCH] Error searching contacts:", error);
       this.metrics.endTimer("contact_bsa_search", false, { error: error.message });
-      
+
       return {
         ...state,
         error: `Contact search failed: ${error.message}`,

@@ -730,9 +730,17 @@ class Coordinator {
       };
       
     } catch (error) {
+      // Re-throw interrupts to allow approval flow
+      if (error && error.name === 'GraphInterrupt') {
+        console.log("[COORDINATOR] Propagating interrupt to API layer");
+        this.metrics.endTimer('total', true, { interrupt: true });
+        throw error;  // Let API layer handle the interrupt
+      }
+
+      // Handle actual errors
       console.error("[COORDINATOR] Fatal error:", error);
       this.metrics.endTimer('total', false, { error: error.message });
-      
+
       return {
         success: false,
         error: error.message,

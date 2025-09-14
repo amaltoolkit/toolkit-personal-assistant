@@ -3,8 +3,8 @@
 
 require('dotenv').config();
 
-// Set feature flag to enable new routes
-process.env.USE_NEW_ARCHITECTURE = 'true';
+// Set feature flag to enable V2 routes
+process.env.USE_V2_ARCHITECTURE = 'true';
 
 async function testAgentRoutes() {
   console.log("=" .repeat(60));
@@ -100,7 +100,6 @@ async function testAgentRoutes() {
       thread_id: "test-thread",
       user_id: "test-user",
       time_zone: "America/New_York",
-      safe_mode: true,
       passKey: "mock-passkey"
     };
     
@@ -108,7 +107,6 @@ async function testAgentRoutes() {
     console.log("  Session ID:", mockConfig.session_id);
     console.log("  Org ID:", mockConfig.org_id);
     console.log("  Thread ID:", mockConfig.thread_id);
-    console.log("  Safe mode:", mockConfig.safe_mode);
     
     // Test 4: Test response formatting
     console.log("\n=== Test 4: Response Format ===\n");
@@ -191,7 +189,7 @@ async function testAgentRoutes() {
       'SUPABASE_URL',
       'SUPABASE_SERVICE_ROLE_KEY',
       'BSA_BASE',
-      'USE_NEW_ARCHITECTURE'
+      'USE_V2_ARCHITECTURE'
     ];
     
     for (const envVar of requiredEnvVars) {
@@ -217,7 +215,7 @@ async function testAgentRoutes() {
     console.log("\nThe agent routes are ready for integration testing!");
     
     console.log("\nNext Steps:");
-    console.log("  1. Set USE_NEW_ARCHITECTURE=true in Vercel");
+    console.log("  1. Set USE_V2_ARCHITECTURE=true in Vercel");
     console.log("  2. Test with real session from Chrome extension");
     console.log("  3. Verify graph execution with simple query");
     console.log("  4. Test approval flow with action query");

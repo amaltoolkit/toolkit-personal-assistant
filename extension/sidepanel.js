@@ -7,8 +7,8 @@ const API_BASE = window.location.protocol === 'chrome-extension:'
   ? APP_BASE 
   : LOCAL_BASE;
 
-// Feature flag for new architecture
-const USE_NEW_ARCHITECTURE = true; // Set to true to use new agent endpoints
+// Feature flag for V2 architecture
+const USE_V2_ARCHITECTURE = true; // Set to true to use V2 coordinator architecture
 
 // Storage Keys
 const SESSION_ID_KEY = 'bsa_session_id';
@@ -31,6 +31,7 @@ let elements = {};
 document.addEventListener('DOMContentLoaded', () => {
   cacheElements();
   initializeApp();
+  initInterruptWebSocket(); // Initialize WebSocket for interrupts
 });
 
 // Cache DOM elements for performance
@@ -444,7 +445,7 @@ async function handleSendMessage() {
     elements.sendBtn.disabled = true;
     
     // Choose endpoint based on feature flag
-    const endpoint = USE_NEW_ARCHITECTURE 
+    const endpoint = USE_V2_ARCHITECTURE
       ? `${API_BASE}/api/agent/execute`
       : `${API_BASE}/api/orchestrator/query`;
     
@@ -457,8 +458,8 @@ async function handleSendMessage() {
         query: message,
         session_id: currentSessionId,
         org_id: currentOrgId,
-        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        safe_mode: true // Enable approval flow for testing
+        thread_id: currentThreadId, // Include thread_id if available for conversation continuity
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
       })
     });
     
@@ -491,19 +492,32 @@ async function handleSendMessage() {
     // Remove typing indicator
     removeTypingIndicator(typingId);
     
-    // Handle new architecture response format
-    if (USE_NEW_ARCHITECTURE) {
-      if (data.status === 'PENDING_APPROVAL') {
-        // Handle approval request
-        console.log('[CHAT] Approval required:', data.previews);
+    // Handle V2 architecture response format
+    if (USE_V2_ARCHITECTURE) {
+      if (data.status === 'PENDING_APPROVAL' || data.status === 'PENDING_INTERRUPT') {
+        // Handle approval/interrupt request
+        console.log('[CHAT] Interrupt required:', data);
         
-        // Show approval message if provided
+        // Show message if provided
         if (data.message) {
           addMessageToChat(data.message, false);
         }
         
-        // Show approval UI
-        showApprovalUI(data.previews, data.thread_id);
+        // Start polling for interrupts in production, or wait for WebSocket in dev
+        if (window.location.protocol === 'chrome-extension:') {
+          // Production - use polling
+          pollForInterrupts(data.thread_id);
+        } else {
+          // Development - WebSocket will handle it
+          currentThreadId = data.thread_id;
+        }
+        
+        // If previews are immediately available, show them
+        if (data.previews) {
+          showApprovalUI(data.previews, data.thread_id);
+        } else if (data.interrupt) {
+          handleInterruptReceived(data.interrupt);
+        }
       } else if (data.status === 'COMPLETED') {
         // Add assistant response
         const responseText = data.response || 'Task completed.';
@@ -626,6 +640,144 @@ function scrollToBottom() {
 // ============================================
 
 let currentThreadId = null; // Store thread ID for approval
+let currentInterrupt = null; // Store current interrupt data
+let approvalPollingInterval = null; // Store polling interval
+
+// WebSocket connection for real-time interrupts (development only)
+let interruptWebSocket = null;
+
+// Initialize WebSocket for interrupts (if in development)
+function initInterruptWebSocket() {
+  if (window.location.protocol !== 'chrome-extension:') {
+    // Development mode - use WebSocket
+    const wsUrl = 'ws://localhost:3000/ws/interrupts';
+    console.log('[WEBSOCKET] Connecting to:', wsUrl);
+    
+    interruptWebSocket = new WebSocket(wsUrl);
+    
+    interruptWebSocket.onopen = () => {
+      console.log('[WEBSOCKET] Connected for interrupts');
+      // Send session info
+      if (currentSessionId) {
+        interruptWebSocket.send(JSON.stringify({
+          type: 'auth',
+          sessionId: currentSessionId,
+          orgId: currentOrgId
+        }));
+      }
+    };
+    
+    interruptWebSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('[WEBSOCKET] Interrupt received:', data);
+        handleInterruptReceived(data);
+      } catch (error) {
+        console.error('[WEBSOCKET] Failed to parse message:', error);
+      }
+    };
+    
+    interruptWebSocket.onerror = (error) => {
+      console.error('[WEBSOCKET] Error:', error);
+    };
+    
+    interruptWebSocket.onclose = () => {
+      console.log('[WEBSOCKET] Connection closed');
+      // Attempt reconnect after 5 seconds
+      setTimeout(() => {
+        if (!interruptWebSocket || interruptWebSocket.readyState === WebSocket.CLOSED) {
+          initInterruptWebSocket();
+        }
+      }, 5000);
+    };
+  }
+}
+
+// Handle interrupt received from WebSocket or polling
+function handleInterruptReceived(interrupt) {
+  console.log('[INTERRUPT] Received:', interrupt);
+  
+  currentInterrupt = interrupt;
+  
+  // Check interrupt type - handle both direct type and nested value.type
+  const interruptType = interrupt.type || (interrupt.value && interrupt.value.type);
+  
+  if (interruptType === 'approval' || interruptType === 'batch_approval' || interruptType === 'approval_required') {
+    // Show approval UI
+    const previews = interrupt.previews || (interrupt.value && interrupt.value.previews) || interrupt.approvalPayload?.previews;
+    const threadId = interrupt.threadId || interrupt.thread_id;
+    if (previews) {
+      showApprovalUI(previews, threadId);
+    }
+  } else if (interruptType === 'contact_disambiguation') {
+    // Show contact disambiguation UI
+    // Handle different data structures
+    const contacts = interrupt.contacts || 
+                     (interrupt.value && interrupt.value.candidates) ||
+                     (interrupt.candidates);
+    const threadId = interrupt.threadId || interrupt.thread_id;
+    
+    if (contacts) {
+      console.log('[INTERRUPT] Showing contact disambiguation with', contacts.length, 'candidates');
+      showContactDisambiguationUI(contacts, threadId);
+    } else {
+      console.error('[INTERRUPT] No contacts found in interrupt data');
+    }
+  } else if (interruptType === 'workflow_guidance') {
+    // Show workflow guidance UI
+    const options = interrupt.options || (interrupt.value && interrupt.value.options);
+    const threadId = interrupt.threadId || interrupt.thread_id;
+    if (options) {
+      showWorkflowGuidanceUI(options, threadId);
+    }
+  } else {
+    console.warn('[INTERRUPT] Unknown interrupt type:', interruptType);
+  }
+}
+
+// Poll for interrupts (production mode)
+async function pollForInterrupts(threadId) {
+  if (approvalPollingInterval) {
+    clearInterval(approvalPollingInterval);
+  }
+  
+  console.log('[POLLING] Starting interrupt polling for thread:', threadId);
+  
+  approvalPollingInterval = setInterval(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/agent/interrupt-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: currentSessionId,
+          thread_id: threadId
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.hasInterrupt) {
+          console.log('[POLLING] Interrupt detected');
+          handleInterruptReceived(data.interrupt);
+          // Stop polling once interrupt is received
+          clearInterval(approvalPollingInterval);
+          approvalPollingInterval = null;
+        }
+      }
+    } catch (error) {
+      console.error('[POLLING] Error checking for interrupts:', error);
+    }
+  }, 2000); // Poll every 2 seconds
+  
+  // Stop polling after 60 seconds
+  setTimeout(() => {
+    if (approvalPollingInterval) {
+      clearInterval(approvalPollingInterval);
+      approvalPollingInterval = null;
+      console.log('[POLLING] Stopped polling after timeout');
+    }
+  }, 60000);
+}
 
 function showApprovalUI(previews, threadId) {
   if (!previews || previews.length === 0) {
@@ -666,9 +818,9 @@ function showApprovalUI(previews, threadId) {
     const contentDiv = document.createElement('div');
     contentDiv.className = 'approval-content';
     
-    // Format the preview spec
-    if (preview.spec) {
-      const specHtml = formatPreviewSpec(preview.spec);
+    // Format the preview - pass both spec and preview for proper handling
+    if (preview.spec || preview.details) {
+      const specHtml = formatPreviewSpec(preview.spec, preview);
       contentDiv.innerHTML = specHtml;
     } else {
       contentDiv.textContent = JSON.stringify(preview, null, 2);
@@ -730,11 +882,56 @@ function showApprovalUI(previews, threadId) {
   approvalDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
-function formatPreviewSpec(spec) {
+function formatPreviewSpec(spec, preview) {
+  // Handle appointment previews with details array
+  if (preview?.type === 'appointment' && preview?.details) {
+    let html = '<div class="spec-details">';
+
+    // Add title if present
+    if (preview.title) {
+      html += `<div class="preview-title"><strong>${preview.title}</strong></div>`;
+    }
+
+    // Add each detail
+    preview.details.forEach(detail => {
+      html += `<div class="preview-detail"><strong>${detail.label}:</strong> ${detail.value}</div>`;
+    });
+
+    // Add warnings (conflicts)
+    if (preview.warnings && preview.warnings.length > 0) {
+      html += '<div class="preview-warnings">';
+      html += '<div class="warning-header">⚠️ <strong>Conflicts Detected:</strong></div>';
+      preview.warnings.forEach(warning => {
+        html += `<div class="warning-item">${warning}</div>`;
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  // Handle task previews
+  if (preview?.type === 'task' && preview?.details) {
+    let html = '<div class="spec-details">';
+
+    if (preview.title) {
+      html += `<div class="preview-title"><strong>${preview.title}</strong></div>`;
+    }
+
+    preview.details.forEach(detail => {
+      html += `<div class="preview-detail"><strong>${detail.label}:</strong> ${detail.value}</div>`;
+    });
+
+    html += '</div>';
+    return html;
+  }
+
+  // Original workflow handling (fallback for spec-based previews)
   if (!spec) return '';
-  
+
   let html = '<div class="spec-details">';
-  
+
   // Format based on type
   if (spec.name) {
     html += `<div><strong>Name:</strong> ${spec.name}</div>`;
@@ -756,7 +953,7 @@ function formatPreviewSpec(spec) {
   if (spec.priority) {
     html += `<div><strong>Priority:</strong> ${spec.priority}</div>`;
   }
-  
+
   html += '</div>';
   return html;
 }
@@ -792,9 +989,24 @@ async function handleApprovalSubmit(approvals, containerId) {
     });
     
     if (!response.ok) {
-      throw new Error('Failed to submit approvals');
+      const errorData = await response.json();
+
+      // Check for session state recovery errors
+      if (errorData.requiresRestart) {
+        // Clear current thread and inform user
+        currentThreadId = null;
+        showError(errorData.message || 'Session state lost. Please start a new conversation.');
+
+        // Hide approval UI
+        if (container) {
+          container.remove();
+        }
+        return;
+      }
+
+      throw new Error(errorData.error || 'Failed to submit approvals');
     }
-    
+
     const data = await response.json();
     
     // Remove approval UI
@@ -859,6 +1071,476 @@ function showFollowUpQuestions(followups) {
   
   elements.chatMessages?.appendChild(followupDiv);
   followupDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+// ============================================
+// CONTACT DISAMBIGUATION UI
+// ============================================
+
+function showContactDisambiguationUI(contacts, threadId) {
+  if (!contacts || contacts.length === 0) {
+    console.error('[DISAMBIGUATION] No contacts to show');
+    return;
+  }
+  
+  currentThreadId = threadId;
+  console.log('[DISAMBIGUATION] Showing contact selection for thread:', threadId);
+  
+  // Create disambiguation container
+  const disambigDiv = document.createElement('div');
+  disambigDiv.className = 'disambiguation-container';
+  disambigDiv.id = `disambig-${Date.now()}`;
+  
+  // Add title
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'disambiguation-title';
+  titleDiv.innerHTML = '<strong>🤔 Which contact did you mean?</strong>';
+  disambigDiv.appendChild(titleDiv);
+  
+  // Add explanation
+  const explainDiv = document.createElement('div');
+  explainDiv.className = 'disambiguation-explain';
+  explainDiv.textContent = 'Multiple contacts match your search. Please select the correct one:';
+  disambigDiv.appendChild(explainDiv);
+  
+  // Create contact cards
+  let selectedContactId = null;
+  
+  contacts.forEach((contact, index) => {
+    const card = document.createElement('div');
+    card.className = 'contact-card';
+    // Handle both old and new field names
+    card.dataset.contactId = contact.Id || contact.id;
+
+    // Contact info
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'contact-info';
+
+    // Name - handle various field formats
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'contact-name';
+    const fullName = contact.name || contact.Name || contact.FullName ||
+                    (contact.FirstName && contact.LastName ?
+                     `${contact.FirstName} ${contact.LastName}` : 'Unknown');
+    nameDiv.textContent = fullName;
+    infoDiv.appendChild(nameDiv);
+
+    // Company - handle BSA field names
+    const companyName = contact.company || contact.Company || contact.CompanyName;
+    if (companyName) {
+      const companyDiv = document.createElement('div');
+      companyDiv.className = 'contact-company';
+      companyDiv.textContent = companyName;
+      infoDiv.appendChild(companyDiv);
+    }
+
+    // Role/Title - handle BSA field names
+    const jobTitle = contact.title || contact.Title || contact.role ||
+                    contact.JobTitle || contact.Role;
+    if (jobTitle) {
+      const roleDiv = document.createElement('div');
+      roleDiv.className = 'contact-role';
+      roleDiv.textContent = jobTitle;
+      infoDiv.appendChild(roleDiv);
+    }
+    
+    // Email - handle BSA field names
+    const email = contact.email || contact.Email || contact.EMailAddress1;
+    if (email) {
+      const emailDiv = document.createElement('div');
+      emailDiv.className = 'contact-email';
+      emailDiv.textContent = email;
+      infoDiv.appendChild(emailDiv);
+    }
+
+    // Phone - handle BSA field names
+    const phone = contact.phone || contact.Phone || contact.Telephone1 ||
+                 contact.mobile || contact.Mobile || contact.MobilePhone;
+    if (phone) {
+      const phoneDiv = document.createElement('div');
+      phoneDiv.className = 'contact-phone';
+      phoneDiv.textContent = phone;
+      infoDiv.appendChild(phoneDiv);
+    }
+
+    // Score indicator (if available)
+    if (contact.score !== undefined) {
+      const scoreDiv = document.createElement('div');
+      scoreDiv.className = 'contact-score';
+      scoreDiv.innerHTML = `Match: ${Math.round(contact.score)}%`;
+      infoDiv.appendChild(scoreDiv);
+    }
+
+    // Recent interaction indicator (if available)
+    const lastInteraction = contact.lastInteraction || contact.ClientSince;
+    if (lastInteraction) {
+      const interactionDiv = document.createElement('div');
+      interactionDiv.className = 'contact-interaction';
+      const dateStr = new Date(lastInteraction).toLocaleDateString();
+      interactionDiv.innerHTML = `Client since: ${dateStr}`;
+      infoDiv.appendChild(interactionDiv);
+    }
+    
+    card.appendChild(infoDiv);
+    
+    // Selection state
+    card.onclick = () => {
+      // Clear previous selection
+      disambigDiv.querySelectorAll('.contact-card').forEach(c => {
+        c.classList.remove('selected');
+      });
+      // Set new selection
+      card.classList.add('selected');
+      selectedContactId = card.dataset.contactId;
+      
+      // Enable submit button
+      const submitBtn = disambigDiv.querySelector('.submit-disambiguation-btn');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+      }
+    };
+    
+    // Auto-select first contact
+    if (index === 0) {
+      card.classList.add('selected');
+      selectedContactId = card.dataset.contactId;
+    }
+    
+    disambigDiv.appendChild(card);
+  });
+  
+  // Submit button
+  const submitDiv = document.createElement('div');
+  submitDiv.className = 'disambiguation-submit';
+  
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'submit-disambiguation-btn';
+  submitBtn.textContent = 'Use Selected Contact';
+  submitBtn.onclick = () => handleContactSelection(selectedContactId, disambigDiv.id);
+  
+  submitDiv.appendChild(submitBtn);
+  disambigDiv.appendChild(submitDiv);
+  
+  // Add to chat
+  elements.chatMessages?.appendChild(disambigDiv);
+  disambigDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+async function handleContactSelection(contactId, containerId) {
+  console.log('[DISAMBIGUATION] Selected contact:', contactId);
+  
+  if (!currentThreadId || !contactId) {
+    console.error('[DISAMBIGUATION] Missing thread ID or contact ID');
+    addMessageToChat('Error: Missing required information', false);
+    return;
+  }
+  
+  // Disable submit button
+  const container = document.getElementById(containerId);
+  const submitBtn = container?.querySelector('.submit-disambiguation-btn');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Processing...';
+  }
+  
+  try {
+    // Use approve endpoint for V2 architecture with contact resolution
+    const endpoint = USE_V2_ARCHITECTURE
+      ? `${API_BASE}/api/agent/approve`
+      : `${API_BASE}/api/agent/resolve-contact`;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        org_id: currentOrgId,
+        thread_id: currentThreadId,
+        contact_id: contactId,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        // Additional fields for V2 architecture
+        decision: 'continue',
+        interrupt_response: {
+          type: 'contact_selected',
+          selected_contact_id: contactId
+        }
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to submit contact selection');
+    }
+    
+    const data = await response.json();
+    
+    // Remove disambiguation UI
+    if (container) {
+      container.remove();
+    }
+    
+    // Handle response
+    if (data.status === 'PENDING_APPROVAL' || data.status === 'PENDING_INTERRUPT') {
+      // Another interrupt required
+      if (data.message) {
+        addMessageToChat(data.message, false);
+      }
+      if (data.interrupt) {
+        handleInterruptReceived(data.interrupt);
+      }
+    } else if (data.status === 'COMPLETED') {
+      // Show completion message
+      const responseText = data.response || 'Contact selected successfully.';
+      addMessageToChat(responseText, false);
+      
+      // Show follow-ups if available
+      if (data.followups && data.followups.length > 0) {
+        showFollowUpQuestions(data.followups);
+      }
+    }
+    
+  } catch (error) {
+    console.error('[DISAMBIGUATION] Error submitting selection:', error);
+    addMessageToChat('Failed to submit contact selection. Please try again.', false);
+    
+    // Re-enable submit button
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Use Selected Contact';
+    }
+  }
+}
+
+// ============================================
+// WORKFLOW GUIDANCE UI
+// ============================================
+
+function showWorkflowGuidanceUI(options, threadId) {
+  if (!options) {
+    console.error('[WORKFLOW] No options to show');
+    return;
+  }
+  
+  currentThreadId = threadId;
+  console.log('[WORKFLOW] Showing workflow guidance for thread:', threadId);
+  
+  // Create workflow container
+  const workflowDiv = document.createElement('div');
+  workflowDiv.className = 'workflow-guidance-container';
+  workflowDiv.id = `workflow-${Date.now()}`;
+  
+  // Add title
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'workflow-title';
+  titleDiv.innerHTML = '<strong>🔄 How would you like to proceed?</strong>';
+  workflowDiv.appendChild(titleDiv);
+  
+  // Add explanation based on guidance mode
+  const explainDiv = document.createElement('div');
+  explainDiv.className = 'workflow-explain';
+  
+  if (options.mode === 'agent-led') {
+    explainDiv.textContent = 'I can suggest best practice steps for this workflow:';
+  } else if (options.mode === 'user-specified') {
+    explainDiv.textContent = 'Please specify the steps you want for this workflow:';
+  } else {
+    explainDiv.textContent = 'Would you like me to enhance your workflow with additional steps?';
+  }
+  workflowDiv.appendChild(explainDiv);
+  
+  // Show suggested steps if available
+  if (options.suggestedSteps && options.suggestedSteps.length > 0) {
+    const stepsDiv = document.createElement('div');
+    stepsDiv.className = 'workflow-steps-preview';
+    
+    const stepsTitle = document.createElement('div');
+    stepsTitle.className = 'steps-title';
+    stepsTitle.textContent = 'Suggested workflow steps:';
+    stepsDiv.appendChild(stepsTitle);
+    
+    const stepsList = document.createElement('ol');
+    stepsList.className = 'suggested-steps';
+    
+    options.suggestedSteps.forEach(step => {
+      const stepItem = document.createElement('li');
+      stepItem.className = 'step-item';
+      stepItem.innerHTML = `
+        <span class="step-name">${escapeHtml(step.name || step.subject || step)}</span>
+        ${step.description ? `<span class="step-desc">${escapeHtml(step.description)}</span>` : ''}
+      `;
+      stepsList.appendChild(stepItem);
+    });
+    
+    stepsDiv.appendChild(stepsList);
+    workflowDiv.appendChild(stepsDiv);
+  }
+  
+  // Action buttons
+  const buttonsDiv = document.createElement('div');
+  buttonsDiv.className = 'workflow-buttons';
+  
+  if (options.mode === 'agent-led' || options.mode === 'hybrid') {
+    const acceptBtn = document.createElement('button');
+    acceptBtn.className = 'workflow-accept-btn';
+    acceptBtn.textContent = '✓ Use Suggested Steps';
+    acceptBtn.onclick = () => handleWorkflowDecision('accept', workflowDiv.id);
+    buttonsDiv.appendChild(acceptBtn);
+    
+    const modifyBtn = document.createElement('button');
+    modifyBtn.className = 'workflow-modify-btn';
+    modifyBtn.textContent = '✏️ Modify Steps';
+    modifyBtn.onclick = () => handleWorkflowDecision('modify', workflowDiv.id);
+    buttonsDiv.appendChild(modifyBtn);
+  }
+  
+  if (options.mode === 'user-specified' || options.allowCustom) {
+    const customBtn = document.createElement('button');
+    customBtn.className = 'workflow-custom-btn';
+    customBtn.textContent = '📝 Specify Custom Steps';
+    customBtn.onclick = () => showWorkflowCustomInput(workflowDiv.id);
+    buttonsDiv.appendChild(customBtn);
+  }
+  
+  workflowDiv.appendChild(buttonsDiv);
+  
+  // Add to chat
+  elements.chatMessages?.appendChild(workflowDiv);
+  workflowDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+async function handleWorkflowDecision(decision, containerId) {
+  console.log('[WORKFLOW] Decision:', decision);
+  
+  if (!currentThreadId) {
+    console.error('[WORKFLOW] Missing thread ID');
+    addMessageToChat('Error: Missing thread information', false);
+    return;
+  }
+  
+  const container = document.getElementById(containerId);
+  
+  try {
+    const response = await fetch(`${API_BASE}/api/agent/workflow-decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        org_id: currentOrgId,
+        thread_id: currentThreadId,
+        decision: decision,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to submit workflow decision');
+    }
+    
+    const data = await response.json();
+    
+    // Remove workflow UI
+    if (container) {
+      container.remove();
+    }
+    
+    // Handle response
+    if (data.status === 'PENDING_APPROVAL' || data.status === 'PENDING_INTERRUPT') {
+      if (data.message) {
+        addMessageToChat(data.message, false);
+      }
+      if (data.interrupt) {
+        handleInterruptReceived(data.interrupt);
+      }
+    } else if (data.status === 'COMPLETED') {
+      const responseText = data.response || 'Workflow created successfully.';
+      addMessageToChat(responseText, false);
+      
+      if (data.followups && data.followups.length > 0) {
+        showFollowUpQuestions(data.followups);
+      }
+    }
+    
+  } catch (error) {
+    console.error('[WORKFLOW] Error submitting decision:', error);
+    addMessageToChat('Failed to process workflow decision. Please try again.', false);
+  }
+}
+
+function showWorkflowCustomInput(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  
+  // Hide buttons
+  const buttonsDiv = container.querySelector('.workflow-buttons');
+  if (buttonsDiv) {
+    buttonsDiv.style.display = 'none';
+  }
+  
+  // Add custom input area
+  const inputDiv = document.createElement('div');
+  inputDiv.className = 'workflow-custom-input';
+  
+  const inputLabel = document.createElement('div');
+  inputLabel.className = 'input-label';
+  inputLabel.textContent = 'Enter your workflow steps (one per line):';
+  inputDiv.appendChild(inputLabel);
+  
+  const textarea = document.createElement('textarea');
+  textarea.className = 'workflow-steps-input';
+  textarea.placeholder = 'Step 1: Initial research\nStep 2: Draft proposal\nStep 3: Review and approve\nStep 4: Implementation';
+  textarea.rows = 6;
+  inputDiv.appendChild(textarea);
+  
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'submit-custom-workflow-btn';
+  submitBtn.textContent = 'Create Workflow';
+  submitBtn.onclick = async () => {
+    const steps = textarea.value.trim().split('\n').filter(s => s.trim());
+    if (steps.length === 0) {
+      alert('Please enter at least one step');
+      return;
+    }
+    
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating...';
+    
+    try {
+      const response = await fetch(`${API_BASE}/api/agent/workflow-custom`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: currentSessionId,
+          org_id: currentOrgId,
+          thread_id: currentThreadId,
+          steps: steps,
+          time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to submit custom workflow');
+      }
+      
+      const data = await response.json();
+      
+      // Remove workflow UI
+      container.remove();
+      
+      // Handle response
+      if (data.status === 'COMPLETED') {
+        const responseText = data.response || 'Custom workflow created successfully.';
+        addMessageToChat(responseText, false);
+      }
+      
+    } catch (error) {
+      console.error('[WORKFLOW] Error submitting custom steps:', error);
+      addMessageToChat('Failed to create custom workflow. Please try again.', false);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Create Workflow';
+    }
+  };
+  
+  inputDiv.appendChild(submitBtn);
+  container.appendChild(inputDiv);
 }
 
 // ============================================
@@ -1044,10 +1726,13 @@ async function handleResetConversation() {
     
     const result = await response.json();
     console.log('[RESET] Conversation reset successful:', result);
-    
+
     // Clear chat messages in UI
     chatMessages = [];
     elements.chatMessages.innerHTML = '';
+
+    // Clear thread ID to start fresh conversation
+    currentThreadId = null;
     
     // Add welcome message
     const welcomeMessage = `

@@ -14,7 +14,7 @@ const TEST_CONFIG = {
     userId: 'test_user',
     orgId: 'test_org',
     user_tz: 'UTC',
-    safe_mode: false, // Skip approval for testing
+    // Approvals always required (human in the loop)
     passKey: 'test_passkey',
     BSA_BASE: 'https://test.example.com'
   }

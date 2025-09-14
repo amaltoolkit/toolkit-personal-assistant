@@ -4,6 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
+const bsaConfig = require('../config/bsa');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -13,7 +14,11 @@ const supabase = createClient(
 
 // Import orchestrator and state management
 const { buildGraph } = require('../graph/orchestrator');
-const { getStore } = require('../graph/state');
+const { getStore, getCheckpointer } = require('../graph/state');
+
+// Import V2 Coordinator (feature flag controlled)
+const { getCoordinator } = require('../coordinator');
+const USE_V2_ARCHITECTURE = process.env.USE_V2_ARCHITECTURE === 'true';
 
 // Constants
 const RATE_LIMIT = 10; // requests
@@ -139,7 +144,6 @@ async function buildConfig(params) {
     thread_id,
     user_id,
     time_zone,
-    safe_mode,
     passKey
   } = params;
   
@@ -152,9 +156,8 @@ async function buildConfig(params) {
       userId: user_id,
       orgId: org_id,
       user_tz: time_zone || DEFAULT_TIMEZONE,
-      safe_mode: safe_mode !== false, // Default true
       passKey, // Passed via closure, never in state
-      BSA_BASE: process.env.BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       store // Add UnifiedStore to config for memory nodes
     }
   };
@@ -235,8 +238,7 @@ router.post('/execute', async (req, res) => {
       session_id, 
       org_id, 
       time_zone,
-      thread_id,
-      safe_mode 
+      thread_id
     } = req.body;
     
     // Step 1: Input validation
@@ -296,33 +298,100 @@ router.post('/execute', async (req, res) => {
       thread_id,
       user_id,
       time_zone,
-      safe_mode,
       passKey
     });
     
     console.log(`[AGENT:EXECUTE:${requestId}] Config built with thread_id:`, config.configurable.thread_id);
     
-    // Step 5: Get and invoke graph
-    console.log(`[AGENT:EXECUTE:${requestId}] Building graph...`);
-    const graph = await buildGraph();
-    
-    console.log(`[AGENT:EXECUTE:${requestId}] Invoking graph with query:`, query.substring(0, 100));
-    
+    // Step 5: Execute based on architecture version
     let state;
-    try {
-      state = await graph.invoke(
-        { 
-          messages: [{ 
-            role: 'human', 
-            content: query 
-          }] 
-        },
-        config
-      );
-    } catch (error) {
-      // Check if this is an interrupt (not an error)
-      if (error && (error.resumable === true || error.when === "during")) {
-        console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval`);
+    
+    if (USE_V2_ARCHITECTURE) {
+      // V2 Architecture: Use Coordinator
+      console.log(`[AGENT:EXECUTE:${requestId}] Using V2 Coordinator architecture`);
+
+      try {
+        // Get checkpointer for state persistence
+        const checkpointer = await getCheckpointer();
+        const coordinator = getCoordinator(checkpointer);
+        const result = await coordinator.processQuery(query, {
+          org_id,
+          user_id,
+          session_id,
+          thread_id: config.configurable.thread_id,
+          checkpoint_id: config.configurable.checkpoint_id,
+          timezone: time_zone || DEFAULT_TIMEZONE
+        });
+
+        // Convert V2 response to V1 state format for compatibility
+        state = {
+          messages: [
+            { role: 'human', content: query },
+            { role: 'assistant', content: result.response }
+          ],
+          entities: result.entities,
+          domains: result.domains
+        };
+
+        // Handle V2 errors
+        if (!result.success) {
+          throw new Error(result.error || 'V2 execution failed');
+        }
+      } catch (error) {
+        // Handle V2 interrupts (for approvals and contact disambiguation)
+        if (error && error.name === 'GraphInterrupt') {
+          console.log(`[AGENT:EXECUTE:${requestId}] GraphInterrupt caught:`, error.value?.type);
+
+          // Structure the interrupt data properly
+          const interruptValue = error.value || {};
+          state = {
+            interruptMarker: 'PENDING_APPROVAL',
+            thread_id: config.configurable.thread_id
+          };
+
+          // Handle different interrupt types
+          if (interruptValue.type === 'contact_disambiguation') {
+            state.interrupt = {
+              type: 'contact_disambiguation',
+              candidates: interruptValue.candidates,
+              message: interruptValue.message,
+              thread_id: config.configurable.thread_id
+            };
+          } else if (interruptValue.type === 'approval') {
+            state.approvalPayload = interruptValue;
+            state.previews = [interruptValue.preview]; // Wrap single preview in array
+          } else {
+            // Generic interrupt handling
+            state.approvalPayload = interruptValue;
+            state.previews = interruptValue.previews || [];
+          }
+        } else {
+          throw error;
+        }
+      }
+      
+    } else {
+      // V1 Architecture: Use Orchestrator
+      console.log(`[AGENT:EXECUTE:${requestId}] Using V1 Orchestrator architecture`);
+      console.log(`[AGENT:EXECUTE:${requestId}] Building graph...`);
+      const graph = await buildGraph();
+      
+      console.log(`[AGENT:EXECUTE:${requestId}] Invoking graph with query:`, query.substring(0, 100));
+      
+      try {
+        state = await graph.invoke(
+          { 
+            messages: [{ 
+              role: 'human', 
+              content: query 
+            }] 
+          },
+          config
+        );
+      } catch (error) {
+        // Check if this is an interrupt (not an error)
+        if (error && (error.resumable === true || error.when === "during")) {
+          console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval`);
         
         // Get the current state from the checkpoint
         const checkpointer = graph.checkpointer;
@@ -343,9 +412,10 @@ router.post('/execute', async (req, res) => {
         // Ensure we have the interrupt marker set
         state.interruptMarker = 'PENDING_APPROVAL';
         
-      } else {
-        // Real error, re-throw it
-        throw error;
+        } else {
+          // Real error, re-throw it
+          throw error;
+        }
       }
     }
     
@@ -355,6 +425,35 @@ router.post('/execute', async (req, res) => {
       
       // Store thread_id in response for resumption
       state.thread_id = config.configurable.thread_id;
+      
+      // Send interrupt via WebSocket or polling service
+      try {
+        const interruptData = {
+          type: 'approval_required',
+          threadId: config.configurable.thread_id,
+          previews: state.previews || [],
+          approvalPayload: state.approvalPayload,
+          requestId
+        };
+        
+        // Check if we're in development (WebSocket) or production (polling)
+        if (process.env.NODE_ENV !== 'production') {
+          // Try WebSocket first
+          const { getInterruptWebSocketServer } = require('../websocket/interrupts');
+          const wsServer = getInterruptWebSocketServer();
+          await wsServer.sendInterrupt(session_id, interruptData);
+        } else {
+          // Use polling service for production
+          const { getInterruptPollingService } = require('../websocket/pollingFallback');
+          const pollingService = getInterruptPollingService();
+          pollingService.storeInterrupt(session_id, interruptData);
+        }
+        
+        console.log(`[AGENT:EXECUTE:${requestId}] Interrupt sent to client`);
+      } catch (error) {
+        console.error(`[AGENT:EXECUTE:${requestId}] Failed to send interrupt:`, error);
+        // Continue anyway - client can still poll the response
+      }
       
       const response = formatResponse(state, 'PENDING_APPROVAL');
       return res.status(202).json(response);
@@ -402,12 +501,16 @@ router.post('/approve', async (req, res) => {
   console.log(`[AGENT:APPROVE:${requestId}] Starting approval request`);
   
   try {
-    const { 
-      session_id, 
-      org_id, 
+    const {
+      session_id,
+      org_id,
       thread_id,
       approvals,
-      time_zone
+      time_zone,
+      // V2 Architecture fields
+      decision,
+      interrupt_response,
+      contact_id
     } = req.body;
     
     // Step 1: Input validation
@@ -424,18 +527,30 @@ router.post('/approve', async (req, res) => {
     }
     
     if (!thread_id) {
-      return res.status(400).json({ 
-        error: 'thread_id is required to resume execution' 
+      return res.status(400).json({
+        error: 'thread_id is required to resume execution'
       });
     }
-    
-    if (!approvals || typeof approvals !== 'object') {
-      return res.status(400).json({ 
-        error: 'approvals must be an object with action IDs as keys' 
+
+    // Check if this is V2 architecture (has decision or interrupt_response)
+    const isV2Request = decision || interrupt_response || contact_id;
+
+    // Validate based on architecture version
+    if (!isV2Request && (!approvals || typeof approvals !== 'object')) {
+      return res.status(400).json({
+        error: 'approvals must be an object with action IDs as keys'
       });
     }
-    
-    console.log(`[AGENT:APPROVE:${requestId}] Approvals received:`, Object.keys(approvals));
+
+    if (isV2Request) {
+      console.log(`[AGENT:APPROVE:${requestId}] V2 Architecture request:`, {
+        decision,
+        interrupt_type: interrupt_response?.type,
+        contact_id
+      });
+    } else {
+      console.log(`[AGENT:APPROVE:${requestId}] V1 Approvals received:`, Object.keys(approvals));
+    }
     
     // Step 2: Authentication
     const passKey = await getValidPassKey(session_id);
@@ -458,13 +573,103 @@ router.post('/approve', async (req, res) => {
       thread_id, // Use the provided thread_id
       user_id,
       time_zone,
-      safe_mode: true, // Approvals only happen in safe mode
       passKey
     });
     
     console.log(`[AGENT:APPROVE:${requestId}] Resuming thread:`, thread_id);
-    
-    // Step 4: Resume graph execution
+
+    // Step 4: Resume graph execution based on architecture
+    if (USE_V2_ARCHITECTURE && isV2Request) {
+      // V2 Architecture: Resume coordinator with approval/contact selection
+      console.log(`[AGENT:APPROVE:${requestId}] Using V2 Coordinator for resume`);
+
+      try {
+        // Get checkpointer and coordinator
+        const checkpointer = await getCheckpointer();
+        const coordinator = getCoordinator(checkpointer);
+
+        // Load the current checkpoint to get state with error recovery
+        let checkpoint;
+        try {
+          checkpoint = await checkpointer.get(thread_id);
+        } catch (checkpointError) {
+          console.error(`[AGENT:APPROVE:${requestId}] Failed to load checkpoint:`, checkpointError);
+          // Try to recover by creating a minimal state
+          checkpoint = null;
+        }
+
+        if (!checkpoint) {
+          // Graceful degradation - inform user and suggest retry
+          console.warn(`[AGENT:APPROVE:${requestId}] No checkpoint found for thread, attempting recovery`);
+          return res.status(422).json({
+            error: 'Session state not found',
+            message: 'The conversation state could not be recovered. Please try starting a new conversation or retry your last action.',
+            requiresRestart: true,
+            thread_id
+          });
+        }
+
+        // Build resume state based on interrupt type
+        let resumeData = {};
+
+        // Handle contact selection
+        if (interrupt_response?.type === 'contact_selected' || contact_id) {
+          resumeData = {
+            resolved_contacts: [{
+              id: contact_id || interrupt_response?.selected_contact_id,
+              name: interrupt_response?.selected_contact_name
+            }],
+            contact_selected: true
+          };
+          console.log(`[AGENT:APPROVE:${requestId}] Resuming with selected contact:`, resumeData.resolved_contacts[0]);
+        }
+        // Handle approval/rejection
+        else if (decision) {
+          resumeData = {
+            approval_decision: decision,
+            approved: decision === 'approve',
+            rejected: decision === 'reject'
+          };
+          console.log(`[AGENT:APPROVE:${requestId}] Resuming with decision:`, decision);
+        }
+
+        // Resume the graph with the update
+        const { Command } = await import("@langchain/langgraph");
+        const resumeCommand = new Command({
+          resume: resumeData,
+          update: resumeData
+        });
+
+        // Get the compiled graph and resume
+        const graph = await coordinator.buildGraph();
+        const result = await graph.invoke(resumeCommand, config);
+
+        // Check if there's another interrupt
+        if (result.interruptMarker === 'PENDING_APPROVAL') {
+          return res.json({
+            status: 'PENDING_APPROVAL',
+            ...result
+          });
+        }
+
+        // Process completed
+        return res.json({
+          status: 'COMPLETED',
+          response: result.final_response || result.response || 'Action completed successfully.',
+          thread_id,
+          entities: result.entities
+        });
+
+      } catch (error) {
+        console.error(`[AGENT:APPROVE:${requestId}] V2 resume error:`, error);
+        return res.status(500).json({
+          error: 'Failed to resume execution',
+          details: error.message
+        });
+      }
+    }
+
+    // V1 Architecture: Original flow
     const graph = await buildGraph();
     
     // Import Command for proper resume
@@ -510,6 +715,169 @@ router.post('/approve', async (req, res) => {
       error: 'Failed to process approval',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined,
       requestId
+    });
+  }
+});
+
+/**
+ * POST /api/agent/resolve-contact
+ * Resume interrupted graph with selected contact
+ */
+router.post('/resolve-contact', async (req, res) => {
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Starting contact resolution`);
+  
+  try {
+    // Step 1: Validate input
+    const { session_id, org_id, thread_id, contact_id, contact_data, time_zone } = req.body;
+    
+    if (!session_id) {
+      return res.status(400).json({ 
+        error: 'session_id is required',
+        requiresReauth: false 
+      });
+    }
+    
+    if (!org_id) {
+      return res.status(400).json({ 
+        error: 'org_id is required' 
+      });
+    }
+    
+    if (!thread_id) {
+      return res.status(400).json({ 
+        error: 'thread_id is required to resume execution' 
+      });
+    }
+    
+    if (!contact_id && !contact_data) {
+      return res.status(400).json({ 
+        error: 'Either contact_id or contact_data is required' 
+      });
+    }
+    
+    // Step 2: Get PassKey
+    const passKey = await getValidPassKey(session_id);
+    
+    if (!passKey) {
+      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] No valid PassKey, needs re-authentication`);
+      return res.status(401).json({ 
+        error: 'Authentication required. Please login again.',
+        requiresReauth: true 
+      });
+    }
+    
+    // Step 3: Create config for resumption
+    const config = {
+      recursionLimit: 50,
+      configurable: {
+        thread_id,
+        org_id,
+        time_zone: time_zone || DEFAULT_TIMEZONE,
+        passKey,
+        session_id
+      }
+    };
+    
+    console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Resuming thread:`, thread_id);
+    
+    // Step 4: Resume with V2 architecture
+    if (USE_V2_ARCHITECTURE) {
+      const coordinator = getCoordinator();
+      
+      // Resume with selected contact
+      const result = await coordinator.resume(thread_id, {
+        type: 'contact_selection',
+        selectedContact: contact_data || { id: contact_id }
+      }, session_id, org_id);
+      
+      // Check for additional interrupts
+      if (result.status === 'PENDING_INTERRUPT') {
+        console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Another interrupt detected`);
+        return res.status(202).json(result);
+      }
+      
+      // Return completed result
+      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Completed successfully`);
+      return res.json(result);
+      
+    } else {
+      // Legacy architecture - use Command to resume
+      const graph = await buildGraph();
+      const { Command } = await import("@langchain/langgraph");
+      
+      // Create resume command with selected contact
+      const resumeCommand = new Command({
+        resume: {
+          selectedContact: contact_data || { id: contact_id }
+        },
+        update: {
+          interruptMarker: null,
+          selectedContactId: contact_id
+        }
+      });
+      
+      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Invoking graph with resume command`);
+      const state = await graph.invoke(resumeCommand, config);
+      
+      // Check for another interruption
+      if (state.interruptMarker === 'PENDING_APPROVAL') {
+        console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Another approval required`);
+        state.thread_id = thread_id;
+        const response = formatResponse(state, 'PENDING_APPROVAL');
+        return res.status(202).json(response);
+      }
+      
+      // Format and return response
+      const response = formatResponse(state, 'COMPLETED');
+      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Completed successfully`);
+      return res.json(response);
+    }
+    
+  } catch (error) {
+    console.error(`[AGENT:RESOLVE_CONTACT:${requestId}] Error:`, error);
+    return res.status(500).json({ 
+      error: error.message || 'Failed to resolve contact' 
+    });
+  }
+});
+
+/**
+ * GET /api/agent/interrupt-status
+ * Check for pending interrupts (for polling mode)
+ */
+router.post('/interrupt-status', async (req, res) => {
+  try {
+    const { session_id, thread_id } = req.body;
+    
+    if (!session_id || !thread_id) {
+      return res.status(400).json({ 
+        error: 'session_id and thread_id are required' 
+      });
+    }
+    
+    // Check polling service for interrupts
+    if (process.env.NODE_ENV === 'production') {
+      const { getInterruptPollingService } = require('../websocket/pollingFallback');
+      const pollingService = getInterruptPollingService();
+      const interrupt = pollingService.getInterrupt(session_id);
+      
+      if (interrupt && interrupt.threadId === thread_id) {
+        return res.json({
+          hasInterrupt: true,
+          interrupt: interrupt
+        });
+      }
+    }
+    
+    return res.json({
+      hasInterrupt: false
+    });
+    
+  } catch (error) {
+    console.error('[AGENT:INTERRUPT_STATUS] Error:', error);
+    return res.status(500).json({ 
+      error: 'Failed to check interrupt status' 
     });
   }
 });

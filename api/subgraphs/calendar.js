@@ -1,0 +1,780 @@
+/**
+ * Calendar Subgraph - Domain-specific graph for calendar operations
+ * 
+ * Handles all calendar-related queries including:
+ * - Viewing appointments
+ * - Creating new appointments
+ * - Updating existing appointments
+ * - Managing attendees
+ */
+
+const { StateGraph, END, interrupt } = require("@langchain/langgraph");
+const { ChatOpenAI } = require("@langchain/openai");
+const { z } = require("zod");
+const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/dateParser");
+const { getAppointments, createAppointment, updateAppointment } = require("../tools/bsa/appointments");
+const { getContactResolver } = require("../services/contactResolver");
+const { getApprovalBatcher } = require("../services/approvalBatcher");
+const { getMem0Service } = require("../services/mem0Service");
+
+// State schema for calendar operations
+const CalendarState = z.object({
+  messages: z.array(z.object({
+    role: z.enum(["user", "assistant", "system"]),
+    content: z.string()
+  })),
+  memory_context: z.record(z.any()).optional(),
+  entities: z.record(z.any()).optional(),
+  
+  // Calendar-specific state
+  action: z.enum(["view", "create", "update", "delete"]).optional(),
+  date_range: z.object({
+    start: z.string().optional(),
+    end: z.string().optional()
+  }).optional(),
+  appointments: z.array(z.any()).optional(),
+  appointment_data: z.object({
+    subject: z.string().optional(),
+    description: z.string().optional(),
+    startTime: z.string().optional(),
+    endTime: z.string().optional(),
+    location: z.string().optional(),
+    isAllDay: z.boolean().optional(),
+    attendees: z.array(z.string()).optional()
+  }).optional(),
+  contacts_to_resolve: z.array(z.string()).optional(),
+  resolved_contacts: z.array(z.any()).optional(),
+  conflicts: z.array(z.any()).optional(),
+  preview: z.any().optional(),
+  approved: z.boolean().optional(),
+  response: z.string().optional(),
+  error: z.string().optional()
+});
+
+class CalendarSubgraph {
+  constructor(checkpointer = null) {
+    this.llm = new ChatOpenAI({
+      modelName: "gpt-4o-mini",
+      temperature: 0.3
+    });
+
+    this.contactResolver = getContactResolver();
+    this.approvalBatcher = getApprovalBatcher();
+    this.mem0 = getMem0Service();
+    this.checkpointer = checkpointer;
+
+    this.graph = this.buildGraph();
+  }
+
+  buildGraph() {
+    const workflow = new StateGraph({
+      channels: CalendarState
+    });
+
+    // Add nodes
+    workflow.addNode("parse_request", this.parseRequest.bind(this));
+    workflow.addNode("resolve_contacts", this.resolveContacts.bind(this));
+    workflow.addNode("fetch_appointments", this.fetchAppointments.bind(this));
+    workflow.addNode("check_conflicts", this.checkConflicts.bind(this));
+    workflow.addNode("generate_preview", this.generatePreview.bind(this));
+    workflow.addNode("approval", this.approvalNode.bind(this));
+    workflow.addNode("create_appointment", this.createAppointmentNode.bind(this));
+    workflow.addNode("update_appointment", this.updateAppointmentNode.bind(this));
+    workflow.addNode("link_attendees", this.linkAttendees.bind(this));
+    workflow.addNode("synthesize_memory", this.synthesizeMemory.bind(this));
+    workflow.addNode("format_response", this.formatResponse.bind(this));
+
+    // Define flow
+    workflow.setEntryPoint("parse_request");
+    
+    // Route based on action
+    workflow.addConditionalEdges(
+      "parse_request",
+      (state) => {
+        if (state.error) return "format_response";
+        if (state.action === "view") return "fetch_appointments";
+        if (state.action === "create") {
+          return state.contacts_to_resolve?.length > 0 ? 
+            "resolve_contacts" : "check_conflicts";
+        }
+        if (state.action === "update") return "fetch_appointments";
+        return "format_response";
+      },
+      {
+        "fetch_appointments": "fetch_appointments",
+        "resolve_contacts": "resolve_contacts",
+        "check_conflicts": "check_conflicts",
+        "format_response": "format_response"
+      }
+    );
+    
+    // Contact resolution flow
+    workflow.addEdge("resolve_contacts", "check_conflicts");
+    
+    // View flow
+    workflow.addConditionalEdges(
+      "fetch_appointments",
+      (state) => {
+        if (state.action === "view") return "format_response";
+        if (state.action === "update") return "generate_preview";
+        return "format_response";
+      },
+      {
+        "format_response": "format_response",
+        "generate_preview": "generate_preview"
+      }
+    );
+    
+    // Creation flow
+    workflow.addEdge("check_conflicts", "generate_preview");
+    workflow.addEdge("generate_preview", "approval");
+    
+    workflow.addConditionalEdges(
+      "approval",
+      (state) => {
+        if (!state.approved) return "format_response";
+        if (state.action === "create") return "create_appointment";
+        if (state.action === "update") return "update_appointment";
+        return "format_response";
+      },
+      {
+        "create_appointment": "create_appointment",
+        "update_appointment": "update_appointment",
+        "format_response": "format_response"
+      }
+    );
+    
+    workflow.addEdge("create_appointment", "link_attendees");
+    workflow.addEdge("update_appointment", "link_attendees");
+    workflow.addEdge("link_attendees", "synthesize_memory");
+    workflow.addEdge("synthesize_memory", "format_response");
+    workflow.addEdge("format_response", END);
+
+    // Compile with checkpointer if available
+    const compileOptions = {};
+    if (this.checkpointer) {
+      compileOptions.checkpointer = this.checkpointer;
+      console.log("[CALENDAR] Compiling graph with checkpointer");
+    }
+
+    return workflow.compile(compileOptions);
+  }
+
+  /**
+   * Parse the user request to determine action and parameters
+   */
+  async parseRequest(state) {
+    console.log("[CALENDAR:PARSE] Parsing user request");
+
+    const lastMessage = state.messages[state.messages.length - 1];
+    if (!lastMessage || lastMessage.role !== "user") {
+      return { ...state, error: "No user message found" };
+    }
+
+    const userQuery = lastMessage.content;
+    const userTimezone = state.timezone || 'UTC';
+
+    try {
+      // First, try to parse date/time directly from the query
+      const dateTimeResult = parseDateTimeQuery(userQuery, userTimezone);
+
+      // Use LLM to extract other details
+      const parsePrompt = `
+        Analyze this calendar-related query and extract:
+        1. Action: view, create, update, or delete
+        2. Appointment details (if creating/updating)
+        3. Contact names mentioned
+        4. Keep the EXACT date/time expression as the user stated it
+
+        Query: "${userQuery}"
+        ${state.memory_context?.recalled_memories ?
+          `Context: ${JSON.stringify(state.memory_context.recalled_memories[0]?.content || '')}` : ''}
+
+        Return JSON:
+        {
+          "action": "view|create|update|delete",
+          "date_query": "EXACT date/time text from user (e.g., 'tomorrow at 8am')",
+          "appointment": {
+            "subject": "meeting title",
+            "description": "details",
+            "location": "where",
+            "duration": "in minutes",
+            "isAllDay": boolean
+          },
+          "contacts": ["name1", "name2"]
+        }
+
+        IMPORTANT: For date_query, preserve EXACTLY what the user said, including the time.
+        Examples:
+        - User says "tomorrow at 8am" → date_query: "tomorrow at 8am"
+        - User says "next Monday at 2:30pm" → date_query: "next Monday at 2:30pm"
+      `;
+
+      const response = await this.llm.invoke(parsePrompt);
+
+      // Extract JSON from response (handle markdown code blocks)
+      let jsonContent = response.content;
+      if (jsonContent.includes('```json')) {
+        jsonContent = jsonContent.split('```json')[1].split('```')[0].trim();
+      } else if (jsonContent.includes('```')) {
+        jsonContent = jsonContent.split('```')[1].split('```')[0].trim();
+      }
+
+      const parsed = JSON.parse(jsonContent);
+
+      console.log("[CALENDAR:PARSE] Detected action:", parsed.action);
+      console.log("[CALENDAR:PARSE] Date query:", parsed.date_query);
+
+      // Prepare appointment data if creating
+      let appointmentData = null;
+      if (parsed.action === "create" || parsed.action === "update") {
+        // Try to parse the date/time from the extracted date_query
+        let startTime = null;
+        let endTime = null;
+
+        if (parsed.date_query) {
+          const parsedDateTime = parseDateTimeQuery(parsed.date_query, userTimezone);
+
+          if (parsedDateTime && parsedDateTime.hasTime) {
+            // We have both date and time
+            startTime = parsedDateTime.startDateTime;
+            const duration = parsed.appointment?.duration || 60; // Default 60 minutes
+            endTime = calculateEndTime(startTime, duration);
+            console.log("[CALENDAR:PARSE] Parsed date/time:", parsedDateTime.interpreted);
+          } else if (parsedDateTime && parsedDateTime.dateComponent) {
+            // We have date but no time - use default business hours
+            const dateOnly = parsedDateTime.dateComponent.startDate;
+            const defaultStart = new Date(dateOnly + 'T09:00:00');
+            startTime = defaultStart.toISOString();
+            const duration = parsed.appointment?.duration || 60;
+            endTime = calculateEndTime(startTime, duration);
+            console.log("[CALENDAR:PARSE] Date only, using 9 AM default");
+          }
+        }
+
+        // Fallback if date parsing failed
+        if (!startTime) {
+          const now = new Date();
+          const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+          tomorrow.setHours(9, 0, 0, 0);
+          startTime = tomorrow.toISOString();
+          endTime = calculateEndTime(startTime, parsed.appointment?.duration || 60);
+          console.log("[CALENDAR:PARSE] No date found, defaulting to tomorrow 9 AM");
+        }
+
+        appointmentData = {
+          subject: parsed.appointment?.subject || "New Appointment",
+          description: parsed.appointment?.description || "",
+          startTime: startTime,
+          endTime: endTime,
+          location: parsed.appointment?.location || "",
+          isAllDay: parsed.appointment?.isAllDay || false,
+          // Preserve the original date query for applier compatibility
+          dateQuery: parsed.date_query
+        };
+      }
+
+      // Parse dates for viewing
+      let dateRange = {};
+      if (parsed.action === "view" && parsed.date_query) {
+        const parsedDates = parseDateQuery(parsed.date_query, userTimezone);
+        if (parsedDates) {
+          dateRange = {
+            start: parsedDates.startDate,
+            end: parsedDates.endDate
+          };
+        }
+      }
+
+      return {
+        ...state,
+        action: parsed.action,
+        date_range: dateRange,
+        appointment_data: appointmentData,
+        contacts_to_resolve: parsed.contacts || []
+      };
+
+    } catch (error) {
+      console.error("[CALENDAR:PARSE] Error parsing request:", error);
+      return {
+        ...state,
+        error: `Failed to understand request: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Resolve contact names to IDs
+   */
+  async resolveContacts(state, config) {
+    console.log("[CALENDAR:CONTACTS] Resolving contacts");
+
+    // Check if we're resuming from a contact selection
+    if (state.contact_selected && state.resolved_contacts) {
+      console.log("[CALENDAR:CONTACTS] Resuming with selected contacts:", state.resolved_contacts);
+      return {
+        ...state,
+        contact_selected: false // Clear the flag after processing
+      };
+    }
+
+    if (!state.contacts_to_resolve || state.contacts_to_resolve.length === 0) {
+      return state;
+    }
+
+    try {
+      const passKey = await config.configurable.getPassKey();
+      const resolved = state.resolved_contacts || [];
+
+      for (const contactName of state.contacts_to_resolve) {
+        // Skip if we already have this contact resolved (from resume)
+        if (resolved.some(c => c.name === contactName)) {
+          continue;
+        }
+
+        // Search for contact
+        const candidates = await this.contactResolver.search(
+          contactName,
+          5,
+          passKey
+        );
+
+        if (candidates.length === 0) {
+          console.warn(`[CALENDAR:CONTACTS] No matches for: ${contactName}`);
+          continue;
+        }
+
+        // Disambiguate if multiple matches
+        const selected = await this.contactResolver.disambiguate(
+          candidates,
+          state.messages[state.messages.length - 1].content
+        );
+
+        // Handle disambiguation that requires user input
+        if (selected.requiresConfirmation) {
+          // Save partial progress before interrupt
+          if (resolved.length > 0) {
+            state.resolved_contacts = resolved;
+          }
+
+          // Use interrupt for user selection
+          throw interrupt({
+            value: {
+              type: 'contact_disambiguation',
+              message: `Multiple contacts found for "${contactName}". Please select:`,
+              candidates: selected.alternatives,
+              original_query: contactName
+            }
+          });
+        }
+
+        resolved.push(selected);
+      }
+
+      console.log(`[CALENDAR:CONTACTS] Resolved ${resolved.length} contacts`);
+
+      return {
+        ...state,
+        resolved_contacts: resolved
+      };
+
+    } catch (error) {
+      if (error.name === 'GraphInterrupt') throw error;
+
+      console.error("[CALENDAR:CONTACTS] Error resolving contacts:", error);
+      // Continue without contacts rather than failing
+      return {
+        ...state,
+        resolved_contacts: []
+      };
+    }
+  }
+
+  /**
+   * Fetch existing appointments
+   */
+  async fetchAppointments(state, config) {
+    console.log("[CALENDAR:FETCH] Fetching appointments");
+    
+    if (!state.date_range?.start) {
+      // Default to today
+      const today = new Date();
+      state.date_range = {
+        start: today.toISOString().split('T')[0],
+        end: today.toISOString().split('T')[0]
+      };
+    }
+
+    try {
+      const passKey = await config.configurable.getPassKey();
+      const orgId = config.configurable.org_id;
+      
+      const result = await getAppointments({
+        startDate: state.date_range.start,
+        endDate: state.date_range.end,
+        includeExtendedProperties: true
+      }, passKey, orgId);
+      
+      console.log(`[CALENDAR:FETCH] Found ${result.count} appointments`);
+      
+      return {
+        ...state,
+        appointments: result.appointments
+      };
+      
+    } catch (error) {
+      console.error("[CALENDAR:FETCH] Error fetching appointments:", error);
+      return {
+        ...state,
+        error: `Failed to fetch appointments: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Check for conflicts when creating appointments
+   */
+  async checkConflicts(state, config) {
+    console.log("[CALENDAR:CONFLICTS] Checking for conflicts");
+    
+    if (!state.appointment_data || state.action !== "create") {
+      return state;
+    }
+
+    try {
+      const passKey = await config.configurable.getPassKey();
+      const orgId = config.configurable.org_id;
+      
+      // Fetch appointments for the same day
+      const appointmentDate = state.appointment_data.startTime.split('T')[0];
+      const existing = await getAppointments({
+        startDate: appointmentDate,
+        endDate: appointmentDate
+      }, passKey, orgId);
+      
+      // Check for time overlaps
+      const conflicts = [];
+      const newStart = new Date(state.appointment_data.startTime);
+      const newEnd = new Date(state.appointment_data.endTime);
+      
+      for (const appt of existing.appointments || []) {
+        const existingStart = new Date(appt.StartTime);
+        const existingEnd = new Date(appt.EndTime);
+        
+        // Check if times overlap
+        if (newStart < existingEnd && newEnd > existingStart) {
+          conflicts.push({
+            subject: appt.Subject,
+            time: `${existingStart.toLocaleTimeString()} - ${existingEnd.toLocaleTimeString()}`
+          });
+        }
+      }
+      
+      if (conflicts.length > 0) {
+        console.log(`[CALENDAR:CONFLICTS] Found ${conflicts.length} conflicts`);
+      }
+      
+      return {
+        ...state,
+        conflicts
+      };
+      
+    } catch (error) {
+      console.error("[CALENDAR:CONFLICTS] Error checking conflicts:", error);
+      // Continue without conflict check
+      return state;
+    }
+  }
+
+  /**
+   * Generate preview for approval
+   */
+  async generatePreview(state) {
+    console.log("[CALENDAR:PREVIEW] Generating preview");
+    
+    if (state.action === "view") {
+      return state;
+    }
+
+    const preview = {
+      type: 'appointment',
+      action: state.action,
+      title: state.appointment_data?.subject || "Appointment",
+      details: []
+    };
+
+    if (state.appointment_data) {
+      const start = new Date(state.appointment_data.startTime);
+      const end = new Date(state.appointment_data.endTime);
+      
+      preview.details.push({
+        label: "Date",
+        value: start.toLocaleDateString()
+      });
+      
+      if (!state.appointment_data.isAllDay) {
+        preview.details.push({
+          label: "Time",
+          value: `${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+        });
+      }
+      
+      if (state.appointment_data.location) {
+        preview.details.push({
+          label: "Location",
+          value: state.appointment_data.location
+        });
+      }
+      
+      if (state.resolved_contacts?.length > 0) {
+        preview.details.push({
+          label: "Attendees",
+          value: state.resolved_contacts.map(c => c.name).join(", ")
+        });
+      }
+    }
+    
+    // Add warnings for conflicts
+    if (state.conflicts?.length > 0) {
+      preview.warnings = [
+        `Conflicts with: ${state.conflicts.map(c => c.subject).join(", ")}`
+      ];
+    }
+    
+    return {
+      ...state,
+      preview
+    };
+  }
+
+  /**
+   * Request approval from user
+   */
+  async approvalNode(state) {
+    console.log("[CALENDAR:APPROVAL] Requesting approval");
+
+    // Check if we're resuming from an approval decision
+    if (state.approval_decision) {
+      console.log(`[CALENDAR:APPROVAL] Resuming with decision: ${state.approval_decision}`);
+      return {
+        ...state,
+        approved: state.approval_decision === 'approve',
+        rejected: state.approval_decision === 'reject'
+      };
+    }
+
+    if (!state.preview) {
+      return { ...state, approved: true };
+    }
+
+    // Use interrupt for approval
+    throw interrupt({
+      value: {
+        type: 'approval',
+        preview: state.preview,
+        message: `Please review this ${state.action} action:`
+      }
+    });
+  }
+
+  /**
+   * Create appointment in BSA
+   */
+  async createAppointmentNode(state, config) {
+    console.log("[CALENDAR:CREATE] Creating appointment");
+    
+    if (!state.approved || !state.appointment_data) {
+      return state;
+    }
+
+    try {
+      const passKey = await config.configurable.getPassKey();
+      const orgId = config.configurable.org_id;
+      
+      const appointment = await createAppointment(
+        state.appointment_data,
+        passKey,
+        orgId
+      );
+      
+      console.log("[CALENDAR:CREATE] Created appointment:", appointment.id);
+      
+      // Register entity for cross-domain reference
+      const entity = {
+        type: 'appointment',
+        id: appointment.id,
+        name: appointment.subject,
+        time: appointment.startTime
+      };
+      
+      return {
+        ...state,
+        appointments: [appointment],
+        entities: {
+          ...state.entities,
+          appointment: entity
+        }
+      };
+      
+    } catch (error) {
+      console.error("[CALENDAR:CREATE] Error creating appointment:", error);
+      return {
+        ...state,
+        error: `Failed to create appointment: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Update existing appointment
+   */
+  async updateAppointmentNode(state, config) {
+    console.log("[CALENDAR:UPDATE] Updating appointment");
+    
+    // Implementation would be similar to create
+    // For now, returning state as-is
+    return state;
+  }
+
+  /**
+   * Link attendees to appointment
+   */
+  async linkAttendees(state, config) {
+    console.log("[CALENDAR:ATTENDEES] Linking attendees");
+    
+    if (!state.resolved_contacts || state.resolved_contacts.length === 0) {
+      return state;
+    }
+    
+    if (!state.appointments || state.appointments.length === 0) {
+      return state;
+    }
+
+    try {
+      const passKey = await config.configurable.getPassKey();
+      const orgId = config.configurable.org_id;
+      const appointmentId = state.appointments[0].id || state.appointments[0].Id;
+      
+      for (const contact of state.resolved_contacts) {
+        await this.contactResolver.linkActivity(
+          'appointment',
+          appointmentId,
+          contact.id,
+          passKey,
+          orgId
+        );
+      }
+      
+      console.log(`[CALENDAR:ATTENDEES] Linked ${state.resolved_contacts.length} attendees`);
+      
+      return state;
+      
+    } catch (error) {
+      console.error("[CALENDAR:ATTENDEES] Error linking attendees:", error);
+      // Continue without linking
+      return state;
+    }
+  }
+
+  /**
+   * Store interaction in memory
+   */
+  async synthesizeMemory(state, config) {
+    console.log("[CALENDAR:MEMORY] Synthesizing memory");
+    
+    if (!this.mem0.client) {
+      return state;
+    }
+
+    try {
+      const orgId = config.configurable.org_id;
+      const userId = config.configurable.user_id || "default";
+      
+      // Build conversation for memory
+      const messages = [
+        ...state.messages,
+        {
+          role: "assistant",
+          content: `${state.action} appointment: ${state.appointment_data?.subject || 'Appointment'}`
+        }
+      ];
+      
+      await this.mem0.synthesize(
+        messages,
+        orgId,
+        userId,
+        {
+          domain: 'calendar',
+          action: state.action,
+          appointmentId: state.appointments?.[0]?.id
+        }
+      );
+      
+      return state;
+      
+    } catch (error) {
+      console.error("[CALENDAR:MEMORY] Error synthesizing memory:", error);
+      // Continue without memory
+      return state;
+    }
+  }
+
+  /**
+   * Format final response
+   */
+  async formatResponse(state) {
+    console.log("[CALENDAR:RESPONSE] Formatting response");
+    
+    if (state.error) {
+      return {
+        ...state,
+        response: `Error: ${state.error}`
+      };
+    }
+
+    let response = "";
+    
+    if (state.action === "view") {
+      if (!state.appointments || state.appointments.length === 0) {
+        response = "No appointments found for the specified date range.";
+      } else {
+        response = `Found ${state.appointments.length} appointment(s):\n\n`;
+        state.appointments.forEach(appt => {
+          const start = new Date(appt.StartTime || appt.startTime);
+          response += `• ${appt.Subject || appt.subject} - ${start.toLocaleString()}\n`;
+          if (appt.Location) response += `  Location: ${appt.Location}\n`;
+        });
+      }
+    } else if (state.action === "create" && state.approved) {
+      const appt = state.appointments?.[0];
+      if (appt) {
+        response = `✅ Successfully created appointment "${appt.subject || appt.Subject}"`;
+        if (state.resolved_contacts?.length > 0) {
+          response += ` with ${state.resolved_contacts.length} attendee(s)`;
+        }
+      } else {
+        response = "Appointment creation was processed.";
+      }
+    } else if (!state.approved) {
+      response = "Action cancelled by user.";
+    }
+    
+    return {
+      ...state,
+      response
+    };
+  }
+}
+
+/**
+ * Factory function to create calendar subgraph
+ */
+async function createSubgraph(checkpointer = null) {
+  const subgraph = new CalendarSubgraph(checkpointer);
+  return subgraph.graph;
+}
+
+module.exports = {
+  createSubgraph,
+  CalendarSubgraph
+};

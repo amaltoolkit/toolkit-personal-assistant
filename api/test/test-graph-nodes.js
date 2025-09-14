@@ -102,7 +102,7 @@ async function testApprovalNode() {
   };
   
   const config1 = {
-    configurable: { safe_mode: true }
+    configurable: {}
   };
   
   // Note: This will attempt to call interrupt() which won't work outside graph context
@@ -115,15 +115,6 @@ async function testApprovalNode() {
     console.log("  Expected error (interrupt not available):", error.message);
   }
   
-  // Test with safe mode disabled
-  console.log("\nTest 2: Safe mode disabled (auto-approve)");
-  const config2 = {
-    configurable: { safe_mode: false }
-  };
-  
-  const result2 = await approvalBatchNode(state1, config2);
-  console.log("  Auto-approvals:", result2.approvals);
-  console.log("  All approved:", Object.values(result2.approvals).every(v => v));
   console.log();
 }
 

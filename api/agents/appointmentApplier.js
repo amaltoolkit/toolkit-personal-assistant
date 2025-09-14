@@ -13,6 +13,7 @@ const { parseDateQuery } = require('../lib/dateParser');
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 const timezone = require('dayjs/plugin/timezone');
+const bsaConfig = require('../config/bsa');
 
 // Load dayjs plugins for timezone support
 dayjs.extend(utc);
@@ -21,8 +22,8 @@ dayjs.extend(timezone);
 /**
  * Create an appointment in BSA
  */
-async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
-  const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+async function createAppointmentInBSA(appointmentSpec, bsaCredentials) {
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   // Handle natural language date parsing if dateQuery is provided
   let startTime = appointmentSpec.startTime;
@@ -30,7 +31,7 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
   
   // Always prioritize dateQuery when present - it's the source of truth for natural language dates
   if (appointmentSpec.dateQuery && appointmentSpec.dateQuery !== null) {
-    const userTimezone = bsaConfig.timezone || 'UTC';
+    const userTimezone = bsaCredentials.timezone || 'UTC';
     console.log(`[APPOINTMENT:APPLY] Parsing natural language date: "${appointmentSpec.dateQuery}"`);
     
     // Extract just the date part by removing time patterns (e.g., "at 10 AM")
@@ -89,8 +90,8 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
   
   // Convert AppointmentSpec to BSA format
   const payload = {
-    PassKey: bsaConfig.passKey,
-    OrganizationId: bsaConfig.orgId,
+    PassKey: bsaCredentials.passKey,
+    OrganizationId: bsaCredentials.orgId,
     ObjectName: "appointment",
     DataObject: {
       Subject: appointmentSpec.subject,
@@ -172,8 +173,8 @@ async function createAppointmentInBSA(appointmentSpec, bsaConfig) {
 /**
  * Link a single attendee to an appointment
  */
-async function linkAttendeeToAppointment(appointmentId, attendeeType, attendeeId, bsaConfig) {
-  const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`;
+async function linkAttendeeToAppointment(appointmentId, attendeeType, attendeeId, bsaCredentials) {
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json');
   
   // Determine the correct linker type and right object name
   let linkerType, rightObjectName;
@@ -195,8 +196,8 @@ async function linkAttendeeToAppointment(appointmentId, attendeeType, attendeeId
   }
   
   const payload = {
-    PassKey: bsaConfig.passKey,
-    OrganizationId: bsaConfig.orgId,
+    PassKey: bsaCredentials.passKey,
+    OrganizationId: bsaCredentials.orgId,
     ObjectName: linkerType,
     LeftObjectName: 'appointment',
     LeftId: appointmentId,
@@ -298,8 +299,8 @@ async function linkAttendeesToAppointment(appointmentId, attendees, bsaConfig) {
  * Apply the appointment to BSA (create + link attendees)
  */
 async function applyAppointmentToBSA(spec, bsaConfig, config) {
-  // Add timezone to bsaConfig for date parsing
-  bsaConfig.timezone = config?.configurable?.user_tz || 'UTC';
+  // Add timezone to bsaCredentials for date parsing
+  bsaCredentials.timezone = config?.configurable?.user_tz || 'UTC';
   
   const results = {
     appointmentId: null,
@@ -338,7 +339,7 @@ async function applyAppointmentToBSA(spec, bsaConfig, config) {
     
     // Create the appointment with retry logic
     const appointmentResult = await withRetry(
-      () => createAppointmentInBSA(formattedSpec, bsaConfig),
+      () => createAppointmentInBSA(formattedSpec, bsaCredentials),
       2, // max retries
       1000 // delay between retries
     );
@@ -501,7 +502,7 @@ async function applyAppointment(spec, passKey, orgId, options = {}) {
     configurable: {
       passKey,
       orgId,
-      BSA_BASE: options.BSA_BASE || process.env.BSA_BASE || "https://rc.bluesquareapps.com"
+      BSA_BASE: options.BSA_BASE || bsaConfig.getBaseUrl()
     }
   };
   

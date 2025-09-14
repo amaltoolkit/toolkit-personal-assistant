@@ -13,7 +13,6 @@ const TEST_CONFIG = {
     userId: 'test_user',
     orgId: 'test_org',
     user_tz: 'UTC',
-    safe_mode: false, // Skip approval for some tests
     passKey: 'test_passkey',
     BSA_BASE: 'https://test.example.com'
   }
@@ -342,7 +341,7 @@ async function testGraphWithAllRejections() {
           content: 'Create a task called Test'
         }]
       },
-      { ...TEST_CONFIG, configurable: { ...TEST_CONFIG.configurable, safe_mode: true } }
+      TEST_CONFIG
     );
     
     // Simulate rejection of all actions
@@ -370,7 +369,7 @@ async function testGraphWithAllRejections() {
       
       const state2 = await graph.invoke(
         resumeCommand,
-        { ...TEST_CONFIG, configurable: { ...TEST_CONFIG.configurable, safe_mode: true, thread_id: state1.thread_id } }
+        { ...TEST_CONFIG, configurable: { ...TEST_CONFIG.configurable, thread_id: state1.thread_id } }
       );
       
       // Check that graph completed

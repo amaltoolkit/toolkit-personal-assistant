@@ -56,7 +56,6 @@ async function testOrchestrator() {
         userId: "test-user",
         orgId: "test-org",
         user_tz: "America/New_York",
-        safe_mode: true,
         passKey: "mock-passkey",
         BSA_BASE: "https://rc.bluesquareapps.com"
       }
@@ -64,7 +63,6 @@ async function testOrchestrator() {
     
     console.log("Mock state prepared:");
     console.log("  Thread ID:", mockConfig.configurable.thread_id);
-    console.log("  Safe mode:", mockConfig.configurable.safe_mode);
     console.log("  User query:", mockState.messages[0].content);
     
     // Test 4: Graph structure verification

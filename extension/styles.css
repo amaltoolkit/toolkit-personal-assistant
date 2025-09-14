@@ -1261,3 +1261,261 @@ body {
   border-color: #1976d2;
   transform: translateX(2px);
 }
+
+/* ============================================ */
+/* CONTACT DISAMBIGUATION UI */
+/* ============================================ */
+
+.disambiguation-container {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid #e0e0e0;
+}
+
+.disambiguation-title {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #1a73e8;
+}
+
+.disambiguation-explain {
+  color: #5f6368;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.contact-card {
+  background: white;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.contact-card:hover {
+  border-color: #1a73e8;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.contact-card.selected {
+  border-color: #1a73e8;
+  background: #e8f0fe;
+}
+
+.contact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.contact-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: #202124;
+}
+
+.contact-company {
+  font-size: 14px;
+  color: #5f6368;
+}
+
+.contact-role {
+  font-size: 13px;
+  color: #5f6368;
+  font-style: italic;
+}
+
+.contact-score {
+  font-size: 12px;
+  color: #1a73e8;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+.contact-interaction {
+  font-size: 12px;
+  color: #5f6368;
+}
+
+.disambiguation-submit {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.submit-disambiguation-btn {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.submit-disambiguation-btn:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.submit-disambiguation-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================ */
+/* WORKFLOW GUIDANCE UI */
+/* ============================================ */
+
+.workflow-guidance-container {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid #e0e0e0;
+}
+
+.workflow-title {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #1a73e8;
+}
+
+.workflow-explain {
+  color: #5f6368;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.workflow-steps-preview {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.steps-title {
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: #202124;
+}
+
+.suggested-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.step-item {
+  margin: 8px 0;
+  color: #5f6368;
+}
+
+.step-name {
+  color: #202124;
+  font-weight: 500;
+}
+
+.step-desc {
+  display: block;
+  font-size: 13px;
+  color: #5f6368;
+  margin-top: 2px;
+}
+
+.workflow-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.workflow-accept-btn,
+.workflow-modify-btn,
+.workflow-custom-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.workflow-accept-btn {
+  background: #34a853;
+  color: white;
+}
+
+.workflow-accept-btn:hover {
+  background: #2d8e47;
+}
+
+.workflow-modify-btn {
+  background: #fbbc04;
+  color: #202124;
+}
+
+.workflow-modify-btn:hover {
+  background: #f9ab00;
+}
+
+.workflow-custom-btn {
+  background: #1a73e8;
+  color: white;
+}
+
+.workflow-custom-btn:hover {
+  background: #1557b0;
+}
+
+.workflow-custom-input {
+  margin-top: 16px;
+}
+
+.input-label {
+  font-size: 14px;
+  color: #5f6368;
+  margin-bottom: 8px;
+}
+
+.workflow-steps-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.workflow-steps-input:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.submit-custom-workflow-btn {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  margin-top: 12px;
+}
+
+.submit-custom-workflow-btn:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.submit-custom-workflow-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

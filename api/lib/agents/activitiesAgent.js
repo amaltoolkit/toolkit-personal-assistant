@@ -3,6 +3,8 @@
 // Supports appointments-only, tasks-only, or mixed queries
 // Now includes appointment creation and attendee linking capabilities
 
+const bsaConfig = require('../../config/bsa');
+
 // Activities Agent Prompt Template
 const ACTIVITIES_PROMPT = `Today is {currentDate} at {currentTime} {timeZone}.
 
@@ -129,8 +131,8 @@ Be concise and informative in your responses. Always be explicit about what type
 
 // Fetch activities (appointments and/or tasks) using BSA getActivities endpoint
 async function getActivities(passKey, orgId, options = {}, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json`;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json');
 
   // Helper: ensure YYYY-MM-DD format
   const toDateString = (d) => {
@@ -198,9 +200,9 @@ async function getActivities(passKey, orgId, options = {}, dependencies) {
 
 // Create a new task using BSA create endpoint
 async function createTask(passKey, orgId, taskData, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
   
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   const payload = {
     PassKey: passKey,
@@ -247,9 +249,9 @@ async function createTask(passKey, orgId, taskData, dependencies) {
 
 // Create a new appointment using BSA create endpoint
 async function createAppointment(passKey, orgId, appointmentData, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
   
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   const payload = {
     PassKey: passKey,
@@ -293,9 +295,9 @@ async function createAppointment(passKey, orgId, appointmentData, dependencies) 
 
 // Link an attendee to an activity (appointment or task) using BSA link endpoint
 async function linkAttendeeToActivity(passKey, orgId, activityId, attendeeId, attendeeType, activityType, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
   
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/link.json');
   
   // Determine activity type (default to appointment for backward compatibility)
   const activity = activityType || 'appointment';
@@ -406,11 +408,11 @@ async function linkMultipleAttendees(passKey, orgId, appointmentId, attendees, d
 
 // Batch fetch contacts by IDs using BSA getMultiple endpoint
 async function getContactsByIds(passKey, orgId, contactIds = [], includeExtendedProperties = false, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
   
   if (!Array.isArray(contactIds) || contactIds.length === 0) return [];
 
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/getMultiple.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/getMultiple.json');
   const payload = {
     IncludeExtendedProperties: !!includeExtendedProperties,
     References: contactIds.map((id) => ({

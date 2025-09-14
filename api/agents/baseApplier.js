@@ -1,6 +1,6 @@
 /**
  * Base Applier - Shared logic for all applier agents
- * 
+ *
  * Provides common functionality for:
  * - Finding previews in state
  * - Calling BSA tools
@@ -8,6 +8,8 @@
  * - Error handling and retries
  * - PassKey security
  */
+
+const bsaConfig = require('../config/bsa');
 
 /**
  * Base applier function that handles common apply patterns
@@ -58,19 +60,19 @@ async function baseApplier(state, config, applierConfig) {
     console.log(`[APPLIER:${actionType}] Applying action ${state.action?.id}...`);
 
     // Execute the apply function with BSA credentials
-    const bsaConfig = {
-      BSA_BASE: config.configurable?.BSA_BASE || process.env.BSA_BASE,
+    const bsaCredentials = {
+      BSA_BASE: bsaConfig.getBaseUrl(),
       passKey: config.configurable?.passKey,  // PassKey from secure config
       orgId: config.configurable?.orgId
     };
 
     // Validate BSA config
-    if (!bsaConfig.passKey) {
+    if (!bsaCredentials.passKey) {
       throw new Error("PassKey not available in config");
     }
 
     // Apply using the derived spec
-    const result = await applyFunction(spec, bsaConfig, config);
+    const result = await applyFunction(spec, bsaCredentials, config);
 
     // Mark action as done
     const doneIds = new Set(state.artifacts?.doneIds || []);

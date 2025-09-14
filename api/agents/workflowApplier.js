@@ -9,16 +9,17 @@
 const { baseApplier, findPreviewForAction, responsePatterns, withRetry, validateApplierConfig } = require('./baseApplier');
 const axios = require('axios');
 const { withDedupe } = require('../lib/dedupe');
+const bsaConfig = require('../config/bsa');
 
 /**
  * Create advocate_process shell in BSA
  */
-async function createProcessShell(name, description, bsaConfig) {
-  const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+async function createProcessShell(name, description, bsaCredentials) {
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   const payload = {
-    PassKey: bsaConfig.passKey,
-    OrganizationId: bsaConfig.orgId,
+    PassKey: bsaCredentials.passKey,
+    OrganizationId: bsaCredentials.orgId,
     ObjectName: "advocate_process",
     DataObject: {
       Name: name,
@@ -72,8 +73,8 @@ async function createProcessShell(name, description, bsaConfig) {
 /**
  * Add a step to the advocate_process
  */
-async function addProcessStep(processId, stepData, bsaConfig) {
-  const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+async function addProcessStep(processId, stepData, bsaCredentials) {
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   // Convert times to ISO format if provided
   const formatTime = (timeStr) => {
@@ -87,8 +88,8 @@ async function addProcessStep(processId, stepData, bsaConfig) {
   };
   
   const payload = {
-    PassKey: bsaConfig.passKey,
-    OrganizationId: bsaConfig.orgId,
+    PassKey: bsaCredentials.passKey,
+    OrganizationId: bsaCredentials.orgId,
     ObjectName: "advocate_process_template",
     DataObject: {
       AdvocateProcessId: processId,
@@ -307,7 +308,7 @@ async function applyWorkflow(spec, passKey, orgId, options = {}) {
     configurable: {
       passKey,
       orgId,
-      BSA_BASE: options.BSA_BASE || process.env.BSA_BASE || "https://rc.bluesquareapps.com"
+      BSA_BASE: options.BSA_BASE || bsaConfig.getBaseUrl()
     }
   };
   

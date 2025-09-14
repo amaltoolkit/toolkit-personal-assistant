@@ -10,6 +10,7 @@
   ],
   "host_permissions": [
     "https://rc.bluesquareapps.com/*",
+    "https://toolkit.bluesquareapps.com/*",
     "https://personalassistant-seven.vercel.app/*",
     "http://localhost:3000/*"
   ],
@@ -33,5 +34,13 @@
   },
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "web_accessible_resources": [{
+    "resources": [
+      "components/*.js",
+      "css/*.css",
+      "js/*.js"
+    ],
+    "matches": ["<all_urls>"]
+  }]
 }

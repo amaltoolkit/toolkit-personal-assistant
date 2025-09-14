@@ -5,8 +5,8 @@ const { tool } = require("@langchain/core/tools");
 const { z } = require("zod");
 const axios = require("axios");
 const { withDedupe } = require("../lib/dedupe");
+const bsaConfig = require('../config/bsa');
 
-const BSA_BASE = process.env.BSA_BASE || "https://rc.bluesquareapps.com";
 const DEDUPE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
@@ -43,7 +43,7 @@ function makePoster(passKey, orgId) {
       async () => {
         try {
           const response = await axios.post(
-            `${BSA_BASE}${endpoint}`,
+            bsaConfig.buildEndpoint(endpoint),
             fullPayload,
             {
               headers: {

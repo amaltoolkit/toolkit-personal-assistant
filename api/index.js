@@ -18,6 +18,9 @@ const { createClient } = require("@supabase/supabase-js");
 const http = require('http');
 const https = require('https');
 
+// Import BSA configuration
+const bsaConfig = require('./config/bsa');
+
 // Performance optimizations
 const keepAliveAgent = new http.Agent({
   keepAlive: true,
@@ -110,10 +113,12 @@ function getPgPool() {
 }
 
 // Environment variables
-const BSA_BASE = process.env.BSA_BASE;
 const BSA_CLIENT_ID = process.env.BSA_CLIENT_ID;
 const BSA_CLIENT_SECRET = process.env.BSA_CLIENT_SECRET;
 const BSA_REDIRECT_URI = process.env.BSA_REDIRECT_URI;
+
+// BSA_BASE is now managed by the config module
+// Use bsaConfig.getBaseUrl() or bsaConfig.buildEndpoint() methods directly
 
 // LangSmith Configuration (for observability)
 // These environment variables enable comprehensive tracing when set in Vercel:
@@ -158,7 +163,7 @@ app.get("/auth/start", async (req, res) => {
     }
     
     // Construct the BSA OAuth authorization URL
-    const authUrl = new URL(`${BSA_BASE}/oauth2/authorize`);
+    const authUrl = new URL(bsaConfig.buildOAuthUrl('authorize'));
     
     // OAuth 2.0 standard parameters
     authUrl.searchParams.set("response_type", "code");        // We want an authorization code
@@ -192,7 +197,7 @@ app.get("/auth/callback", async (req, res) => {
     // Immediately redirect user to BSA main page
     // This provides better UX - user doesn't see a loading page
     // The OAuth processing happens asynchronously in the background
-    res.redirect(`${BSA_BASE}`);
+    res.redirect(bsaConfig.getBaseUrl());
 
     // Process the OAuth callback asynchronously (non-blocking)
     // This performs the token exchange and stores the PassKey
@@ -236,7 +241,7 @@ async function processOAuthCallback(code, state) {
     // Exchange authorization code for bearer token
     let tokenResp;
     try {
-      const tokenUrl = `${BSA_BASE}/oauth2/token`;
+      const tokenUrl = bsaConfig.buildOAuthUrl('token');
       
       // Create properly encoded form data for OAuth token exchange
       // Using URLSearchParams ensures RFC-compliant encoding
@@ -292,7 +297,7 @@ async function processOAuthCallback(code, state) {
     // Exchange bearer token for PassKey (BSA-specific)
     let passKeyResp;
     try {
-      const passKeyUrl = `${BSA_BASE}/oauth2/passkey`;
+      const passKeyUrl = bsaConfig.buildOAuthUrl('passkey');
       
       // Exchange bearer token for PassKey
       // Note: Empty body, authorization via Bearer token header
@@ -425,7 +430,7 @@ async function refreshPassKey(sessionId) {
     }
     
     // Call BSA refresh endpoint
-    const refreshUrl = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`;
+    const refreshUrl = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.data.VCDataEndpoint/login.json');
     
     try {
       // Make refresh request using current PassKey
@@ -654,7 +659,7 @@ function normalizeBSAResponse(response) {
 
 // Fetch organizations helper
 async function fetchOrganizations(passKey) {
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json');
   
   try {
     // Make API call to BSA
@@ -837,7 +842,7 @@ app.post("/api/assistant/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       parseDateQuery,
       getLLMClient
@@ -910,7 +915,7 @@ app.post("/api/workflow/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       getLLMClient: getWorkflowLLMClient,  // Use GPT-5 for workflow agent
       parseDateQuery,
@@ -932,14 +937,14 @@ app.post("/api/workflow/query", async (req, res) => {
   }
 });
 
-// Multi-Agent Routes (New Architecture)
+// Multi-Agent Routes (V2 Architecture)
 // Only mount if feature flag is enabled
-if (process.env.USE_NEW_ARCHITECTURE === 'true') {
-  console.log('[SERVER] New architecture enabled - mounting agent routes');
+if (process.env.USE_V2_ARCHITECTURE === 'true') {
+  console.log('[SERVER] V2 architecture enabled - mounting agent routes');
   const agentRoutes = require('./routes/agent');
   app.use('/api/agent', agentRoutes);
 } else {
-  console.log('[SERVER] New architecture disabled - using legacy endpoints');
+  console.log('[SERVER] V2 architecture disabled - using legacy endpoints');
 }
 
 // Monitoring Routes (Always available)
@@ -1000,7 +1005,7 @@ app.post("/api/orchestrator/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       getLLMClient,
       getWorkflowLLMClient,  // Add GPT-5 client for workflow agent
@@ -1149,18 +1154,96 @@ app.post("/api/reset-conversation", async (req, res) => {
   }
 });
 
+// =========================
+// Interrupt Polling Endpoints (for production/Vercel)
+// =========================
+
+const { getInterruptPollingService } = require('./websocket/pollingFallback');
+const pollingService = getInterruptPollingService();
+
+// Check for pending interrupts
+app.get('/api/interrupts/poll', async (req, res) => {
+  const sessionId = req.query.session_id;
+  
+  if (!sessionId) {
+    return res.status(400).json({ error: 'Session ID required' });
+  }
+  
+  const interrupt = pollingService.checkPending(sessionId);
+  
+  if (interrupt) {
+    res.json({
+      hasInterrupt: true,
+      interrupt: interrupt
+    });
+  } else {
+    res.json({
+      hasInterrupt: false
+    });
+  }
+});
+
+// Acknowledge interrupt receipt
+app.post('/api/interrupts/acknowledge', async (req, res) => {
+  const { session_id } = req.body;
+  
+  if (!session_id) {
+    return res.status(400).json({ error: 'Session ID required' });
+  }
+  
+  pollingService.acknowledgeInterrupt(session_id);
+  
+  res.json({
+    success: true,
+    message: 'Interrupt acknowledged'
+  });
+});
+
+// Submit approval response
+app.post('/api/interrupts/approve', async (req, res) => {
+  const { session_id, approval_data } = req.body;
+  
+  if (!session_id || !approval_data) {
+    return res.status(400).json({ error: 'Session ID and approval data required' });
+  }
+  
+  const result = await pollingService.handleApprovalResponse(session_id, approval_data);
+  
+  res.json(result);
+});
+
+// Get polling service stats (for debugging)
+app.get('/api/interrupts/stats', async (req, res) => {
+  const stats = pollingService.getStats();
+  res.json(stats);
+});
+
 // Module exports for Vercel
 module.exports = app;
 
-// Local development server
+// Local development server with WebSocket support
 if (require.main === module) {
   // Use PORT from environment or default to 3000
   const PORT = process.env.PORT || 3000;
   
-  // Start the Express server
-  app.listen(PORT, () => {
+  // Create HTTP server for WebSocket attachment
+  const server = require('http').createServer(app);
+  
+  // Initialize WebSocket server (only in development)
+  if (process.env.NODE_ENV !== 'production') {
+    const { getInterruptWebSocketServer } = require('./websocket/interrupts');
+    const wsServer = getInterruptWebSocketServer();
+    wsServer.initialize(server);
+    console.log('WebSocket server initialized for development');
+  }
+  
+  // Start the server
+  server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log(`OAuth start: http://localhost:${PORT}/auth/start?session_id=test`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws`);
+    }
   });
 }

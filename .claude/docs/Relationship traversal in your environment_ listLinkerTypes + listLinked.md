@@ -169,3 +169,146 @@ If you need org-specific custom fields, set `IncludeExtendedProperties: true` on
 
 ---
 
+## Types
+
+[
+  {
+    "LinkerTypes": [
+      {
+        "LeftObjectName": "recurring_activity",
+        "ObjectName": "linker_recurring_activities_users",
+        "RightObjectName": "organization_user"
+      },
+      {
+        "LeftObjectName": "contact",
+        "ObjectName": "linker_contacts_companies",
+        "RightObjectName": "company"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_contact",
+        "RightObjectName": "contact"
+      },
+      {
+        "LeftObjectName": "task",
+        "ObjectName": "linker_tasks_companies",
+        "RightObjectName": "company"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_addresses",
+        "RightObjectName": "address"
+      },
+      {
+        "LeftObjectName": "questionaire_question",
+        "ObjectName": "linker_question_option",
+        "RightObjectName": "questionaire_question_multiple_choice_option"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_notes",
+        "RightObjectName": "note"
+      },
+      {
+        "LeftObjectName": "org_file_entry",
+        "ObjectName": "linker_files_file_folders",
+        "RightObjectName": "org_folder"
+      },
+      {
+        "LeftObjectName": "recurring_activity",
+        "ObjectName": "linker_recurring_activities_contacts",
+        "RightObjectName": "contact"
+      },
+      {
+        "LeftObjectName": "recurring_activity",
+        "ObjectName": "linker_recurring_activities_companies",
+        "RightObjectName": "company"
+      },
+      {
+        "LeftObjectName": "contact",
+        "ObjectName": "linker_contacts_addresses",
+        "RightObjectName": "address"
+      },
+      {
+        "LeftObjectName": "company",
+        "ObjectName": "linker_companies_addresses",
+        "RightObjectName": "address"
+      },
+      {
+        "LeftObjectName": "appointment",
+        "ObjectName": "linker_appointments_companies",
+        "RightObjectName": "company"
+      },
+      {
+        "LeftObjectName": "task",
+        "ObjectName": "linker_tasks_users",
+        "RightObjectName": "organization_user"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_appointment_types",
+        "RightObjectName": "appointment_type"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_custom",
+        "RightObjectName": "__custom_entity_object__"
+      },
+      {
+        "LeftObjectName": "appointment",
+        "ObjectName": "linker_appointments_contacts",
+        "RightObjectName": "contact"
+      },
+      {
+        "LeftObjectName": "event",
+        "ObjectName": "linker_event_event_participant",
+        "RightObjectName": "contact"
+      },
+      {
+        "LeftObjectName": "task",
+        "ObjectName": "linker_tasks_contacts",
+        "RightObjectName": "contact"
+      },
+      {
+        "LeftObjectName": "contact",
+        "ObjectName": "linker_contacts_recreations",
+        "RightObjectName": "recreation"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_appointment",
+        "RightObjectName": "appointment"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_task",
+        "RightObjectName": "task"
+      },
+      {
+        "LeftObjectName": "appointment",
+        "ObjectName": "linker_appointments_users",
+        "RightObjectName": "organization_user"
+      },
+      {
+        "LeftObjectName": "event",
+        "ObjectName": "linker_event_file_entry",
+        "RightObjectName": "org_file_entry"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_company",
+        "RightObjectName": "company"
+      },
+      {
+        "LeftObjectName": "data_import",
+        "ObjectName": "linker_data_import_entry_client_class",
+        "RightObjectName": "client_class"
+      }
+    ],
+    "Valid": true,
+    "StackMessage": null,
+    "ResponseMessage": "success"
+  }
+]
+ 
+---

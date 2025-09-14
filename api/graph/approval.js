@@ -1,12 +1,13 @@
 // Approval node with interrupt handling
-// Pauses execution for user approval when in safe mode
+// Always pauses execution for user approval (human in the loop)
 
 /**
  * Approval batch node that interrupts execution for user approval
  * Uses LangGraph's interrupt mechanism to pause and wait for user decisions
+ * Always requires approval for write operations - human in the loop
  * 
  * @param {Object} state - Graph state containing previews and configuration
- * @param {Object} config - Runtime configuration with safe_mode setting
+ * @param {Object} config - Runtime configuration
  * @returns {Object} Updated state with approvals or interrupt marker
  */
 async function approvalBatchNode(state, config) {
@@ -15,30 +16,6 @@ async function approvalBatchNode(state, config) {
   try {
     // Dynamic import for ESM module
     const { interrupt } = await import("@langchain/langgraph");
-    
-    // Check if safe mode is enabled
-    const safeMode = config?.configurable?.safe_mode !== false; // Default to true
-    console.log(`[APPROVAL] Safe mode: ${safeMode}`);
-    
-    // If safe mode is off, auto-approve everything
-    if (!safeMode) {
-      console.log("[APPROVAL] Safe mode disabled, auto-approving all actions");
-      
-      // Auto-approve all previews
-      const autoApprovals = {};
-      const previews = state.previews || [];
-      
-      for (const preview of previews) {
-        if (preview.actionId) {
-          autoApprovals[preview.actionId] = true;
-        }
-      }
-      
-      return {
-        approvals: autoApprovals,
-        interruptMarker: null // Clear any interrupt marker
-      };
-    }
     
     // Check if we have previews to approve
     const previews = state.previews || [];

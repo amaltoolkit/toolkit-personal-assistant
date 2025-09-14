@@ -12,6 +12,7 @@ const { parseDateQuery } = require('../lib/dateParser');
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 const timezone = require('dayjs/plugin/timezone');
+const bsaConfig = require('../config/bsa');
 
 // Load dayjs plugins for timezone support
 dayjs.extend(utc);
@@ -20,8 +21,8 @@ dayjs.extend(timezone);
 /**
  * Create a task in BSA
  */
-async function createTaskInBSA(taskSpec, bsaConfig) {
-  const url = `${bsaConfig.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+async function createTaskInBSA(taskSpec, bsaCredentials) {
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
   
   // Handle natural language date parsing if dateQuery is provided
   let dueTime = taskSpec.dueTime;
@@ -29,7 +30,7 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
   
   // Always prioritize dateQuery when present - it's the source of truth for natural language dates
   if (taskSpec.dateQuery && taskSpec.dateQuery !== null) {
-    const userTimezone = bsaConfig.timezone || 'UTC';
+    const userTimezone = bsaCredentials.timezone || 'UTC';
     console.log(`[TASK:APPLY] Parsing natural language date: "${taskSpec.dateQuery}"`);
     
     // Extract just the date part by removing time patterns (e.g., "at 10 AM")
@@ -79,8 +80,8 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
   
   // Convert TaskSpec to BSA format
   const payload = {
-    PassKey: bsaConfig.passKey,
-    OrganizationId: bsaConfig.orgId,
+    PassKey: bsaCredentials.passKey,
+    OrganizationId: bsaCredentials.orgId,
     ObjectName: "task",
     DataObject: {
       Subject: taskSpec.subject,
@@ -167,7 +168,7 @@ async function createTaskInBSA(taskSpec, bsaConfig) {
  */
 async function applyTaskToBSA(spec, bsaConfig, config) {
   // Add timezone to bsaConfig for date parsing
-  bsaConfig.timezone = config?.configurable?.user_tz || 'UTC';
+  bsaCredentials.timezone = config?.configurable?.user_tz || 'UTC';
   
   const results = {
     taskId: null,
@@ -308,7 +309,7 @@ async function applyTask(spec, passKey, orgId, options = {}) {
     configurable: {
       passKey,
       orgId,
-      BSA_BASE: options.BSA_BASE || process.env.BSA_BASE || "https://rc.bluesquareapps.com"
+      BSA_BASE: options.BSA_BASE || bsaConfig.getBaseUrl()
     }
   };
   

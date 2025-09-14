@@ -2,6 +2,8 @@
 // Enables creation and management of automated workflows/processes
 // Supports natural language workflow descriptions
 
+const bsaConfig = require('../../config/bsa');
+
 // Workflow Builder Agent Prompt Template
 const WORKFLOW_BUILDER_PROMPT = `You are an expert financial advisory workflow automation specialist with deep domain expertise in wealth management, financial planning, and regulatory compliance for both US and Canadian markets.
 
@@ -153,8 +155,8 @@ When building workflows:
 
 // Create a new process shell in BSA
 async function createProcess(passKey, orgId, name, description, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
 
   const payload = {
     PassKey: passKey,
@@ -192,8 +194,8 @@ async function createProcess(passKey, orgId, name, description, dependencies) {
 
 // Add a step to an existing process
 async function addProcessStep(passKey, orgId, processId, stepData, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json`;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/create.json');
 
   // Generate default times for the step (9 AM - 10 AM in UTC)
   const now = new Date();
@@ -245,8 +247,8 @@ async function addProcessStep(passKey, orgId, processId, stepData, dependencies)
 
 // List all processes in the organization
 async function listProcesses(passKey, orgId, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json');
 
   const payload = {
     PassKey: passKey,
@@ -280,8 +282,8 @@ async function listProcesses(passKey, orgId, dependencies) {
 
 // Get all steps for a specific process
 async function getProcessSteps(passKey, orgId, processId, dependencies) {
-  const { axios, axiosConfig, BSA_BASE, normalizeBSAResponse } = dependencies;
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json`;
+  const { axios, axiosConfig, normalizeBSAResponse } = dependencies;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/list.json');
 
   const payload = {
     PassKey: passKey,

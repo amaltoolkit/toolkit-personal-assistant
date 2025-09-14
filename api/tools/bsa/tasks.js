@@ -38,28 +38,48 @@ async function getTasks(params, passKey, orgId) {
     }
   }
   
-  // BSA API quirk: Same From/To date returns empty results
-  const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
-  const addDays = (ymd, days) => {
-    const d = new Date(ymd + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
+  // Convert date strings to ISO 8601 format with time
+  // BSA expects full timestamps, not just dates
+  const toISODateTime = (dateStr, isEndOfDay = false) => {
+    if (!dateStr) return null;
+
+    // If already has time component, return as-is
+    if (dateStr.includes('T')) {
+      return dateStr;
+    }
+
+    // Convert YYYY-MM-DD to full ISO format
+    // For start of day: YYYY-MM-DDT00:00:00.000Z
+    // For end of day: YYYY-MM-DDT23:59:59.999Z
+    const date = new Date(dateStr + 'T00:00:00Z');
+    if (isEndOfDay) {
+      date.setUTCHours(23, 59, 59, 999);
+    }
+    return date.toISOString();
   };
-  
-  if (effectiveFrom && effectiveTo && effectiveFrom === effectiveTo) {
-    effectiveFrom = addDays(effectiveFrom, -1);
-  } else if (effectiveFrom && !effectiveTo) {
-    effectiveTo = effectiveFrom;
-    effectiveFrom = addDays(effectiveFrom, -1);
+
+  // Convert dates to ISO format
+  if (effectiveFrom) {
+    effectiveFrom = toISODateTime(effectiveFrom, false); // Start of day
+  }
+  if (effectiveTo) {
+    effectiveTo = toISODateTime(effectiveTo, true); // End of day
+  }
+
+  // If only one date provided, use full day range
+  if (effectiveFrom && !effectiveTo) {
+    effectiveTo = effectiveFrom.replace('T00:00:00.000Z', 'T23:59:59.999Z');
   } else if (!effectiveFrom && effectiveTo) {
-    effectiveFrom = addDays(effectiveTo, -1);
+    effectiveFrom = effectiveTo.replace('T23:59:59.999Z', 'T00:00:00.000Z');
   }
   
   console.log("[BSA:TASKS] Fetching with date range:", { effectiveFrom, effectiveTo });
   
   const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json';
   const payload = {
-    orgId,
+    OrganizationId: orgId,  // Changed from orgId to OrganizationId
+    PassKey: passKey,        // Added PassKey to payload
+    ObjectName: "task",      // Added ObjectName
     IncludeAppointments: false,
     IncludeTasks: true,
     From: effectiveFrom,

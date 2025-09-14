@@ -625,10 +625,14 @@ class Coordinator {
       };
       
     } catch (error) {
-      // Re-throw interrupts - they should propagate to the API layer
+      // Handle interrupts by storing them in state (don't throw from within a node)
       if (error && error.name === 'GraphInterrupt') {
-        console.log("[COORDINATOR:EXECUTOR] Propagating interrupt to API layer");
-        throw error;  // Let the API layer handle the interrupt
+        console.log("[COORDINATOR:EXECUTOR] Interrupt detected - storing in state for propagation");
+        return {
+          ...state,
+          interrupt: error,  // Store the interrupt in state
+          subgraph_results: results  // Keep any partial results
+        };
       }
 
       // Handle actual errors
@@ -683,7 +687,13 @@ class Coordinator {
    */
   async finalizeResponse(state) {
     console.log("[COORDINATOR:FINALIZER] Generating final response");
-    
+
+    // If there's an interrupt, don't generate a response - just pass through
+    if (state.interrupt) {
+      console.log("[COORDINATOR:FINALIZER] Interrupt present - skipping response generation");
+      return state;  // Return state as-is with interrupt
+    }
+
     try {
       // If no subgraphs were executed, provide a simple response
       if (!state.subgraph_results || Object.keys(state.subgraph_results).length === 0) {
@@ -852,6 +862,13 @@ class Coordinator {
 
       // Execute the coordinator graph WITH config (critical for checkpointer)
       const result = await this.graph.invoke(initialState, config);
+
+      // Check if an interrupt was stored in state during execution
+      if (result.interrupt) {
+        console.log("[COORDINATOR] Propagating stored interrupt to API layer");
+        this.metrics.endTimer('total', true, { interrupt: true });
+        throw result.interrupt;  // Throw the stored interrupt
+      }
 
       // End total timer
       this.metrics.endTimer('total', true, {

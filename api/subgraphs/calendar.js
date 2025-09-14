@@ -8,7 +8,7 @@
  * - Managing attendees
  */
 
-const { StateGraph, END, interrupt } = require("@langchain/langgraph");
+const { StateGraph, END } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { z } = require("zod");
 const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/dateParser");
@@ -190,6 +190,13 @@ class CalendarSubgraph {
     workflow.addConditionalEdges(
       "approval",
       (state) => {
+        // If approval is required, end graph execution and return to coordinator
+        if (state.requiresApproval) {
+          console.log("[CALENDAR:ROUTER] Approval required - returning to coordinator");
+          return "format_response";  // Format and return to coordinator
+        }
+
+        // Otherwise continue with normal flow
         if (!state.approved) return "format_response";
         if (state.action === "create") return "create_appointment";
         if (state.action === "update") return "update_appointment";
@@ -208,15 +215,10 @@ class CalendarSubgraph {
     workflow.addEdge("synthesize_memory", "format_response");
     workflow.addEdge("format_response", END);
 
-    // Compile with checkpointer if available
+    // Always compile WITHOUT checkpointer - subgraphs are stateless
+    // This prevents deadlocks from concurrent checkpoint writes
     const compileOptions = {};
-    if (this.checkpointer) {
-      compileOptions.checkpointer = this.checkpointer;
-      const checkpointerType = this.checkpointer.constructor?.name || 'Unknown';
-      console.log(`[CALENDAR] Compiling graph WITH checkpointer (${checkpointerType})`);
-    } else {
-      console.log("[CALENDAR] Compiling graph WITHOUT checkpointer (interrupts disabled)");
-    }
+    console.log("[CALENDAR] Compiling graph in STATELESS mode (no checkpointer)");
 
     return workflow.compile(compileOptions);
   }
@@ -661,7 +663,7 @@ class CalendarSubgraph {
    * Request approval from user
    */
   async approvalNode(state) {
-    console.log("[CALENDAR:APPROVAL] Requesting approval");
+    console.log("[CALENDAR:APPROVAL] Processing approval");
 
     // Check if we're resuming from an approval decision
     if (state.approval_decision) {
@@ -669,7 +671,8 @@ class CalendarSubgraph {
       return {
         ...state,
         approved: state.approval_decision === 'approve',
-        rejected: state.approval_decision === 'reject'
+        rejected: state.approval_decision === 'reject',
+        requiresApproval: false  // Clear the flag
       };
     }
 
@@ -677,14 +680,20 @@ class CalendarSubgraph {
       return { ...state, approved: true };
     }
 
-    // Use interrupt for approval
-    throw interrupt({
-      value: {
+    // Instead of throwing interrupt, return state requesting approval
+    console.log("[CALENDAR:APPROVAL] Returning approval request to coordinator");
+
+    return {
+      ...state,
+      requiresApproval: true,  // Flag for coordinator to detect
+      approvalContext: {
         type: 'approval',
         preview: state.preview,
         message: `Please review this ${state.action} action:`
-      }
-    });
+      },
+      // Don't set approved yet - waiting for decision
+      approved: false
+    };
   }
 
   /**
@@ -834,7 +843,7 @@ class CalendarSubgraph {
    */
   async formatResponse(state) {
     console.log("[CALENDAR:RESPONSE] Formatting response");
-    
+
     if (state.error) {
       return {
         ...state,
@@ -842,8 +851,17 @@ class CalendarSubgraph {
       };
     }
 
+    // If approval is required, don't generate a final response yet
+    if (state.requiresApproval) {
+      console.log("[CALENDAR:RESPONSE] Approval pending - returning partial state");
+      return {
+        ...state,
+        response: "Awaiting approval..."
+      };
+    }
+
     let response = "";
-    
+
     if (state.action === "view") {
       if (!state.appointments || state.appointments.length === 0) {
         response = "No appointments found for the specified date range.";
@@ -865,7 +883,8 @@ class CalendarSubgraph {
       } else {
         response = "Appointment creation was processed.";
       }
-    } else if (!state.approved) {
+    } else if (state.approved === false && !state.requiresApproval) {
+      // Only show cancelled if explicitly rejected, not when pending approval
       response = "Action cancelled by user.";
     }
     

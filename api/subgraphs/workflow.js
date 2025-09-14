@@ -211,15 +211,10 @@ class WorkflowSubgraph {
     workflow.addEdge("synthesize_memory", "format_response");
     workflow.addEdge("format_response", END);
 
-    // Compile with checkpointer if available
+    // Always compile WITHOUT checkpointer - subgraphs are stateless
+    // This prevents deadlocks from concurrent checkpoint writes
     const compileOptions = {};
-    if (this.checkpointer) {
-      compileOptions.checkpointer = this.checkpointer;
-      const checkpointerType = this.checkpointer.constructor?.name || 'Unknown';
-      console.log(`[WORKFLOW] Compiling graph WITH checkpointer (${checkpointerType})`);
-    } else {
-      console.log("[WORKFLOW] Compiling graph WITHOUT checkpointer (interrupts disabled)");
-    }
+    console.log("[WORKFLOW] Compiling graph in STATELESS mode (no checkpointer)");
 
     return workflow.compile(compileOptions);
   }

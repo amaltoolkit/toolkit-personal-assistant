@@ -314,7 +314,16 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     'MMM DD, YYYY',
     'DD MMM YYYY',
     'MMMM DD, YYYY',
-    'DD MMMM YYYY'
+    'DD MMMM YYYY',
+    // Ordinal formats (Day.js handles these with customParseFormat plugin)
+    'MMM Do',        // "Sep 17th"
+    'MMMM Do',       // "September 17th"
+    'Do MMM',        // "17th Sep"
+    'Do MMMM',       // "17th September"
+    'MMM Do, YYYY',  // "Sep 17th, 2025"
+    'MMMM Do, YYYY', // "September 17th, 2025"
+    'Do MMM YYYY',   // "17th Sep 2025"
+    'Do MMMM YYYY'   // "17th September 2025"
   ];
   
   for (const format of dateFormats) {

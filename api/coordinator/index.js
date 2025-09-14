@@ -5,7 +5,7 @@
  * that routes queries to specialized domain subgraphs.
  */
 
-const { StateGraph, END } = require("@langchain/langgraph");
+const { StateGraph, END, interrupt } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { getMem0Service } = require("../services/mem0Service");
 const { getPassKeyManager } = require("../services/passKeyManager");
@@ -300,10 +300,12 @@ class Coordinator {
       has_org_id: !!state.org_id,
       session_id_value: state.session_id,
       org_id_value: state.org_id,
-      state_keys: Object.keys(state)
+      state_keys: Object.keys(state),
+      has_approval_decision: !!state.approval_decision,
+      has_pending_approval: !!state.pendingApproval
     });
 
-    const results = {};
+    let results = {};
     const { execution_plan, session_id, org_id } = state;
 
     try {
@@ -325,6 +327,19 @@ class Coordinator {
           error: "Missing organization ID",
           subgraph_results: {}
         };
+      }
+
+      // Check if we're resuming from an approval decision
+      if (state.approval_decision && state.pendingApproval) {
+        console.log("[COORDINATOR:EXECUTOR] Resuming with approval decision:", state.approval_decision);
+
+        const { domain, results: previousResults, stepIndex } = state.pendingApproval;
+
+        // Restore previous results
+        results = previousResults || {};
+
+        // We'll continue execution from the domain that requested approval
+        // The approval_decision will be passed to the subgraph
       }
 
       // Get PassKey for BSA operations with error recovery
@@ -352,13 +367,13 @@ class Coordinator {
         };
       }
       
-      // Create config for subgraphs (thread_id is REQUIRED for checkpointer)
+      // Create config for subgraphs (no checkpointer to prevent deadlocks)
       const config = {
         configurable: {
-          thread_id: state.thread_id || `${session_id}:${org_id}`, // Ensure fallback
+          thread_id: state.thread_id || `${session_id}:${org_id}`, // Still needed for context
           checkpoint_id: state.checkpoint_id,
           checkpoint_ns: "", // Default namespace
-          checkpointer: this.checkpointer, // Propagate checkpointer to subgraphs
+          // DO NOT propagate checkpointer to subgraphs - they are stateless
           // PassKey getter for thread-safe access
           getPassKey: async () => await this.passKeyManager.getPassKey(session_id),
           org_id,
@@ -370,6 +385,8 @@ class Coordinator {
       if (execution_plan?.parallel?.length > 0) {
         console.log("[COORDINATOR:EXECUTOR] Running parallel subgraphs:", execution_plan.parallel);
         
+        // Use Promise.allSettled to handle interrupts properly
+        // Promise.all would reject immediately on first error, losing other results
         const parallelPromises = execution_plan.parallel.map(async (domain) => {
           const subgraph = await this.loadSubgraph(domain, config);
           if (!subgraph) {
@@ -391,18 +408,22 @@ class Coordinator {
             session_id: state.session_id,
             org_id: state.org_id,
             user_id: state.user_id,
-            thread_id: state.thread_id
+            thread_id: state.thread_id,
+            // Pass approval decision if resuming
+            ...(state.approval_decision && state.pendingApproval?.domain === domain ? {
+              approval_decision: state.approval_decision
+            } : {})
           };
 
-          // Create unique config for subgraph to avoid checkpoint conflicts
-          // Each subgraph gets its own namespace and thread_id to prevent deadlocks
+          // Create config for subgraph with unique namespace
+          // Use same thread_id as parent for interrupt propagation
+          // Namespace provides isolation to prevent checkpoint conflicts
           const subgraphConfig = {
             configurable: {
               ...config.configurable,
               // Unique namespace for this subgraph's checkpoints
-              checkpoint_ns: `${domain}_subgraph`,
-              // Unique thread_id combining parent thread with domain
-              thread_id: `${config.configurable.thread_id}:${domain}`
+              checkpoint_ns: `${domain}_subgraph`
+              // Keep parent's thread_id for interrupt propagation
             }
           };
 
@@ -411,21 +432,36 @@ class Coordinator {
             const result = await subgraph.invoke(subgraphState, subgraphConfig);
             console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, result ? 'result exists' : 'undefined');
 
+            // Check if subgraph is requesting approval
+            if (result && result.requiresApproval) {
+              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph`);
+
+              // For parallel execution, throw an interrupt-like error
+              // This will be caught by Promise.allSettled
+              const interruptError = new Error('Approval required');
+              interruptError.name = 'GraphInterrupt';
+              interruptError.value = {
+                ...result.approvalContext,
+                domain: domain
+              };
+              throw interruptError;
+            }
+
             // Ensure result is not undefined
             return {
               domain,
               result: result || { error: `${domain} subgraph returned no result` }
             };
           } catch (error) {
-            // Re-throw interrupts with proper structure
+            // Re-throw interrupts to propagate to parent graph
             if (error && error.name === 'GraphInterrupt') {
-              console.log(`[COORDINATOR:EXECUTOR] Interrupt from ${domain} subgraph`);
-              // Add domain info to interrupt
+              console.log(`[COORDINATOR:EXECUTOR] Interrupt exception from ${domain} subgraph - propagating to parent`);
+              // Add domain info to interrupt for context
               error.domain = domain;
-              throw error;
+              throw error;  // Propagate interrupt to parent graph
             }
             console.error(`[COORDINATOR:EXECUTOR] Error in ${domain} subgraph:`, error);
-            // Return proper error object instead of just error property
+            // Return proper error object for non-interrupt errors
             return {
               domain,
               result: { error: error.message || "Unknown error occurred" }
@@ -433,14 +469,66 @@ class Coordinator {
           }
         });
         
-        const parallelResults = await Promise.all(parallelPromises);
-        parallelResults.forEach(({ domain, result }) => {
-          // Ensure result exists before storing
-          results[domain] = result || { error: `No result returned from ${domain} subgraph` };
+        // Execute all parallel subgraphs
+        const parallelResults = await Promise.allSettled(parallelPromises);
 
-          // Merge entities from subgraph safely
-          if (result && result.entities) {
-            state.entities = { ...state.entities, ...result.entities };
+        // First, check if any subgraph returned requiresApproval
+        for (const settledResult of parallelResults) {
+          if (settledResult.status === 'fulfilled') {
+            const { domain, result } = settledResult.value;
+
+            // Check if this subgraph is requesting approval
+            if (result && result.requiresApproval) {
+              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph in parallel execution - throwing interrupt`);
+
+              // Store partial results for resume
+              state.pendingApproval = {
+                domain: domain,
+                results: results,
+                stepIndex: 0  // For parallel, we'll use 0
+              };
+
+              // Throw interrupt at coordinator level
+              throw interrupt({
+                value: {
+                  ...result.approvalContext,
+                  domain: domain
+                }
+              });
+            }
+          }
+        }
+
+        // Then check for interrupts (they also take priority)
+        for (const settledResult of parallelResults) {
+          if (settledResult.status === 'rejected') {
+            const error = settledResult.reason;
+            // If any subgraph threw an interrupt, propagate it immediately
+            if (error && error.name === 'GraphInterrupt') {
+              console.log(`[COORDINATOR:EXECUTOR] Propagating interrupt from parallel execution`);
+              throw error;
+            }
+          }
+        }
+
+        // Process successful results
+        parallelResults.forEach((settledResult) => {
+          if (settledResult.status === 'fulfilled') {
+            const { domain, result } = settledResult.value;
+            // Ensure result exists before storing
+            results[domain] = result || { error: `No result returned from ${domain} subgraph` };
+
+            // Merge entities from subgraph safely
+            if (result && result.entities) {
+              state.entities = { ...state.entities, ...result.entities };
+            }
+          } else {
+            // Handle rejected promises that aren't interrupts
+            const error = settledResult.reason;
+            console.error(`[COORDINATOR:EXECUTOR] Parallel subgraph failed:`, error);
+            // Try to extract domain from error if available
+            const domain = error.domain || 'unknown';
+            results[domain] = { error: error.message || 'Unknown error occurred' };
           }
         });
       }
@@ -471,18 +559,22 @@ class Coordinator {
             dependencies: step.depends_on?.reduce((acc, dep) => {
               acc[dep] = results[dep];
               return acc;
-            }, {})
+            }, {}),
+            // Pass approval decision if resuming
+            ...(state.approval_decision && state.pendingApproval?.domain === step.domain ? {
+              approval_decision: state.approval_decision
+            } : {})
           };
 
           // Create unique config for subgraph to avoid checkpoint conflicts
-          // Each subgraph gets its own namespace and thread_id to prevent deadlocks
+          // Each subgraph gets its own namespace to prevent deadlocks
+          // Use same thread_id as parent for interrupt propagation
           const subgraphConfig = {
             configurable: {
               ...config.configurable,
               // Unique namespace for this subgraph's checkpoints
-              checkpoint_ns: `${step.domain}_subgraph`,
-              // Unique thread_id combining parent thread with domain
-              thread_id: `${config.configurable.thread_id}:${step.domain}`
+              checkpoint_ns: `${step.domain}_subgraph`
+              // Keep parent's thread_id for interrupt propagation
             }
           };
 
@@ -490,6 +582,26 @@ class Coordinator {
           try {
             const result = await subgraph.invoke(subgraphState, subgraphConfig);
             console.log(`[COORDINATOR:EXECUTOR] ${step.domain} subgraph returned:`, result ? 'result exists' : 'undefined');
+
+            // Check if subgraph is requesting approval
+            if (result && result.requiresApproval) {
+              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${step.domain} subgraph - throwing interrupt`);
+
+              // Store the domain and partial results for resume
+              state.pendingApproval = {
+                domain: step.domain,
+                results: results,
+                stepIndex: execution_plan.sequential.indexOf(step)
+              };
+
+              // Throw interrupt at coordinator level
+              throw interrupt({
+                value: {
+                  ...result.approvalContext,
+                  domain: step.domain
+                }
+              });
+            }
 
             // Ensure result is not undefined before storing
             results[step.domain] = result || { error: `${step.domain} subgraph returned no result` };
@@ -499,12 +611,12 @@ class Coordinator {
               state.entities = { ...state.entities, ...result.entities };
             }
           } catch (error) {
-            // Re-throw interrupts with proper structure
+            // Re-throw interrupts to propagate to parent graph
             if (error && error.name === 'GraphInterrupt') {
-              console.log(`[COORDINATOR:EXECUTOR] Interrupt from ${step.domain} subgraph`);
-              // Add domain info to interrupt
+              console.log(`[COORDINATOR:EXECUTOR] Interrupt exception from ${step.domain} subgraph - propagating to parent`);
+              // Add domain info to interrupt for context
               error.domain = step.domain;
-              throw error;
+              throw error;  // Propagate interrupt to parent graph
             }
             console.error(`[COORDINATOR:EXECUTOR] Error in ${step.domain} subgraph:`, error);
             this.metrics.endTimer(step.domain, false, { error: error.message });
@@ -535,10 +647,9 @@ class Coordinator {
    * @param {Object} config - The config containing checkpointer
    */
   async loadSubgraph(domain, config) {
-    // Create cache key based on domain and parent thread (not subgraph thread)
-    // This allows reusing the same compiled subgraph instance
-    const parentThread = config?.configurable?.thread_id?.split(':')[0] || 'default';
-    const cacheKey = `${domain}_${parentThread}`;
+    // Create cache key based on domain
+    // Subgraphs are now stateless, so we can use simple domain-based caching
+    const cacheKey = domain;
 
     // Check cache
     if (this.subgraphs.has(cacheKey)) {
@@ -549,22 +660,17 @@ class Coordinator {
       // Dynamically import subgraph
       const subgraphModule = require(`../subgraphs/${domain}`);
 
-      // Pass the checkpointer from config to subgraph
-      // This allows the parent's checkpointer to be propagated
-      const checkpointer = config?.configurable?.checkpointer || this.checkpointer;
-
+      // DO NOT pass checkpointer to subgraphs - they should be stateless
+      // This prevents deadlocks from concurrent checkpoint writes
       const subgraph = subgraphModule.createSubgraph ?
-        await subgraphModule.createSubgraph(checkpointer) :  // Pass checkpointer for interrupts
+        await subgraphModule.createSubgraph(null) :  // Always pass null for stateless operation
         subgraphModule.default;
 
       // Cache for future use
       this.subgraphs.set(cacheKey, subgraph);
 
-      if (checkpointer) {
-        console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITH checkpointer (interrupts enabled)`);
-      } else {
-        console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITHOUT checkpointer (stateless mode)`);
-      }
+      console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph in STATELESS mode (no checkpointer)`);
+
       return subgraph;
 
     } catch (error) {

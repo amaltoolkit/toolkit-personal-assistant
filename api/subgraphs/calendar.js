@@ -69,6 +69,14 @@ const CalendarStateChannels = {
     value: (x, y) => y ? y : x,
     default: () => false
   },
+  requiresApproval: {
+    value: (x, y) => y !== undefined ? y : x,
+    default: () => false
+  },
+  approvalContext: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
   response: {
     value: (x, y) => y ? y : x,
     default: () => ""

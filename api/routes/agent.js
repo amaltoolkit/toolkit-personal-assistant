@@ -390,8 +390,14 @@ router.post('/execute', async (req, res) => {
         );
       } catch (error) {
         // Check if this is an interrupt (not an error)
-        if (error && (error.resumable === true || error.when === "during")) {
-          console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval`);
+        // GraphInterrupt errors have different properties depending on how they're thrown
+        if (error && (error.resumable === true || error.when === "during" || error.name === 'GraphInterrupt')) {
+          console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval:`, {
+            errorName: error.name,
+            hasValue: !!error.value,
+            resumable: error.resumable,
+            when: error.when
+          });
         
         // Get the current state from the checkpoint
         const checkpointer = graph.checkpointer;
@@ -405,12 +411,17 @@ router.post('/execute', async (req, res) => {
           state = {
             interruptMarker: 'PENDING_APPROVAL',
             approvalPayload: error.value || error,
-            previews: error.value?.previews || []
+            previews: error.value?.previews || [],
+            approvalContext: error.value || {}
           };
         }
-        
-        // Ensure we have the interrupt marker set
+
+        // Ensure we have the interrupt marker set and approval context
         state.interruptMarker = 'PENDING_APPROVAL';
+        // Make sure we have the approval context from the interrupt
+        if (error.value && !state.approvalContext) {
+          state.approvalContext = error.value;
+        }
         
         } else {
           // Real error, re-throw it
@@ -428,11 +439,16 @@ router.post('/execute', async (req, res) => {
       
       // Send interrupt via WebSocket or polling service
       try {
+        // Extract preview from approvalContext if available
+        const preview = state.approvalContext?.preview || state.preview;
+        const message = state.approvalContext?.message || 'Please review this action:';
+
         const interruptData = {
           type: 'approval_required',
           threadId: config.configurable.thread_id,
-          previews: state.previews || [],
-          approvalPayload: state.approvalPayload,
+          previews: preview ? [preview] : (state.previews || []),
+          message: message,
+          approvalPayload: state.approvalPayload || state.approvalContext,
           requestId
         };
         

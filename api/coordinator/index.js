@@ -430,21 +430,32 @@ class Coordinator {
           // Execute subgraph and handle interrupts
           try {
             const result = await subgraph.invoke(subgraphState, subgraphConfig);
-            console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, result ? 'result exists' : 'undefined');
+
+            // Enhanced debug logging to understand result structure
+            console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, {
+              hasResult: !!result,
+              resultType: typeof result,
+              resultKeys: result ? Object.keys(result).slice(0, 10) : [], // First 10 keys to avoid log overflow
+              requiresApproval: result?.requiresApproval,
+              hasApprovalContext: !!result?.approvalContext,
+              // Check if result might be wrapped
+              hasValue: !!result?.value,
+              valueRequiresApproval: result?.value?.requiresApproval
+            });
 
             // Check if subgraph is requesting approval
-            if (result && result.requiresApproval) {
-              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph`);
+            // Handle both direct state and potentially wrapped state
+            const state = result?.value || result;
+            if (state && state.requiresApproval) {
+              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph - using interrupt()`);
 
-              // For parallel execution, throw an interrupt-like error
-              // This will be caught by Promise.allSettled
-              const interruptError = new Error('Approval required');
-              interruptError.name = 'GraphInterrupt';
-              interruptError.value = {
-                ...result.approvalContext,
-                domain: domain
-              };
-              throw interruptError;
+              // Use the proper interrupt function from LangGraph
+              throw interrupt({
+                value: {
+                  ...state.approvalContext,
+                  domain: domain
+                }
+              });
             }
 
             // Ensure result is not undefined
@@ -472,34 +483,8 @@ class Coordinator {
         // Execute all parallel subgraphs
         const parallelResults = await Promise.allSettled(parallelPromises);
 
-        // First, check if any subgraph returned requiresApproval
-        for (const settledResult of parallelResults) {
-          if (settledResult.status === 'fulfilled') {
-            const { domain, result } = settledResult.value;
-
-            // Check if this subgraph is requesting approval
-            if (result && result.requiresApproval) {
-              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph in parallel execution - throwing interrupt`);
-
-              // Store partial results for resume
-              state.pendingApproval = {
-                domain: domain,
-                results: results,
-                stepIndex: 0  // For parallel, we'll use 0
-              };
-
-              // Throw interrupt at coordinator level
-              throw interrupt({
-                value: {
-                  ...result.approvalContext,
-                  domain: domain
-                }
-              });
-            }
-          }
-        }
-
-        // Then check for interrupts (they also take priority)
+        // Check for interrupts first (they take priority)
+        // Interrupts will be in rejected promises with GraphInterrupt name
         for (const settledResult of parallelResults) {
           if (settledResult.status === 'rejected') {
             const error = settledResult.reason;
@@ -581,11 +566,18 @@ class Coordinator {
           // Execute subgraph and handle interrupts
           try {
             const result = await subgraph.invoke(subgraphState, subgraphConfig);
-            console.log(`[COORDINATOR:EXECUTOR] ${step.domain} subgraph returned:`, result ? 'result exists' : 'undefined');
 
-            // Check if subgraph is requesting approval
-            if (result && result.requiresApproval) {
-              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${step.domain} subgraph - throwing interrupt`);
+            // Debug logging for sequential execution
+            console.log(`[COORDINATOR:EXECUTOR] ${step.domain} subgraph returned:`, {
+              hasResult: !!result,
+              requiresApproval: result?.requiresApproval,
+              valueRequiresApproval: result?.value?.requiresApproval
+            });
+
+            // Check if subgraph is requesting approval (handle both direct and wrapped state)
+            const stateResult = result?.value || result;
+            if (stateResult && stateResult.requiresApproval) {
+              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${step.domain} subgraph - using interrupt()`);
 
               // Store the domain and partial results for resume
               state.pendingApproval = {
@@ -594,10 +586,10 @@ class Coordinator {
                 stepIndex: execution_plan.sequential.indexOf(step)
               };
 
-              // Throw interrupt at coordinator level
+              // Use proper interrupt function
               throw interrupt({
                 value: {
-                  ...result.approvalContext,
+                  ...stateResult.approvalContext,
                   domain: step.domain
                 }
               });

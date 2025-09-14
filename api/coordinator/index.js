@@ -625,6 +625,13 @@ class Coordinator {
       };
       
     } catch (error) {
+      // Re-throw interrupts - they should propagate to the API layer
+      if (error && error.name === 'GraphInterrupt') {
+        console.log("[COORDINATOR:EXECUTOR] Propagating interrupt to API layer");
+        throw error;  // Let the API layer handle the interrupt
+      }
+
+      // Handle actual errors
       console.error("[COORDINATOR:EXECUTOR] Error executing subgraphs:", error);
       return {
         ...state,

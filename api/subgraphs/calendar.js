@@ -212,7 +212,9 @@ class CalendarSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[CALENDAR] Compiling graph with checkpointer");
+      console.log("[CALENDAR] Compiling graph WITH checkpointer");
+    } else {
+      console.log("[CALENDAR] Compiling graph WITHOUT checkpointer (stateless mode)");
     }
 
     return workflow.compile(compileOptions);

@@ -200,7 +200,9 @@ class TaskSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[TASK] Compiling graph with checkpointer");
+      console.log("[TASK] Compiling graph WITH checkpointer");
+    } else {
+      console.log("[TASK] Compiling graph WITHOUT checkpointer (stateless mode)");
     }
 
     return workflow.compile(compileOptions);

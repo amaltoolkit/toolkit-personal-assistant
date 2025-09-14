@@ -215,7 +215,9 @@ class WorkflowSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[WORKFLOW] Compiling graph with checkpointer");
+      console.log("[WORKFLOW] Compiling graph WITH checkpointer");
+    } else {
+      console.log("[WORKFLOW] Compiling graph WITHOUT checkpointer (stateless mode)");
     }
 
     return workflow.compile(compileOptions);

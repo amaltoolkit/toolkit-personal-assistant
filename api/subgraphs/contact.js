@@ -177,7 +177,9 @@ class ContactSubgraph {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
-      console.log("[CONTACT] Compiling graph with checkpointer");
+      console.log("[CONTACT] Compiling graph WITH checkpointer");
+    } else {
+      console.log("[CONTACT] Compiling graph WITHOUT checkpointer (stateless mode)");
     }
 
     return workflow.compile(compileOptions);

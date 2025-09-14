@@ -517,13 +517,13 @@ class Coordinator {
       // Dynamically import subgraph
       const subgraphModule = require(`../subgraphs/${domain}`);
       const subgraph = subgraphModule.createSubgraph ?
-        await subgraphModule.createSubgraph(this.checkpointer) :
+        await subgraphModule.createSubgraph(null) :  // Pass null - subgraphs run stateless
         subgraphModule.default;
 
       // Cache for future use
       this.subgraphs.set(domain, subgraph);
 
-      console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph`);
+      console.log(`[COORDINATOR:LOADER] Loaded ${domain} subgraph WITHOUT checkpointer (stateless mode)`);
       return subgraph;
 
     } catch (error) {

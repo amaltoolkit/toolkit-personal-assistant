@@ -394,9 +394,21 @@ class Coordinator {
             thread_id: state.thread_id
           };
 
+          // Create unique config for subgraph to avoid checkpoint conflicts
+          // Each subgraph gets its own namespace and thread_id to prevent deadlocks
+          const subgraphConfig = {
+            configurable: {
+              ...config.configurable,
+              // Unique namespace for this subgraph's checkpoints
+              checkpoint_ns: `${domain}_subgraph`,
+              // Unique thread_id combining parent thread with domain
+              thread_id: `${config.configurable.thread_id}:${domain}`
+            }
+          };
+
           // Execute subgraph and handle interrupts
           try {
-            const result = await subgraph.invoke(subgraphState, config);
+            const result = await subgraph.invoke(subgraphState, subgraphConfig);
             console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, result ? 'result exists' : 'undefined');
 
             // Ensure result is not undefined
@@ -462,9 +474,21 @@ class Coordinator {
             }, {})
           };
 
+          // Create unique config for subgraph to avoid checkpoint conflicts
+          // Each subgraph gets its own namespace and thread_id to prevent deadlocks
+          const subgraphConfig = {
+            configurable: {
+              ...config.configurable,
+              // Unique namespace for this subgraph's checkpoints
+              checkpoint_ns: `${step.domain}_subgraph`,
+              // Unique thread_id combining parent thread with domain
+              thread_id: `${config.configurable.thread_id}:${step.domain}`
+            }
+          };
+
           // Execute subgraph and handle interrupts
           try {
-            const result = await subgraph.invoke(subgraphState, config);
+            const result = await subgraph.invoke(subgraphState, subgraphConfig);
             console.log(`[COORDINATOR:EXECUTOR] ${step.domain} subgraph returned:`, result ? 'result exists' : 'undefined');
 
             // Ensure result is not undefined before storing
@@ -511,9 +535,10 @@ class Coordinator {
    * @param {Object} config - The config containing checkpointer
    */
   async loadSubgraph(domain, config) {
-    // Create cache key that includes config identity
-    // We need separate instances per config to avoid mixing checkpointers
-    const cacheKey = `${domain}_${config?.configurable?.thread_id || 'default'}`;
+    // Create cache key based on domain and parent thread (not subgraph thread)
+    // This allows reusing the same compiled subgraph instance
+    const parentThread = config?.configurable?.thread_id?.split(':')[0] || 'default';
+    const cacheKey = `${domain}_${parentThread}`;
 
     // Check cache
     if (this.subgraphs.has(cacheKey)) {

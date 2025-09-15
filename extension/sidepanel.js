@@ -505,13 +505,16 @@ async function handleSendMessage() {
         
         // Start polling for interrupts in production, or wait for WebSocket in dev
         if (window.location.protocol === 'chrome-extension:') {
-          // Production - use polling
-          pollForInterrupts(data.thread_id);
+          // Production - only poll if we don't already have previews
+          // This avoids duplicate approval UI when formatResponse provides immediate previews
+          if (!data.previews) {
+            pollForInterrupts(data.thread_id);
+          }
         } else {
           // Development - WebSocket will handle it
           currentThreadId = data.thread_id;
         }
-        
+
         // If previews are immediately available, show them
         if (data.previews) {
           showApprovalUI(data.previews, data.thread_id);
@@ -976,16 +979,30 @@ async function handleApprovalSubmit(approvals, containerId) {
   }
   
   try {
+    // For V2 architecture: if there's only one approval, send as decision
+    const approvalKeys = Object.keys(approvals);
+    let requestBody = {
+      session_id: currentSessionId,
+      org_id: currentOrgId,
+      thread_id: currentThreadId,
+      time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    };
+
+    if (approvalKeys.length === 1) {
+      // V2 format: send decision field
+      const approved = approvals[approvalKeys[0]];
+      requestBody.decision = approved ? 'approve' : 'reject';
+      console.log('[APPROVAL] Sending V2 format with decision:', requestBody.decision);
+    } else {
+      // V1 format: send approvals object for multiple items
+      requestBody.approvals = approvals;
+      console.log('[APPROVAL] Sending V1 format with approvals:', approvals);
+    }
+
     const response = await fetch(`${API_BASE}/api/agent/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: currentSessionId,
-        org_id: currentOrgId,
-        thread_id: currentThreadId,
-        approvals: approvals,
-        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
-      })
+      body: JSON.stringify(requestBody)
     });
     
     if (!response.ok) {

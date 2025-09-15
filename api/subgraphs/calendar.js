@@ -77,6 +77,14 @@ const CalendarStateChannels = {
     value: (x, y) => y ? y : x,
     default: () => null
   },
+  approvalRequest: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  approval_decision: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
   response: {
     value: (x, y) => y ? y : x,
     default: () => ""
@@ -198,12 +206,11 @@ class CalendarSubgraph {
     workflow.addConditionalEdges(
       "approval",
       (state) => {
-        // If approval is required, end graph execution and return to coordinator
+        // If approval is required, format response and return to coordinator
         if (state.requiresApproval) {
-          console.log("[CALENDAR:ROUTER] Approval required - returning to coordinator");
-          return "format_response";  // Format and return to coordinator
+          console.log("[CALENDAR:ROUTER] Approval required - formatting response for coordinator");
+          return "format_response";
         }
-
         // Otherwise continue with normal flow
         if (!state.approved) return "format_response";
         if (state.action === "create") return "create_appointment";
@@ -688,16 +695,21 @@ class CalendarSubgraph {
       return { ...state, approved: true };
     }
 
-    // Instead of throwing interrupt, return state requesting approval
-    console.log("[CALENDAR:APPROVAL] Returning approval request to coordinator");
+    // Return approval request structure instead of throwing interrupt
+    console.log("[CALENDAR:APPROVAL] Returning approval request for coordinator to handle");
 
     return {
       ...state,
-      requiresApproval: true,  // Flag for coordinator to detect
-      approvalContext: {
-        type: 'approval',
+      requiresApproval: true,
+      approvalRequest: {
+        domain: 'calendar',
+        type: 'approval_required',
+        actionId: `calendar_${Date.now()}`,
+        action: state.action,
         preview: state.preview,
-        message: `Please review this ${state.action} action:`
+        data: state.appointment_data,
+        message: `Please review this ${state.action} action:`,
+        thread_id: state.thread_id || null
       },
       // Don't set approved yet - waiting for decision
       approved: false

@@ -48,10 +48,6 @@ const CoordinatorStateChannels = {
     value: (x, y) => y ? y : x,
     default: () => null
   },
-  interrupt: {
-    value: (x, y) => y ? y : x,
-    default: () => null
-  },
   // Context fields that need to be preserved through the coordinator flow
   session_id: {
     value: (x, y) => y ? y : x,
@@ -72,6 +68,15 @@ const CoordinatorStateChannels = {
   timezone: {
     value: (x, y) => y ? y : x,
     default: () => 'UTC'
+  },
+  // Approval-related fields
+  approval_decision: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  pendingApproval: {
+    value: (x, y) => y ? y : x,
+    default: () => null
   }
 };
 
@@ -104,6 +109,7 @@ class Coordinator {
     workflow.addNode("recall_memory", this.recallMemory.bind(this));
     workflow.addNode("route_domains", this.routeDomains.bind(this));
     workflow.addNode("execute_subgraphs", this.executeSubgraphs.bind(this));
+    workflow.addNode("approval_handler", this.handleApproval.bind(this));
     workflow.addNode("finalize_response", this.finalizeResponse.bind(this));
     workflow.addNode("handle_error", this.handleError.bind(this));
 
@@ -125,8 +131,46 @@ class Coordinator {
         "execute_subgraphs": "execute_subgraphs"
       }
     );
-    
-    workflow.addEdge("execute_subgraphs", "finalize_response");
+
+    // Add conditional edge from execute_subgraphs to check for approvals
+    workflow.addConditionalEdges(
+      "execute_subgraphs",
+      (state) => {
+        // Check if any subgraph requested approval AND we don't already have a decision
+        if (state.pendingApproval &&
+            state.pendingApproval.requests &&
+            state.pendingApproval.requests.length > 0 &&
+            !state.pendingApproval.processed) {
+          console.log("[COORDINATOR:ROUTER] Routing to approval_handler for pending approvals");
+          return "approval_handler";
+        }
+        console.log("[COORDINATOR:ROUTER] No approvals needed or already processed, routing to finalize_response");
+        return "finalize_response";
+      },
+      {
+        "approval_handler": "approval_handler",
+        "finalize_response": "finalize_response"
+      }
+    );
+
+    // After approval_handler, check if we need to re-execute subgraphs with the decision
+    workflow.addConditionalEdges(
+      "approval_handler",
+      (state) => {
+        // If we have an approval decision, we need to re-execute subgraphs
+        // so they can process the approved action
+        if (state.approval_decision && state.pendingApproval) {
+          console.log("[COORDINATOR:ROUTER] Approval decision received, re-executing subgraphs");
+          return "execute_subgraphs";
+        }
+        // Otherwise go to finalize (shouldn't normally happen)
+        return "finalize_response";
+      },
+      {
+        "execute_subgraphs": "execute_subgraphs",
+        "finalize_response": "finalize_response"
+      }
+    );
     workflow.addEdge("finalize_response", END);
     workflow.addEdge("handle_error", END);
 
@@ -134,6 +178,16 @@ class Coordinator {
     const compileOptions = {};
     if (this.checkpointer) {
       compileOptions.checkpointer = this.checkpointer;
+
+      // DEBUGGING: Checkpointer configuration
+      console.log("[COORDINATOR:DEBUG] Checkpointer configuration:", {
+        checkpointerType: this.checkpointer.constructor.name,
+        hasGet: typeof this.checkpointer.get === 'function',
+        hasPut: typeof this.checkpointer.put === 'function',
+        hasGetTuple: typeof this.checkpointer.getTuple === 'function',
+        hasList: typeof this.checkpointer.list === 'function'
+      });
+
       console.log("[COORDINATOR] Compiling graph with checkpointer");
     }
 
@@ -334,16 +388,26 @@ class Coordinator {
       }
 
       // Check if we're resuming from an approval decision
-      if (state.approval_decision && state.pendingApproval) {
+      if (state.approval_decision && state.pendingApproval && state.pendingApproval.processed) {
         console.log("[COORDINATOR:EXECUTOR] Resuming with approval decision:", state.approval_decision);
 
-        const { domain, results: previousResults, stepIndex } = state.pendingApproval;
+        const { domains, results: previousResults, requests } = state.pendingApproval;
 
-        // Restore previous results
+        // Restore previous results from non-approval domains
         results = previousResults || {};
 
-        // We'll continue execution from the domain that requested approval
-        // The approval_decision will be passed to the subgraph
+        // Only re-execute the domains that requested approval
+        // Override the execution plan to only run approval domains
+        console.log(`[COORDINATOR:EXECUTOR] Re-executing only approval domains: ${domains?.join(', ')}`);
+
+        // Temporarily override execution plan to only re-run approval domains
+        if (domains && domains.length > 0) {
+          execution_plan.parallel = domains;
+          execution_plan.sequential = []; // Clear sequential for now
+        }
+
+        // The approval_decision will be passed to the subgraphs that need it
+        // through the state when they are re-executed below
       }
 
       // Get PassKey for BSA operations with error recovery
@@ -413,8 +477,8 @@ class Coordinator {
             org_id: state.org_id,
             user_id: state.user_id,
             thread_id: state.thread_id,
-            // Pass approval decision if resuming
-            ...(state.approval_decision && state.pendingApproval?.domain === domain ? {
+            // Pass approval decision if resuming and this domain requested approval
+            ...(state.approval_decision && state.pendingApproval?.domains?.includes(domain) ? {
               approval_decision: state.approval_decision
             } : {})
           };
@@ -441,26 +505,11 @@ class Coordinator {
               resultType: typeof result,
               resultKeys: result ? Object.keys(result).slice(0, 10) : [], // First 10 keys to avoid log overflow
               requiresApproval: result?.requiresApproval,
-              hasApprovalContext: !!result?.approvalContext,
+              hasApprovalRequest: !!result?.approvalRequest,
               // Check if result might be wrapped
               hasValue: !!result?.value,
               valueRequiresApproval: result?.value?.requiresApproval
             });
-
-            // Check if subgraph is requesting approval
-            // Handle both direct state and potentially wrapped state
-            const state = result?.value || result;
-            if (state && state.requiresApproval) {
-              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${domain} subgraph - using interrupt()`);
-
-              // Use the proper interrupt function from LangGraph
-              throw interrupt({
-                value: {
-                  ...state.approvalContext,
-                  domain: domain
-                }
-              });
-            }
 
             // Ensure result is not undefined
             return {
@@ -549,8 +598,8 @@ class Coordinator {
               acc[dep] = results[dep];
               return acc;
             }, {}),
-            // Pass approval decision if resuming
-            ...(state.approval_decision && state.pendingApproval?.domain === step.domain ? {
+            // Pass approval decision if resuming and this domain requested approval
+            ...(state.approval_decision && state.pendingApproval?.domains?.includes(step.domain) ? {
               approval_decision: state.approval_decision
             } : {})
           };
@@ -578,27 +627,6 @@ class Coordinator {
               valueRequiresApproval: result?.value?.requiresApproval
             });
 
-            // Check if subgraph is requesting approval (handle both direct and wrapped state)
-            const stateResult = result?.value || result;
-            if (stateResult && stateResult.requiresApproval) {
-              console.log(`[COORDINATOR:EXECUTOR] Approval requested from ${step.domain} subgraph - using interrupt()`);
-
-              // Store the domain and partial results for resume
-              state.pendingApproval = {
-                domain: step.domain,
-                results: results,
-                stepIndex: execution_plan.sequential.indexOf(step)
-              };
-
-              // Use proper interrupt function
-              throw interrupt({
-                value: {
-                  ...stateResult.approvalContext,
-                  domain: step.domain
-                }
-              });
-            }
-
             // Ensure result is not undefined before storing
             results[step.domain] = result || { error: `${step.domain} subgraph returned no result` };
 
@@ -621,24 +649,52 @@ class Coordinator {
         }
       }
       
+      // Check if any subgraph is requesting approval
+      // ONLY check for new approvals if we're not already processing an approval decision
+      if (!state.approval_decision) {
+        const approvalRequests = [];
+        for (const [domain, result] of Object.entries(results)) {
+          if (result && result.requiresApproval && result.approvalRequest) {
+            console.log(`[COORDINATOR:EXECUTOR] Approval request detected from ${domain} subgraph`);
+            approvalRequests.push(result.approvalRequest);
+          }
+        }
+
+        // If we have approval requests, store them in state for the approval_handler node
+        if (approvalRequests.length > 0) {
+          console.log(`[COORDINATOR:EXECUTOR] Found ${approvalRequests.length} approval request(s) - storing in state`);
+
+          // Store approval context for the approval_handler node
+          state.pendingApproval = {
+            domains: approvalRequests.map(req => req.domain),
+            results: results,
+            requests: approvalRequests,
+            // For sequential execution tracking (if needed)
+            stepIndex: state.execution_plan?.sequential?.findIndex(
+              step => approvalRequests.some(req => req.domain === step.domain)
+            ) ?? -1
+          };
+
+          console.log("[COORDINATOR:EXECUTOR] Approval requests stored - will route to approval_handler");
+        }
+      } else {
+        console.log("[COORDINATOR:EXECUTOR] Skipping approval check - processing approval decision");
+        // Clear the requiresApproval flag from results since we're processing the decision
+        for (const [domain, result] of Object.entries(results)) {
+          if (result && result.requiresApproval) {
+            result.requiresApproval = false;
+          }
+        }
+      }
+
       console.log("[COORDINATOR:EXECUTOR] Subgraph execution complete");
-      
+
       return {
         ...state,
         subgraph_results: results
       };
       
     } catch (error) {
-      // Handle interrupts by storing them in state (don't throw from within a node)
-      if (error && error.name === 'GraphInterrupt') {
-        console.log("[COORDINATOR:EXECUTOR] Interrupt detected - storing in state for propagation");
-        return {
-          ...state,
-          interrupt: error,  // Store the interrupt in state
-          subgraph_results: results  // Keep any partial results
-        };
-      }
-
       // Handle actual errors
       console.error("[COORDINATOR:EXECUTOR] Error executing subgraphs:", error);
       return {
@@ -646,6 +702,73 @@ class Coordinator {
         error: `Failed to execute subgraphs: ${error.message}`
       };
     }
+  }
+
+  /**
+   * Handle approval requests from subgraphs
+   * This is a dedicated node that throws interrupts for approvals
+   */
+  async handleApproval(state) {
+    console.log("[COORDINATOR:APPROVAL] Processing approval requests");
+
+    // CRITICAL FIX: Check if we're resuming with an approval decision
+    // If so, we should NOT throw another interrupt - just pass through
+    if (state.approval_decision) {
+      console.log(`[COORDINATOR:APPROVAL] Resuming with approval decision: ${state.approval_decision}`);
+      console.log("[COORDINATOR:APPROVAL] Skipping interrupt - decision already provided");
+
+      // Clear the pendingApproval flag since we have a decision
+      // But keep the data for subgraphs to process
+      return {
+        ...state,
+        // Keep pendingApproval data for subgraphs but mark as processed
+        pendingApproval: {
+          ...state.pendingApproval,
+          processed: true
+        }
+      };
+    }
+
+    // Check if we have pending approvals
+    if (!state.pendingApproval || !state.pendingApproval.requests || state.pendingApproval.requests.length === 0) {
+      console.log("[COORDINATOR:APPROVAL] No pending approvals found - this shouldn't happen");
+      return state;
+    }
+
+    const approvalRequests = state.pendingApproval.requests;
+    console.log(`[COORDINATOR:APPROVAL] Found ${approvalRequests.length} approval request(s)`);
+
+    // Consolidate approval requests into a single interrupt
+    const consolidatedRequest = {
+      type: "approval_required",
+      previews: approvalRequests.map(req => ({
+        actionId: req.actionId,
+        action: req.action,
+        preview: req.preview,
+        data: req.data,
+        domain: req.domain
+      })),
+      message: approvalRequests.length > 1
+        ? "Multiple actions require your approval:"
+        : approvalRequests[0].message,
+      thread_id: state.thread_id || null,
+      domains: approvalRequests.map(req => req.domain)
+    };
+
+    console.log("[COORDINATOR:APPROVAL] Throwing interrupt for approval UI");
+    console.log("[COORDINATOR:APPROVAL] Interrupt details:", {
+      type: consolidatedRequest.type,
+      previewCount: consolidatedRequest.previews?.length,
+      thread_id: consolidatedRequest.thread_id,
+      domains: consolidatedRequest.domains
+    });
+
+    // Throw the interrupt - this is at the proper graph boundary
+    // LangGraph will catch this, save checkpoint, and return with __interrupt__
+    console.log("[COORDINATOR:APPROVAL] 🔴 THROWING INTERRUPT - Checkpoint should be saved by LangGraph");
+    throw interrupt({
+      value: consolidatedRequest
+    });
   }
 
   /**
@@ -691,12 +814,6 @@ class Coordinator {
    */
   async finalizeResponse(state) {
     console.log("[COORDINATOR:FINALIZER] Generating final response");
-
-    // If there's an interrupt, don't generate a response - just pass through
-    if (state.interrupt) {
-      console.log("[COORDINATOR:FINALIZER] Interrupt present - skipping response generation");
-      return state;  // Return state as-is with interrupt
-    }
 
     try {
       // If no subgraphs were executed, provide a simple response
@@ -828,6 +945,78 @@ class Coordinator {
    * Main entry point for processing queries
    */
   async processQuery(query, context = {}) {
+    // Check if this is a resume from approval (has approval_decision)
+    if (context.approval_decision) {
+      console.log("[COORDINATOR] 🔄 Resuming from approval with decision:", context.approval_decision);
+      console.log("[COORDINATOR:RESUME] Full context:", {
+        hasApprovalDecision: !!context.approval_decision,
+        decision: context.approval_decision,
+        hasPendingApproval: !!context.pendingApproval,
+        pendingApprovalDomains: context.pendingApproval?.domains,
+        hasMessages: !!context.messages,
+        messageCount: context.messages?.length,
+        thread_id: context.thread_id,
+        contextKeys: Object.keys(context).slice(0, 15)
+      });
+
+      // Start total execution timer
+      this.metrics.startTimer('total');
+
+      // Use the full context as state (includes checkpoint state + approval_decision)
+      const resumeState = {
+        ...context,  // This includes all checkpoint state and approval_decision
+        // Ensure required fields are present
+        messages: context.messages || [],
+        org_id: context.org_id,
+        user_id: context.user_id,
+        session_id: context.session_id,
+        thread_id: context.thread_id,
+        timezone: context.timezone || 'UTC'
+      };
+
+      // Create config for checkpointer
+      const config = {
+        configurable: {
+          thread_id: context.thread_id || `${context.session_id}:${context.org_id}`,
+          checkpoint_ns: "" // Default namespace
+        }
+      };
+
+      // Resume the graph with approval decision
+      console.log("[COORDINATOR:RESUME] 🚀 Invoking graph with resume state...");
+      const resumeStart = Date.now();
+      const result = await this.graph.invoke(resumeState, config);
+      console.log(`[COORDINATOR:RESUME] ⏱️ Graph invoke completed in ${Date.now() - resumeStart}ms`);
+
+      // Handle any new interrupts
+      if (result && result['__interrupt__']) {
+        const interrupts = result['__interrupt__'];
+        console.log("[COORDINATOR:RESUME] 🆕 New interrupt detected after resume:", {
+          interruptCount: interrupts?.length,
+          firstInterruptType: interrupts?.[0]?.value?.type
+        });
+        if (interrupts && interrupts.length > 0) {
+          const interruptData = interrupts[0];
+          const error = new Error('GraphInterrupt');
+          error.name = 'GraphInterrupt';
+          error.value = interruptData.value || interruptData;
+          error.interrupts = [{ value: interruptData.value || interruptData }];
+          this.metrics.endTimer('total', true, { interrupt: true });
+          throw error;
+        }
+      }
+
+      console.log("[COORDINATOR:RESUME] ✅ Resume completed successfully:", {
+        hasFinalResponse: !!result?.final_response,
+        hasError: !!result?.error,
+        resultKeys: result ? Object.keys(result).slice(0, 10) : null
+      });
+
+      this.metrics.endTimer('total', true);
+      return result;
+    }
+
+    // Normal query processing (not a resume)
     console.log("[COORDINATOR] Processing query:", query);
 
     // Debug context to ensure it's being passed correctly
@@ -864,14 +1053,140 @@ class Coordinator {
         }
       };
 
+      // DEBUGGING: Log before invoke
+      console.log("[COORDINATOR:DEBUG] About to invoke graph with config:", {
+        hasCheckpointer: !!this.checkpointer,
+        thread_id: config.configurable.thread_id,
+        checkpoint_ns: config.configurable.checkpoint_ns,
+        initialStateKeys: Object.keys(initialState)
+      });
+
       // Execute the coordinator graph WITH config (critical for checkpointer)
       const result = await this.graph.invoke(initialState, config);
 
-      // Check if an interrupt was stored in state during execution
-      if (result.interrupt) {
-        console.log("[COORDINATOR] Propagating stored interrupt to API layer");
-        this.metrics.endTimer('total', true, { interrupt: true });
-        throw result.interrupt;  // Throw the stored interrupt
+      // IMPORTANT: For invoke(), we must use getState() to check for interrupts
+      // This is documented behavior in LangGraph JS - interrupts are not returned in result
+      console.log("[COORDINATOR:INTERRUPT] Calling getState() to check for interrupts (required for invoke)");
+      const graphState = await this.graph.getState(config);
+
+      // DEBUGGING: Log complete state structure
+      console.log("[COORDINATOR:INTERRUPT] 🔍 Graph state structure:", {
+        hasState: !!graphState,
+        hasValues: !!graphState?.values,
+        hasTasks: !!graphState?.tasks,
+        taskCount: graphState?.tasks?.length,
+        hasNext: !!graphState?.next,
+        nextNodes: graphState?.next,
+        // Log the actual tasks array structure
+        tasksStructure: graphState?.tasks?.map(t => ({
+          id: t.id,
+          name: t.name,
+          hasInterrupts: !!t.interrupts,
+          interruptCount: t.interrupts?.length || 0
+        })),
+        // Also check values for approval-related data
+        valuesHasApprovalRequest: !!graphState?.values?.approvalRequest,
+        valuesHasPendingApproval: !!graphState?.values?.pendingApproval
+      });
+
+      // If we have tasks, log more details
+      if (graphState?.tasks && graphState.tasks.length > 0) {
+        console.log("[COORDINATOR:INTERRUPT] Checking tasks for interrupts:", {
+          totalTasks: graphState.tasks.length,
+          tasksWithInterrupts: graphState.tasks.filter(t => t.interrupts && t.interrupts.length > 0).length
+        });
+
+        // Look for tasks with interrupts
+        for (const task of graphState.tasks) {
+          console.log(`[COORDINATOR:INTERRUPT] Task ${task.id}:`, {
+            name: task.name,
+            hasInterrupts: !!task.interrupts,
+            interruptCount: task.interrupts?.length || 0
+          });
+
+          if (task.interrupts && task.interrupts.length > 0) {
+            console.log("[COORDINATOR:INTERRUPT] ✅ INTERRUPT FOUND in task:", {
+              taskId: task.id,
+              taskName: task.name,
+              interruptCount: task.interrupts.length,
+              interruptValue: task.interrupts[0].value,
+              interruptType: task.interrupts[0].value?.type,
+              interruptPreviews: task.interrupts[0].value?.previews?.length || 0
+            });
+
+            // Extract the interrupt data
+            const interruptData = task.interrupts[0];
+
+            // Log the interrupt data structure
+            console.log("[COORDINATOR:INTERRUPT] Interrupt data structure:", {
+              hasValue: !!interruptData.value,
+              valueType: typeof interruptData.value,
+              valueKeys: interruptData.value ? Object.keys(interruptData.value) : null,
+              rawInterrupt: JSON.stringify(interruptData, null, 2).substring(0, 500) // First 500 chars
+            });
+
+            // Create GraphInterrupt error for API layer
+            const error = new Error('GraphInterrupt');
+            error.name = 'GraphInterrupt';
+            error.value = interruptData.value || interruptData;
+            error.interrupts = [{ value: interruptData.value || interruptData }];
+
+            console.log("[COORDINATOR:INTERRUPT] 🚀 Throwing GraphInterrupt to API layer");
+
+            // Log checkpoint saving expectation
+            console.log("[COORDINATOR:INTERRUPT] 💾 Note: LangGraph should save checkpoint automatically when interrupt is thrown");
+            console.log("[COORDINATOR:INTERRUPT] Thread ID for checkpoint:", config.configurable.thread_id);
+            console.log("[COORDINATOR:INTERRUPT] Checkpointer type:", this.checkpointer?.constructor?.name);
+
+            this.metrics.endTimer('total', true, { interrupt: true });
+            throw error;
+          }
+        }
+
+        console.log("[COORDINATOR:INTERRUPT] ❌ No interrupts found in any tasks");
+      } else {
+        console.log("[COORDINATOR:INTERRUPT] ❌ No tasks found in graph state");
+      }
+
+      // DEBUGGING: Comprehensive result inspection
+      console.log("[COORDINATOR:DEBUG] Graph invoke returned:", {
+        resultType: typeof result,
+        resultKeys: result ? Object.keys(result) : null,
+        hasInterruptField: !!result?.['__interrupt__'],
+        interruptValue: result?.['__interrupt__'],
+        hasPendingApproval: !!result?.pendingApproval,
+        pendingApprovalData: result?.pendingApproval ? {
+          domains: result.pendingApproval.domains,
+          hasRequests: !!result.pendingApproval.requests,
+          requestCount: result.pendingApproval.requests?.length
+        } : null,
+        hasSubgraphResults: !!result?.subgraph_results,
+        subgraphResultKeys: result?.subgraph_results ? Object.keys(result.subgraph_results) : null,
+        finalResponseLength: result?.final_response?.length,
+        hasError: !!result?.error
+      });
+
+      // Check if LangGraph returned with an interrupt (keeping for backward compatibility)
+      // When a node throws an interrupt, LangGraph catches it, saves checkpoint,
+      // and returns with __interrupt__ field containing interrupt info
+      if (result && result['__interrupt__']) {
+        const interrupts = result['__interrupt__'];
+        if (interrupts && interrupts.length > 0) {
+          console.log("[COORDINATOR] Graph interrupted - extracting interrupt data");
+
+          // Extract the first interrupt (typically there's only one)
+          const interruptData = interrupts[0];
+
+          // Create a proper GraphInterrupt to throw to API layer
+          const error = new Error('GraphInterrupt');
+          error.name = 'GraphInterrupt';
+          error.value = interruptData.value || interruptData;
+          error.interrupts = [{ value: interruptData.value || interruptData }];
+
+          console.log("[COORDINATOR] Propagating interrupt to API layer");
+          this.metrics.endTimer('total', true, { interrupt: true });
+          throw error;
+        }
       }
 
       // End total timer

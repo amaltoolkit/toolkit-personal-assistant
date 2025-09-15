@@ -323,6 +323,19 @@ router.post('/execute', async (req, res) => {
           timezone: time_zone || DEFAULT_TIMEZONE
         });
 
+        // DEBUGGING: Log coordinator response
+        console.log(`[AGENT:DEBUG:${requestId}] Coordinator returned:`, {
+          hasSuccess: result?.success,
+          hasError: result?.error,
+          hasInterruptMarker: result?.interruptMarker,
+          hasApprovalRequest: !!result?.approvalRequest,
+          resultKeys: result ? Object.keys(result) : null,
+          responseLength: result?.response?.length,
+          resultKeys: Object.keys(result || {}),
+          hasEntities: !!result?.entities,
+          hasDomains: !!result?.domains
+        });
+
         // Convert V2 response to V1 state format for compatibility
         state = {
           messages: [
@@ -338,6 +351,17 @@ router.post('/execute', async (req, res) => {
           throw new Error(result.error || 'V2 execution failed');
         }
       } catch (error) {
+        // DEBUGGING: Log caught error
+        console.log(`[AGENT:DEBUG:${requestId}] Coordinator threw error:`, {
+          errorName: error.name,
+          errorMessage: error.message,
+          isGraphInterrupt: error.name === 'GraphInterrupt',
+          hasInterrupts: !!error.interrupts,
+          interruptCount: error.interrupts?.length,
+          hasValue: !!error.value,
+          errorKeys: Object.keys(error)
+        });
+
         // Handle V2 interrupts (for approvals and contact disambiguation)
         if (error && error.name === 'GraphInterrupt') {
           // Extract interrupt value from the nested structure
@@ -454,10 +478,18 @@ router.post('/execute', async (req, res) => {
         const preview = state.approvalContext?.preview || state.preview;
         const message = state.approvalContext?.message || 'Please review this action:';
 
+        // Avoid double-wrapping: use state.previews if it already contains the preview
+        let previews = state.previews || [];
+
+        // Only create a new array if we have a preview that's not already in state.previews
+        if (preview && (!previews.length || previews[0] !== preview)) {
+          previews = [preview];
+        }
+
         const interruptData = {
           type: 'approval_required',
           threadId: config.configurable.thread_id,
-          previews: preview ? [preview] : (state.previews || []),
+          previews: previews,
           message: message,
           approvalPayload: state.approvalPayload || state.approvalContext,
           requestId
@@ -616,11 +648,47 @@ router.post('/approve', async (req, res) => {
         const coordinator = getCoordinator(checkpointer);
 
         // Load the current checkpoint to get state with error recovery
+        // IMPORTANT: Use getTuple() with proper config structure (documented in LangGraph)
         let checkpoint;
         try {
-          checkpoint = await checkpointer.get(thread_id);
+          console.log(`[AGENT:APPROVE:${requestId}] 🔍 Attempting to retrieve checkpoint with getTuple():`, {
+            thread_id: thread_id,
+            checkpoint_ns: "",
+            method: "checkpointer.getTuple()",
+            checkpointerType: checkpointer.constructor.name
+          });
+
+          checkpoint = await checkpointer.getTuple({
+            configurable: {
+              thread_id: thread_id,
+              checkpoint_ns: "" // Default namespace
+            }
+          });
+
+          console.log(`[AGENT:APPROVE:${requestId}] ✅ Checkpoint retrieved successfully:`, {
+            hasCheckpoint: !!checkpoint,
+            hasConfig: !!checkpoint?.config,
+            hasState: !!checkpoint?.checkpoint?.channel_values,
+            configKeys: checkpoint?.config ? Object.keys(checkpoint.config) : null,
+            stateKeys: checkpoint?.checkpoint?.channel_values ? Object.keys(checkpoint.checkpoint.channel_values).slice(0, 10) : null,
+            checkpointId: checkpoint?.checkpoint?.id,
+            checkpointTs: checkpoint?.checkpoint?.ts,
+            parentConfig: checkpoint?.parentConfig,
+            metadata: checkpoint?.metadata
+          });
+
+          // Log pendingApproval data if present
+          if (checkpoint?.checkpoint?.channel_values?.pendingApproval) {
+            console.log(`[AGENT:APPROVE:${requestId}] Found pendingApproval in checkpoint:`, {
+              domains: checkpoint.checkpoint.channel_values.pendingApproval.domains,
+              requestCount: checkpoint.checkpoint.channel_values.pendingApproval.requests?.length
+            });
+          }
         } catch (checkpointError) {
-          console.error(`[AGENT:APPROVE:${requestId}] Failed to load checkpoint:`, checkpointError);
+          console.error(`[AGENT:APPROVE:${requestId}] ❌ Failed to load checkpoint:`, {
+            error: checkpointError.message,
+            stack: checkpointError.stack?.split('\n').slice(0, 3).join(' | ')
+          });
           // Try to recover by creating a minimal state
           checkpoint = null;
         }
@@ -660,16 +728,78 @@ router.post('/approve', async (req, res) => {
           console.log(`[AGENT:APPROVE:${requestId}] Resuming with decision:`, decision);
         }
 
-        // Resume the graph with the update
-        const { Command } = await import("@langchain/langgraph");
-        const resumeCommand = new Command({
-          resume: resumeData,
-          update: resumeData
+        // Resume the coordinator with the approval decision using Command pattern
+        // This is the documented way to resume from interrupts in LangGraph
+        console.log(`[AGENT:APPROVE:${requestId}] 🚀 Starting resume with Command pattern`);
+
+        // Get the checkpoint state
+        const checkpointState = checkpoint?.checkpoint?.channel_values || checkpoint?.state || {};
+
+        console.log(`[AGENT:APPROVE:${requestId}] Checkpoint state analysis:`, {
+          hasChannelValues: !!checkpoint?.checkpoint?.channel_values,
+          channelValueKeys: checkpoint?.checkpoint?.channel_values ? Object.keys(checkpoint.checkpoint.channel_values).slice(0, 10) : null,
+          hasPendingApproval: !!checkpointState.pendingApproval,
+          hasMessages: !!checkpointState.messages,
+          messageCount: checkpointState.messages?.length
         });
 
-        // Get the compiled graph and resume
-        const graph = await coordinator.buildGraph();
-        const result = await graph.invoke(resumeCommand, config);
+        // Build the resume data
+        const resumePayload = {
+          ...resumeData,  // Approval decision or contact selection
+          // Ensure we have the required context
+          org_id,
+          session_id,
+          thread_id,
+          user_id,
+          timezone: time_zone || DEFAULT_TIMEZONE
+        };
+
+        console.log(`[AGENT:APPROVE:${requestId}] Creating Command with resume payload:`, {
+          decision: resumePayload.approval_decision || resumePayload.contact_selected,
+          hasApprovalDecision: !!resumePayload.approval_decision,
+          hasContactSelection: !!resumePayload.contact_selected,
+          payloadKeys: Object.keys(resumePayload)
+        });
+
+        // Dynamic import Command to avoid initialization issues
+        console.log(`[AGENT:APPROVE:${requestId}] 📦 Importing Command from @langchain/langgraph...`);
+        const startTime = Date.now();
+        const { Command } = await import('@langchain/langgraph');
+        console.log(`[AGENT:APPROVE:${requestId}] ✅ Command imported successfully in ${Date.now() - startTime}ms`);
+
+        // Merge the approval decision into the resume command
+        const resumeCommand = new Command({
+          resume: resumePayload
+        });
+
+        const resumeConfig = checkpoint.config || config;
+        console.log(`[AGENT:APPROVE:${requestId}] Using config for resume:`, {
+          hasCheckpointConfig: !!checkpoint.config,
+          configThreadId: resumeConfig?.configurable?.thread_id,
+          configCheckpointId: resumeConfig?.configurable?.checkpoint_id
+        });
+
+        // Resume the graph with the Command
+        console.log(`[AGENT:APPROVE:${requestId}] 🚀 Invoking coordinator.graph with Command...`);
+        console.log(`[AGENT:APPROVE:${requestId}] Command details:`, {
+          commandType: resumeCommand.constructor.name,
+          hasResume: !!resumeCommand.resume,
+          resumeKeys: Object.keys(resumeCommand.resume || {})
+        });
+        const invokeStart = Date.now();
+        const result = await coordinator.graph.invoke(
+          resumeCommand,
+          resumeConfig  // Use checkpoint's config if available
+        );
+        console.log(`[AGENT:APPROVE:${requestId}] ⏱️ Graph invoke completed in ${Date.now() - invokeStart}ms`);
+
+        console.log(`[AGENT:APPROVE:${requestId}] ✅ Resume completed successfully:`, {
+          hasResult: !!result,
+          resultKeys: result ? Object.keys(result).slice(0, 10) : null,
+          hasResponse: !!result?.response,
+          hasError: !!result?.error,
+          hasInterruptMarker: !!result?.interruptMarker
+        });
 
         // Check if there's another interrupt
         if (result.interruptMarker === 'PENDING_APPROVAL') {
@@ -688,7 +818,22 @@ router.post('/approve', async (req, res) => {
         });
 
       } catch (error) {
-        console.error(`[AGENT:APPROVE:${requestId}] V2 resume error:`, error);
+        console.error(`[AGENT:APPROVE:${requestId}] ❌ V2 resume error:`, {
+          message: error.message,
+          name: error.name,
+          stack: error.stack?.split('\n').slice(0, 5).join(' | ')
+        });
+
+        // Check if it's a checkpoint not found error
+        if (error.message?.includes('checkpoint') || error.message?.includes('not found')) {
+          console.error(`[AGENT:APPROVE:${requestId}] 🔄 Checkpoint error - suggesting retry`);
+          return res.status(422).json({
+            error: 'Session expired',
+            message: 'The approval session has expired. Please retry your original request.',
+            requiresRestart: true
+          });
+        }
+
         return res.status(500).json({
           error: 'Failed to resume execution',
           details: error.message
@@ -887,12 +1032,12 @@ router.post('/interrupt-status', async (req, res) => {
     if (process.env.NODE_ENV === 'production') {
       const { getInterruptPollingService } = require('../websocket/pollingFallback');
       const pollingService = getInterruptPollingService();
-      const interrupt = pollingService.getInterrupt(session_id);
-      
-      if (interrupt && interrupt.threadId === thread_id) {
+      const interrupt = pollingService.checkPending(session_id);
+
+      if (interrupt && interrupt.data && interrupt.data.threadId === thread_id) {
         return res.json({
           hasInterrupt: true,
-          interrupt: interrupt
+          interrupt: interrupt.data
         });
       }
     }

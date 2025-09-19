@@ -937,15 +937,10 @@ app.post("/api/workflow/query", async (req, res) => {
   }
 });
 
-// Multi-Agent Routes (V2 Architecture)
-// Only mount if feature flag is enabled
-if (process.env.USE_V2_ARCHITECTURE === 'true') {
-  console.log('[SERVER] V2 architecture enabled - mounting agent routes');
-  const agentRoutes = require('./routes/agent');
-  app.use('/api/agent', agentRoutes);
-} else {
-  console.log('[SERVER] V2 architecture disabled - using legacy endpoints');
-}
+// Multi-Agent Routes
+console.log('[SERVER] Mounting agent routes');
+const agentRoutes = require('./routes/agent');
+app.use('/api/agent', agentRoutes);
 
 // Monitoring Routes (Always available)
 try {

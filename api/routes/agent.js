@@ -12,13 +12,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Import orchestrator and state management
-const { buildGraph } = require('../graph/orchestrator');
-const { getStore, getCheckpointer } = require('../graph/state');
-
-// Import V2 Coordinator (feature flag controlled)
+// Import Coordinator and state management
 const { getCoordinator } = require('../coordinator');
-const USE_V2_ARCHITECTURE = process.env.USE_V2_ARCHITECTURE === 'true';
+const { getStore, getCheckpointer } = require('../graph/state');
 
 // Constants
 const RATE_LIMIT = 10; // requests
@@ -303,12 +299,11 @@ router.post('/execute', async (req, res) => {
     
     console.log(`[AGENT:EXECUTE:${requestId}] Config built with thread_id:`, config.configurable.thread_id);
     
-    // Step 5: Execute based on architecture version
+    // Step 5: Execute using Coordinator
     let state;
-    
-    if (USE_V2_ARCHITECTURE) {
-      // V2 Architecture: Use Coordinator
-      console.log(`[AGENT:EXECUTE:${requestId}] Using V2 Coordinator architecture`);
+
+    // Use Coordinator
+    console.log(`[AGENT:EXECUTE:${requestId}] Using Coordinator architecture`);
 
       try {
         // Get checkpointer for state persistence
@@ -404,66 +399,6 @@ router.post('/execute', async (req, res) => {
           throw error;
         }
       }
-      
-    } else {
-      // V1 Architecture: Use Orchestrator
-      console.log(`[AGENT:EXECUTE:${requestId}] Using V1 Orchestrator architecture`);
-      console.log(`[AGENT:EXECUTE:${requestId}] Building graph...`);
-      const graph = await buildGraph();
-      
-      console.log(`[AGENT:EXECUTE:${requestId}] Invoking graph with query:`, query.substring(0, 100));
-      
-      try {
-        state = await graph.invoke(
-          { 
-            messages: [{ 
-              role: 'human', 
-              content: query 
-            }] 
-          },
-          config
-        );
-      } catch (error) {
-        // Check if this is an interrupt (not an error)
-        // GraphInterrupt errors have different properties depending on how they're thrown
-        if (error && (error.resumable === true || error.when === "during" || error.name === 'GraphInterrupt')) {
-          console.log(`[AGENT:EXECUTE:${requestId}] Graph interrupted for approval:`, {
-            errorName: error.name,
-            hasValue: !!error.value,
-            resumable: error.resumable,
-            when: error.when
-          });
-        
-        // Get the current state from the checkpoint
-        const checkpointer = graph.checkpointer;
-        if (checkpointer) {
-          const checkpoint = await checkpointer.get(config.configurable.thread_id);
-          state = checkpoint?.state;
-        }
-        
-        // If we can't get state from checkpoint, construct minimal state
-        if (!state) {
-          state = {
-            interruptMarker: 'PENDING_APPROVAL',
-            approvalPayload: error.value || error,
-            previews: error.value?.previews || [],
-            approvalContext: error.value || {}
-          };
-        }
-
-        // Ensure we have the interrupt marker set and approval context
-        state.interruptMarker = 'PENDING_APPROVAL';
-        // Make sure we have the approval context from the interrupt
-        if (error.value && !state.approvalContext) {
-          state.approvalContext = error.value;
-        }
-        
-        } else {
-          // Real error, re-throw it
-          throw error;
-        }
-      }
-    }
     
     // Step 6: Check for interruption
     if (state.interruptMarker === 'PENDING_APPROVAL') {
@@ -637,10 +572,10 @@ router.post('/approve', async (req, res) => {
     
     console.log(`[AGENT:APPROVE:${requestId}] Resuming thread:`, thread_id);
 
-    // Step 4: Resume graph execution based on architecture
-    if (USE_V2_ARCHITECTURE && isV2Request) {
-      // V2 Architecture: Resume coordinator with approval/contact selection
-      console.log(`[AGENT:APPROVE:${requestId}] Using V2 Coordinator for resume`);
+    // Step 4: Resume coordinator with approval/contact selection
+    if (isV2Request) {
+      // Resume coordinator with approval/contact selection
+      console.log(`[AGENT:APPROVE:${requestId}] Using Coordinator for resume`);
 
       try {
         // Get checkpointer and coordinator
@@ -847,44 +782,6 @@ router.post('/approve', async (req, res) => {
         });
       }
     }
-
-    // V1 Architecture: Original flow
-    const graph = await buildGraph();
-    
-    // Import Command for proper resume
-    const { Command } = await import("@langchain/langgraph");
-    
-    console.log(`[AGENT:APPROVE:${requestId}] Creating resume command with approvals`);
-    
-    // Create a Command to resume with the approvals
-    const resumeCommand = new Command({
-      resume: approvals,
-      update: {
-        interruptMarker: null,  // Clear the interrupt marker
-        approvalPayload: null   // Clear the approval payload
-      }
-    });
-    
-    console.log(`[AGENT:APPROVE:${requestId}] Invoking graph with resume command`);
-    const state = await graph.invoke(
-      resumeCommand,
-      config
-    );
-    
-    // Step 5: Check for another interruption (nested approvals)
-    if (state.interruptMarker === 'PENDING_APPROVAL') {
-      console.log(`[AGENT:APPROVE:${requestId}] Another approval required`);
-      
-      state.thread_id = thread_id;
-      const response = formatResponse(state, 'PENDING_APPROVAL');
-      return res.status(202).json(response);
-    }
-    
-    // Step 6: Return final result
-    console.log(`[AGENT:APPROVE:${requestId}] Execution completed after approval`);
-    const response = formatResponse(state, 'COMPLETED');
-    
-    return res.json(response);
     
   } catch (error) {
     console.error(`[AGENT:APPROVE:${requestId}] Error:`, error);
@@ -960,9 +857,8 @@ router.post('/resolve-contact', async (req, res) => {
     
     console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Resuming thread:`, thread_id);
     
-    // Step 4: Resume with V2 architecture
-    if (USE_V2_ARCHITECTURE) {
-      const coordinator = getCoordinator();
+    // Step 4: Resume with coordinator
+    const coordinator = getCoordinator();
       
       // Resume with selected contact
       const result = await coordinator.resume(thread_id, {
@@ -976,42 +872,9 @@ router.post('/resolve-contact', async (req, res) => {
         return res.status(202).json(result);
       }
       
-      // Return completed result
-      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Completed successfully`);
-      return res.json(result);
-      
-    } else {
-      // Legacy architecture - use Command to resume
-      const graph = await buildGraph();
-      const { Command } = await import("@langchain/langgraph");
-      
-      // Create resume command with selected contact
-      const resumeCommand = new Command({
-        resume: {
-          selectedContact: contact_data || { id: contact_id }
-        },
-        update: {
-          interruptMarker: null,
-          selectedContactId: contact_id
-        }
-      });
-      
-      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Invoking graph with resume command`);
-      const state = await graph.invoke(resumeCommand, config);
-      
-      // Check for another interruption
-      if (state.interruptMarker === 'PENDING_APPROVAL') {
-        console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Another approval required`);
-        state.thread_id = thread_id;
-        const response = formatResponse(state, 'PENDING_APPROVAL');
-        return res.status(202).json(response);
-      }
-      
-      // Format and return response
-      const response = formatResponse(state, 'COMPLETED');
-      console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Completed successfully`);
-      return res.json(response);
-    }
+    // Return completed result
+    console.log(`[AGENT:RESOLVE_CONTACT:${requestId}] Completed successfully`);
+    return res.json(result);
     
   } catch (error) {
     console.error(`[AGENT:RESOLVE_CONTACT:${requestId}] Error:`, error);

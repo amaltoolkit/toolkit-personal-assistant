@@ -59,23 +59,7 @@ async function getLLMClient() {
   return moduleCache.llm;
 }
 
-// Specialized GPT-5 client for workflow agent (enhanced intelligence)
-async function getWorkflowLLMClient() {
-  if (!moduleCache.workflowLLM) {
-    if (!modulePromises.workflowLLM) {
-      modulePromises.workflowLLM = import("@langchain/openai").then(({ ChatOpenAI }) => {
-        moduleCache.workflowLLM = new ChatOpenAI({
-          model: "gpt-5"  // Using GPT-5 for superior workflow understanding
-          // Note: If GPT-5 doesn't support custom temperature, remove the line above
-        });
-        console.log("[Workflow LLM] Initialized with GPT-5 model");
-        return moduleCache.workflowLLM;
-      });
-    }
-    return modulePromises.workflowLLM;
-  }
-  return moduleCache.workflowLLM;
-}
+// Note: Specialized LLM client removed - handled by subgraphs now
 
 // Express app initialization
 const app = express();
@@ -763,15 +747,6 @@ app.get("/api/orgs", async (req, res) => {
 // Import date parser for natural language date queries
 const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
 
-// Import Activities Agent module (unified calendar + tasks)
-const { createActivitiesAgent } = require('./lib/agents/activitiesAgent');
-// Import Workflow Builder Agent module
-const { createWorkflowBuilderAgent } = require('./lib/agents/workflowBuilderAgent');
-// Import Supervisor Orchestrator module (LangGraph multi-agent coordination)
-const { createSupervisorOrchestrator } = require('./lib/agents/supervisorOrchestrator');
-
-// LangChain Calendar Agent implementation
-
 
 
 // Rate limiting (in-memory)
@@ -806,136 +781,9 @@ function checkRateLimit(sessionId) {
   return true;
 }
 
-// Assistant API endpoint
-app.post("/api/assistant/query", async (req, res) => {
-  try {
-    const { query, session_id, org_id, time_zone } = req.body;
-    
-    // Input validation
-    if (!query || query.length > 500) {
-      return res.status(400).json({ 
-        error: "Query must be between 1 and 500 characters" 
-      });
-    }
-    
-    // Rate limiting
-    if (!checkRateLimit(session_id)) {
-      return res.status(429).json({ 
-        error: "Rate limit exceeded",
-        retryAfter: 60 
-      });
-    }
-    
-    // Validate session
-    const passKey = await getValidPassKey(session_id);
-    if (!passKey) {
-      return res.status(401).json({ error: "not authenticated", requiresReauth: true });
-    }
-    
-    if (!org_id) {
-      return res.status(400).json({ 
-        error: "Please select an organization first" 
-      });
-    }
-    
-    // Create and execute Activities Agent with dependencies
-    const dependencies = {
-      axios,
-      axiosConfig,
-      BSA_BASE: bsaConfig.getBaseUrl(),
-      normalizeBSAResponse,
-      parseDateQuery,
-      getLLMClient
-    };
-    
-    const agent = await createActivitiesAgent(passKey, org_id, time_zone || "UTC", dependencies);
-    const result = await agent.invoke({ input: query });
-    
-    res.json({ 
-      query,
-      response: result.output,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[ASSISTANT] Error:', error);
-    res.status(500).json({ 
-      error: "Failed to process query",
-      details: error.message 
-    });
-  }
-});
+// Note: Old /api/assistant/query endpoint removed - use /api/agent/execute instead
 
-// Workflow Builder API endpoint
-app.post("/api/workflow/query", async (req, res) => {
-  try {
-    const { query, session_id, org_id } = req.body;
-    
-    // Input validation
-    if (!query || query.length > 2000) {
-      return res.status(400).json({ 
-        error: "Query must be between 1 and 2000 characters" 
-      });
-    }
-    
-    // Rate limiting
-    if (!checkRateLimit(session_id)) {
-      return res.status(429).json({ 
-        error: "Rate limit exceeded",
-        retryAfter: 60 
-      });
-    }
-    
-    // Validate session
-    const { data: sessionData, error: sessionError } = await supabase
-      .from('bsa_tokens')
-      .select('passkey, expires_at')
-      .eq('session_id', session_id)
-      .single();
-    
-    if (sessionError || !sessionData) {
-      return res.status(401).json({ error: "Invalid session", requiresReauth: true });
-    }
-    
-    // Get PassKey and check if needs refresh
-    let passKey = sessionData.passkey;
-    const expiresAt = new Date(sessionData.expires_at);
-    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
-    
-    if (expiresAt < fiveMinutesFromNow) {
-      console.log('[WORKFLOW] PassKey expiring soon, refreshing...');
-      const newPassKey = await refreshPassKey(session_id);
-      if (!newPassKey) {
-        return res.status(500).json({ error: "Failed to refresh authentication" });
-      }
-      passKey = newPassKey;
-    }
-    
-    // Create workflow agent with dependencies (using GPT-5 for enhanced intelligence)
-    const dependencies = {
-      axios,
-      axiosConfig,
-      BSA_BASE: bsaConfig.getBaseUrl(),
-      normalizeBSAResponse,
-      getLLMClient: getWorkflowLLMClient,  // Use GPT-5 for workflow agent
-      parseDateQuery,
-      extractDateFromQuery
-    };
-    
-    const agent = await createWorkflowBuilderAgent(passKey, org_id, dependencies);
-    const result = await agent.invoke({ input: query });
-    
-    res.json({ 
-      query,
-      response: result.output,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[WORKFLOW] Error:', error);
-    res.status(500).json({ error: "Failed to process workflow request" });
-  }
-});
+// Note: Old /api/workflow/query endpoint removed - use /api/agent/execute instead
 
 // Multi-Agent Routes
 console.log('[SERVER] Mounting agent routes');
@@ -951,89 +799,7 @@ try {
   console.error('[SERVER] Error loading monitoring routes:', error.message);
 }
 
-// Orchestrator API endpoint - Unified multi-agent interface
-app.post("/api/orchestrator/query", async (req, res) => {
-  try {
-    const { query, session_id, org_id, time_zone } = req.body;
-    
-    // Input validation
-    if (!query || query.length > 2000) {
-      return res.status(400).json({ 
-        error: "Query must be between 1 and 2000 characters" 
-      });
-    }
-    
-    // Rate limiting
-    if (!checkRateLimit(session_id)) {
-      return res.status(429).json({ 
-        error: "Rate limit exceeded",
-        retryAfter: 60 
-      });
-    }
-    
-    // Validate session
-    const { data: sessionData, error: sessionError } = await supabase
-      .from('bsa_tokens')
-      .select('passkey, expires_at')
-      .eq('session_id', session_id)
-      .single();
-    
-    if (sessionError || !sessionData) {
-      return res.status(401).json({ error: "Invalid session", requiresReauth: true });
-    }
-    
-    // Get PassKey and check if needs refresh
-    let passKey = sessionData.passkey;
-    const expiresAt = new Date(sessionData.expires_at);
-    const fiveMinutesFromNow = new Date(Date.now() + 5 * 60 * 1000);
-    
-    if (expiresAt < fiveMinutesFromNow) {
-      console.log('[ORCHESTRATOR] PassKey expiring soon, refreshing...');
-      const newPassKey = await refreshPassKey(session_id);
-      if (!newPassKey) {
-        return res.status(500).json({ error: "Failed to refresh authentication" });
-      }
-      passKey = newPassKey;
-    }
-    
-    // Create orchestrator with dependencies
-    const dependencies = {
-      axios,
-      axiosConfig,
-      BSA_BASE: bsaConfig.getBaseUrl(),
-      normalizeBSAResponse,
-      getLLMClient,
-      getWorkflowLLMClient,  // Add GPT-5 client for workflow agent
-      parseDateQuery,
-      extractDateFromQuery
-    };
-    
-    console.log('[ORCHESTRATOR] Processing query:', query);
-    
-    // Create and invoke the orchestrator
-    const orchestrator = await createSupervisorOrchestrator(
-      passKey, 
-      org_id, 
-      time_zone || "UTC", 
-      dependencies
-    );
-    
-    const result = await orchestrator.invoke({ input: query });
-    
-    console.log('[ORCHESTRATOR] Result metadata:', result.metadata);
-    
-    res.json({ 
-      query,
-      response: result.output,
-      metadata: result.metadata,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[ORCHESTRATOR] Error:', error);
-    res.status(500).json({ error: "Failed to process orchestrated request" });
-  }
-});
+// Note: Old /api/orchestrator/query endpoint removed - use /api/agent/execute instead
 
 // Health check endpoint
 app.get("/health", (_, res) => {

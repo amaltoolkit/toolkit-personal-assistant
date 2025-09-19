@@ -100,8 +100,13 @@ function parseDateTimeQuery(query, userTimezone = 'UTC') {
     // Check if time was explicitly mentioned
     const hasTime = parsed.start.knownValues.hour !== undefined;
 
-    // Convert to timezone-aware ISO string
-    const startMoment = dayjs(startDateTime).tz(userTimezone);
+    // If the user didn't specify an explicit timezone, interpret the parsed
+    // components as local time in the user's timezone (keepLocalTime=true).
+    // Otherwise, convert normally.
+    const hasExplicitTZ = !!(parsed.start.knownValues && parsed.start.knownValues.timezoneOffset !== undefined);
+    const startMoment = hasExplicitTZ
+      ? dayjs(startDateTime).tz(userTimezone)
+      : dayjs(startDateTime).tz(userTimezone, true);
 
     return {
       startDateTime: startMoment.toISOString(),
@@ -112,8 +117,8 @@ function parseDateTimeQuery(query, userTimezone = 'UTC') {
         interpreted: startMoment.format('MMMM D, YYYY')
       },
       timeComponent: hasTime ? {
-        hour: startDateTime.getHours(),
-        minute: startDateTime.getMinutes(),
+        hour: startMoment.hour(),
+        minute: startMoment.minute(),
         hasTime: true
       } : {
         hasTime: false

@@ -40,17 +40,24 @@ async function createWorkflow(name, description, passKey, orgId) {
         timeout: 10000
       }
     );
-    
+
+    // Log raw response for debugging
+    console.log("[BSA:WORKFLOWS] Raw response:", JSON.stringify(response.data));
+
     const normalized = normalizeBSAResponse(response.data);
+    console.log("[BSA:WORKFLOWS] Normalized response:", JSON.stringify(normalized));
+
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to create workflow');
     }
-    
-    const processData = normalized.data?.[0]?.DataObject || normalized.data?.DataObject;
+
+    // BSA create endpoint returns DataObject directly on the normalized response
+    const processData = normalized.DataObject || normalized[0]?.DataObject;
     if (!processData?.Id) {
+      console.error("[BSA:WORKFLOWS] No ID found in response structure:", JSON.stringify(normalized));
       throw new Error('No workflow ID returned');
     }
-    
+
     console.log("[BSA:WORKFLOWS] Created workflow ID:", processData.Id);
     
     return {
@@ -125,8 +132,9 @@ async function addWorkflowStep(workflowId, stepData, passKey, orgId) {
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to add workflow step');
     }
-    
-    const stepResponse = normalized.data?.[0]?.DataObject || normalized.data?.DataObject;
+
+    // BSA create endpoint returns DataObject directly on the normalized response
+    const stepResponse = normalized.DataObject || normalized[0]?.DataObject;
     
     console.log(`[BSA:WORKFLOWS] Added step ${stepResponse.Sequence}: ${stepResponse.Subject}`);
     
@@ -173,8 +181,9 @@ async function listWorkflows(passKey, orgId) {
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to list workflows');
     }
-    
-    const results = normalized.data?.Results || [];
+
+    // BSA list endpoint returns Results in activities field or directly
+    const results = normalized.activities || normalized.Results || [];
     
     console.log(`[BSA:WORKFLOWS] Found ${results.length} workflows`);
     
@@ -228,8 +237,9 @@ async function getWorkflowSteps(workflowId, passKey, orgId) {
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to get workflow steps');
     }
-    
-    const results = normalized.data?.Results || [];
+
+    // BSA list endpoint returns Results in activities field or directly
+    const results = normalized.activities || normalized.Results || [];
     
     // Sort by sequence number
     results.sort((a, b) => (a.Sequence || 0) - (b.Sequence || 0));
@@ -559,9 +569,49 @@ async function buildWorkflowFromDescription(description, passKey, orgId) {
   }
 }
 
+/**
+ * Add multiple workflow steps to an existing workflow
+ * @param {string} workflowId - Workflow ID to add steps to
+ * @param {Array} steps - Array of step configurations
+ * @param {string} passKey - BSA authentication key
+ * @param {string} orgId - Organization ID
+ * @returns {Promise<Object>} Result of adding steps
+ */
+async function addWorkflowSteps(workflowId, steps, passKey, orgId) {
+  const results = [];
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const stepData = {
+      subject: step.name || step.subject,
+      description: step.description,
+      activityType: step.type === 'approval' ? 'Appointment' : 'Task',
+      sequence: i + 1,
+      dayOffset: step.dayOffset || 1,
+      assigneeType: step.assignee || 'ContactsOwner',
+      allDay: step.type !== 'appointment',
+      rollOver: true
+    };
+
+    try {
+      const result = await addWorkflowStep(workflowId, stepData, passKey, orgId);
+      results.push(result);
+    } catch (error) {
+      console.error(`[BSA:WORKFLOWS] Failed to add step ${i + 1}:`, error.message);
+      throw error;
+    }
+  }
+
+  return {
+    stepsAdded: results.length,
+    results
+  };
+}
+
 module.exports = {
   createWorkflow,
   addWorkflowStep,
+  addWorkflowSteps,
   listWorkflows,
   getWorkflowSteps,
   deleteWorkflow,

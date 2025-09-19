@@ -1,21 +1,18 @@
 /**
- * Workflow Subgraph - Domain-specific graph for workflow creation
- * 
- * Supports three workflow creation modes:
- * - Agent-led: Full best practices control
- * - User-specified: Parse explicit steps from user
- * - Hybrid: Merge best practices with custom steps
+ * Workflow Subgraph - Simplified domain-specific graph for workflow creation
+ *
+ * Simple flow: Generate → Validate → Preview → Approve → Create
+ * The LLM intelligently adapts complexity based on the user's request
  */
 
-const { StateGraph, END, interrupt } = require("@langchain/langgraph");
+const { StateGraph, END } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
-const { createWorkflow, addWorkflowSteps } = require("../tools/bsa/workflows");
+const { createWorkflow, addWorkflowStep } = require("../tools/bsa/workflows");
 const { getMem0Service } = require("../services/mem0Service");
 const { getErrorHandler } = require("../services/errorHandler");
 const { getPerformanceMetrics } = require("../coordinator/metrics");
-const { getContactLinker } = require("../services/contactLinker");
 
-// State channels for workflow operations
+// Simplified state channels for workflow operations
 const WorkflowStateChannels = {
   // Input
   messages: {
@@ -30,21 +27,7 @@ const WorkflowStateChannels = {
     value: (x, y) => ({ ...x, ...y }),
     default: () => ({})
   },
-  
-  // Guidance detection
-  guidanceMode: {
-    value: (x, y) => y || x,
-    default: () => null
-  },
-  userSteps: {
-    value: (x, y) => y || x,
-    default: () => []
-  },
-  bestPractices: {
-    value: (x, y) => y || x,
-    default: () => []
-  },
-  
+
   // Processing
   workflowDesign: {
     value: (x, y) => y || x,
@@ -58,11 +41,7 @@ const WorkflowStateChannels = {
     value: (x, y) => y || x,
     default: () => null
   },
-  refinementAttempts: {
-    value: (x, y) => y || 0,
-    default: () => 0
-  },
-  
+
   // Output
   workflowId: {
     value: (x, y) => y || x,
@@ -71,6 +50,22 @@ const WorkflowStateChannels = {
   approved: {
     value: (x, y) => y,
     default: () => false
+  },
+  rejected: {
+    value: (x, y) => y,
+    default: () => false
+  },
+  approval_decision: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  requiresApproval: {
+    value: (x, y) => y !== undefined ? y : x,
+    default: () => false
+  },
+  approvalRequest: {
+    value: (x, y) => y ? y : x,
+    default: () => null
   },
   response: {
     value: (x, y) => y || x,
@@ -107,20 +102,43 @@ const WorkflowStateChannels = {
 class WorkflowSubgraph {
   constructor(checkpointer = null) {
     this.llm = new ChatOpenAI({
-      modelName: "gpt-4o-mini",
-      temperature: 0.4
+      modelName: "gpt-5"
+      // Temperature removed - gpt-5 only supports default (1)
     });
 
     this.mem0 = getMem0Service();
     this.errorHandler = getErrorHandler();
     this.metrics = getPerformanceMetrics();
     this.checkpointer = checkpointer;
-    this.contactLinker = getContactLinker();
-    
+
     this.maxSteps = 22; // BSA constraint
-    this.maxRefinements = 3;
-    
+
     this.graph = this.buildGraph();
+  }
+
+  /**
+   * Clean JSON response from LLM by removing markdown code blocks
+   */
+  cleanJsonResponse(content) {
+    if (!content) return '';
+
+    // Remove markdown code blocks
+    let cleaned = content.trim();
+
+    // Remove ```json or ``` from the start
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.substring(7);
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.substring(3);
+    }
+
+    // Remove ``` from the end
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.substring(0, cleaned.length - 3);
+    }
+
+    // Final trim to remove any whitespace
+    return cleaned.trim();
   }
 
   buildGraph() {
@@ -128,91 +146,56 @@ class WorkflowSubgraph {
       channels: WorkflowStateChannels
     });
 
-    // Add nodes
-    workflow.addNode("detect_guidance", this.detectGuidance.bind(this));
-    workflow.addNode("recall_patterns", this.recallPatterns.bind(this));
-    workflow.addNode("design_agent_led", this.designAgentLed.bind(this));
-    workflow.addNode("parse_user_steps", this.parseUserSteps.bind(this));
-    workflow.addNode("merge_hybrid", this.mergeHybrid.bind(this));
+    // Simplified node structure
+    workflow.addNode("generate_workflow", this.generateWorkflow.bind(this));
     workflow.addNode("validate_workflow", this.validateWorkflow.bind(this));
     workflow.addNode("generate_preview", this.generatePreview.bind(this));
     workflow.addNode("wait_approval", this.waitForApproval.bind(this));
     workflow.addNode("create_workflow", this.createWorkflow.bind(this));
-    workflow.addNode("link_contacts", this.linkContacts.bind(this));
-    workflow.addNode("synthesize_memory", this.synthesizeMemory.bind(this));
     workflow.addNode("format_response", this.formatResponse.bind(this));
 
-    // Define flow
-    workflow.setEntryPoint("detect_guidance");
-    workflow.addEdge("detect_guidance", "recall_patterns");
-    
-    // Route based on guidance mode
-    workflow.addConditionalEdges(
-      "recall_patterns",
-      (state) => {
-        if (state.error) return "format_response";
-        if (state.guidanceMode === "agent-led") return "design_agent_led";
-        if (state.guidanceMode === "user-specified") return "parse_user_steps";
-        if (state.guidanceMode === "hybrid") return "parse_user_steps";
-        return "design_agent_led"; // Default
-      },
-      {
-        "format_response": "format_response",
-        "design_agent_led": "design_agent_led",
-        "parse_user_steps": "parse_user_steps"
-      }
-    );
-    
-    workflow.addEdge("design_agent_led", "validate_workflow");
-    workflow.addEdge("parse_user_steps", "validate_workflow");
-    
-    // Route from parse_user_steps for hybrid mode
+    // Simple linear flow
+    workflow.setEntryPoint("generate_workflow");
+    workflow.addEdge("generate_workflow", "validate_workflow");
+
+    // Route based on validation
     workflow.addConditionalEdges(
       "validate_workflow",
       (state) => {
         if (state.error) return "format_response";
-        if (state.guidanceMode === "hybrid" && !state.bestPractices?.length) {
-          return "design_agent_led";
-        }
-        if (state.guidanceMode === "hybrid" && state.userSteps?.length && state.bestPractices?.length) {
-          return "merge_hybrid";
-        }
-        if (state.validationErrors?.length > 0) return "generate_preview";
         return "generate_preview";
       },
       {
         "format_response": "format_response",
-        "design_agent_led": "design_agent_led",
-        "merge_hybrid": "merge_hybrid",
         "generate_preview": "generate_preview"
       }
     );
-    
-    workflow.addEdge("merge_hybrid", "validate_workflow");
+
     workflow.addEdge("generate_preview", "wait_approval");
-    
+
     // Route from approval
     workflow.addConditionalEdges(
       "wait_approval",
       (state) => {
+        // If we have requiresApproval true, we're waiting for coordinator to handle
+        if (state.requiresApproval) {
+          return "format_response";  // Return to coordinator for approval handling
+        }
+        // After approval decision is processed
         if (state.approved) return "create_workflow";
-        if (state.refinementAttempts < this.maxRefinements) return "generate_preview";
+        if (state.rejected) return "format_response";
         return "format_response";
       },
       {
         "create_workflow": "create_workflow",
-        "generate_preview": "generate_preview",
         "format_response": "format_response"
       }
     );
-    
-    workflow.addEdge("create_workflow", "link_contacts");
-    workflow.addEdge("link_contacts", "synthesize_memory");
-    workflow.addEdge("synthesize_memory", "format_response");
+
+    workflow.addEdge("create_workflow", "format_response");
     workflow.addEdge("format_response", END);
 
     // Always compile WITHOUT checkpointer - subgraphs are stateless
-    // This prevents deadlocks from concurrent checkpoint writes
     const compileOptions = {};
     console.log("[WORKFLOW] Compiling graph in STATELESS mode (no checkpointer)");
 
@@ -220,11 +203,11 @@ class WorkflowSubgraph {
   }
 
   /**
-   * Detect guidance mode from user input
+   * Generate workflow based on user request - single smart LLM call
    */
-  async detectGuidance(state) {
-    console.log("[WORKFLOW:GUIDANCE] Detecting guidance mode");
-    
+  async generateWorkflow(state) {
+    console.log("[WORKFLOW:GENERATE] Creating workflow from user request");
+
     try {
       const lastMessage = state.messages?.[state.messages.length - 1];
       if (!lastMessage) {
@@ -233,320 +216,77 @@ class WorkflowSubgraph {
           error: "No message provided"
         };
       }
-      
-      const prompt = `
-        Analyze this request and determine the workflow creation mode:
-        
-        Request: "${lastMessage.content}"
-        
-        Modes:
-        1. "agent-led" - User wants best practices, no specific steps provided
-        2. "user-specified" - User provides explicit steps or process
-        3. "hybrid" - User provides some steps but wants enhancement
-        
-        Look for:
-        - Explicit step lists (numbered, bulleted)
-        - Phrases like "with these steps", "following this process", "my workflow"
-        - Requests for best practices or recommendations
-        
-        Also extract:
-        - Domain/purpose of the workflow
-        - Any specific requirements mentioned
-        
-        Return JSON:
-        {
-          "mode": "agent-led|user-specified|hybrid",
-          "domain": "extracted domain",
-          "hasExplicitSteps": boolean,
-          "requirements": ["requirement1", "requirement2"]
-        }
-      `;
-      
-      const response = await this.llm.invoke(prompt);
-      const analysis = JSON.parse(response.content);
-      
-      console.log("[WORKFLOW:GUIDANCE] Mode detected:", analysis.mode);
-      
-      return {
-        ...state,
-        guidanceMode: analysis.mode,
-        workflowDomain: analysis.domain,
-        requirements: analysis.requirements
-      };
-      
-    } catch (error) {
-      console.error("[WORKFLOW:GUIDANCE] Error detecting guidance:", error);
-      return {
-        ...state,
-        guidanceMode: "agent-led", // Default to agent-led
-        error: null // Continue with default
-      };
-    }
-  }
 
-  /**
-   * Recall workflow patterns from memory
-   */
-  async recallPatterns(state) {
-    console.log("[WORKFLOW:PATTERNS] Recalling workflow patterns");
-    this.metrics.startTimer("workflow_pattern_recall");
-    
-    try {
-      if (!this.mem0.client) {
-        console.log("[WORKFLOW:PATTERNS] Mem0 not configured, skipping");
-        this.metrics.endTimer("workflow_pattern_recall", true, { skipped: true });
-        return state;
-      }
-      
-      const domain = state.workflowDomain || "general";
-      const orgId = state.org_id || "default-org";
-      const userId = state.user_id || "default-user";
-      
-      // Search for similar workflows
-      const patterns = await this.mem0.recall(
-        `workflow ${domain} process steps best practices`,
-        orgId,
-        userId,
-        { limit: 3, threshold: 0.6 }
-      );
-      
-      if (patterns && patterns.length > 0) {
-        console.log(`[WORKFLOW:PATTERNS] Found ${patterns.length} relevant patterns`);
-        this.metrics.recordCacheHit("workflow_patterns");
-      } else {
-        this.metrics.recordCacheMiss("workflow_patterns");
-      }
-      
-      this.metrics.endTimer("workflow_pattern_recall", true, { count: patterns?.length || 0 });
-      
-      return {
-        ...state,
-        memory_context: {
-          ...state.memory_context,
-          workflow_patterns: patterns
-        }
-      };
-      
-    } catch (error) {
-      console.error("[WORKFLOW:PATTERNS] Error recalling patterns:", error);
-      this.metrics.endTimer("workflow_pattern_recall", false, { error: error.message });
-      // Continue without patterns
-      return state;
-    }
-  }
+      const userRequest = lastMessage.content;
 
-  /**
-   * Design workflow using best practices
-   */
-  async designAgentLed(state) {
-    console.log("[WORKFLOW:DESIGN] Creating agent-led workflow");
-    
-    try {
-      const domain = state.workflowDomain || "general business";
-      const requirements = state.requirements || [];
-      const patterns = state.memory_context?.workflow_patterns || [];
-      
       const prompt = `
-        Design a best-practice workflow for: ${domain}
-        
-        Requirements:
-        ${requirements.map(r => `- ${r}`).join('\n')}
-        
-        ${patterns.length > 0 ? `
-        Reference patterns from memory:
-        ${patterns.map(p => p.content).join('\n')}
-        ` : ''}
-        
-        Create a professional workflow with these constraints:
-        - Maximum ${this.maxSteps} steps
-        - Include compliance and quality checks
-        - Focus on US/Canadian financial advisory best practices if applicable
-        - Each step should have: name, description, type (task/decision/approval), duration
-        
-        Return JSON:
+        You are an assistant at a financial advisory firm, expert in creating workflows for financial advisors and their teams.
+
+        Create a workflow based on this user request: "${userRequest}"
+
+        CONTEXT:
+        - Each step is executed by either the "Advisor" (the financial advisor) or the "Assistant" (the advisor's assistant)
+        - Consider financial industry best practices, compliance requirements, and client experience
+        - Steps should flow logically with appropriate timing between them
+
+        CRITICAL INSTRUCTIONS:
+        1. If the user specifies a number of steps (e.g., "2 step", "two-step", "3 steps"), create EXACTLY that many steps
+        2. If the user asks for "simple" or "basic", keep it minimal (2-4 steps)
+        3. If the user asks for "comprehensive" or "detailed", include necessary detail (8-15 steps)
+        4. Otherwise, use your judgment for appropriate complexity based on the domain
+        5. Maximum ${this.maxSteps} steps allowed
+
+        For each step, provide:
+        - name: Clear, action-oriented name
+        - description: What happens in this step
+        - type: "task" (action item/to-do) or "appointment" (scheduled meeting/call)
+        - assignee: "Advisor" (for strategic/client-facing work) or "Assistant" (for administrative/preparation work)
+        - dayOffset: Number of days this individual step takes to complete (determines when the next step will appear):
+          * Use 0 if the step takes less than a day or happens same day
+          * Use 1 if it takes a full day to complete
+          * Use appropriate number for multi-day tasks (e.g., 3 for "3 days", 7 for "1 week")
+          * Each step's dayOffset is independent - it's the duration of that specific step
+
+        Return JSON format:
         {
-          "name": "Workflow Name",
-          "description": "Brief description",
+          "name": "Workflow Name (be specific to the request)",
+          "description": "One-line description of the workflow's purpose",
           "steps": [
             {
               "name": "Step Name",
               "description": "What happens in this step",
-              "type": "task|decision|approval",
-              "duration": "estimated time",
-              "assignee": "role or person"
+              "type": "task|appointment",
+              "assignee": "Advisor|Assistant",
+              "dayOffset": 0
             }
           ],
-          "totalDuration": "estimated total time"
+          "totalDuration": "e.g., 3 days",
+          "reasoning": "Brief explanation of why this structure was chosen"
         }
+
+        Examples:
+        - "2 step client outreach" → Step 1: Assistant prepares materials (dayOffset: 1 - takes 1 day), Step 2: Advisor calls client (dayOffset: 0 - same day)
+        - "simple onboarding" → 3-4 essential steps, each with appropriate dayOffset based on task duration
+        - "comprehensive financial planning" → 10-12 detailed steps with varying dayOffsets per step complexity
       `;
-      
+
       const response = await this.llm.invoke(prompt);
-      let design = JSON.parse(response.content);
-      
-      // Store best practices if in hybrid mode
-      if (state.guidanceMode === "hybrid") {
-        return {
-          ...state,
-          bestPractices: design.steps
-        };
-      }
-      
-      console.log(`[WORKFLOW:DESIGN] Created workflow with ${design.steps.length} steps`);
-      
+      const cleanedContent = this.cleanJsonResponse(response.content);
+      const design = JSON.parse(cleanedContent);
+
+      console.log(`[WORKFLOW:GENERATE] Created workflow with ${design.steps.length} steps`);
+      console.log(`[WORKFLOW:GENERATE] Reasoning: ${design.reasoning}`);
+
       return {
         ...state,
         workflowDesign: design
       };
-      
-    } catch (error) {
-      console.error("[WORKFLOW:DESIGN] Error designing workflow:", error);
-      return {
-        ...state,
-        error: `Failed to design workflow: ${error.message}`
-      };
-    }
-  }
 
-  /**
-   * Parse user-specified steps
-   */
-  async parseUserSteps(state) {
-    console.log("[WORKFLOW:PARSE] Parsing user-specified steps");
-    
-    try {
-      const lastMessage = state.messages?.[state.messages.length - 1];
-      if (!lastMessage) {
-        return {
-          ...state,
-          error: "No message to parse"
-        };
-      }
-      
-      const prompt = `
-        Extract workflow steps from this user message:
-        "${lastMessage.content}"
-        
-        Look for:
-        - Numbered lists (1., 2., 3.)
-        - Bullet points (-, *, •)
-        - Sequential phrases ("first", "then", "next", "finally")
-        - Action verbs indicating steps
-        
-        For each step, determine:
-        - Name (brief title)
-        - Description (what happens)
-        - Type (task, decision, or approval)
-        - Any mentioned assignee or duration
-        
-        Return JSON:
-        {
-          "extractedSteps": [
-            {
-              "name": "Step Name",
-              "description": "Description",
-              "type": "task|decision|approval",
-              "duration": "if mentioned",
-              "assignee": "if mentioned"
-            }
-          ],
-          "workflowName": "inferred name or null",
-          "workflowDescription": "inferred description or null"
-        }
-      `;
-      
-      const response = await this.llm.invoke(prompt);
-      const parsed = JSON.parse(response.content);
-      
-      console.log(`[WORKFLOW:PARSE] Extracted ${parsed.extractedSteps.length} steps`);
-      
-      // Store for hybrid mode
-      if (state.guidanceMode === "hybrid") {
-        return {
-          ...state,
-          userSteps: parsed.extractedSteps
-        };
-      }
-      
-      // Create workflow design for user-specified mode
-      return {
-        ...state,
-        workflowDesign: {
-          name: parsed.workflowName || "Custom Workflow",
-          description: parsed.workflowDescription || "User-defined workflow",
-          steps: parsed.extractedSteps
-        }
-      };
-      
     } catch (error) {
-      console.error("[WORKFLOW:PARSE] Error parsing steps:", error);
+      console.error("[WORKFLOW:GENERATE] Error generating workflow:", error);
       return {
         ...state,
-        error: `Failed to parse steps: ${error.message}`
-      };
-    }
-  }
-
-  /**
-   * Merge user steps with best practices
-   */
-  async mergeHybrid(state) {
-    console.log("[WORKFLOW:MERGE] Merging user steps with best practices");
-    
-    try {
-      const userSteps = state.userSteps || [];
-      const bestPractices = state.bestPractices || [];
-      
-      const prompt = `
-        Merge these user-defined steps with best practices:
-        
-        User Steps (preserve these):
-        ${JSON.stringify(userSteps, null, 2)}
-        
-        Best Practice Steps (enhance with these):
-        ${JSON.stringify(bestPractices, null, 2)}
-        
-        Rules:
-        1. Keep all user steps in their original order
-        2. Add missing best practice steps where appropriate
-        3. Don't duplicate similar steps
-        4. Add compliance/safety steps if missing
-        5. Maximum ${this.maxSteps} total steps
-        6. Mark which steps are user-defined vs added
-        
-        Return JSON:
-        {
-          "name": "Merged Workflow Name",
-          "description": "Description",
-          "steps": [
-            {
-              "name": "Step Name",
-              "description": "Description",
-              "type": "task|decision|approval",
-              "duration": "time",
-              "assignee": "role",
-              "source": "user|bestpractice|merged"
-            }
-          ],
-          "enhancements": ["list of enhancements made"]
-        }
-      `;
-      
-      const response = await this.llm.invoke(prompt);
-      const merged = JSON.parse(response.content);
-      
-      console.log(`[WORKFLOW:MERGE] Merged to ${merged.steps.length} steps`);
-      console.log("[WORKFLOW:MERGE] Enhancements:", merged.enhancements);
-      
-      return {
-        ...state,
-        workflowDesign: merged
-      };
-      
-    } catch (error) {
-      console.error("[WORKFLOW:MERGE] Error merging workflows:", error);
-      return {
-        ...state,
-        error: `Failed to merge workflows: ${error.message}`
+        error: `Failed to generate workflow: ${error.message}`
       };
     }
   }
@@ -556,64 +296,43 @@ class WorkflowSubgraph {
    */
   async validateWorkflow(state) {
     console.log("[WORKFLOW:VALIDATE] Validating workflow");
-    
+
     if (!state.workflowDesign) {
       return {
         ...state,
         error: "No workflow design to validate"
       };
     }
-    
+
     const errors = [];
     const design = state.workflowDesign;
-    
+
     // Check step count
     if (!design.steps || design.steps.length === 0) {
       errors.push("Workflow must have at least one step");
     } else if (design.steps.length > this.maxSteps) {
       errors.push(`Workflow exceeds maximum of ${this.maxSteps} steps`);
     }
-    
+
     // Validate each step
     design.steps?.forEach((step, index) => {
       if (!step.name) {
         errors.push(`Step ${index + 1} is missing a name`);
       }
-      if (!step.type || !['task', 'decision', 'approval'].includes(step.type)) {
-        errors.push(`Step ${index + 1} has invalid type: ${step.type}`);
+      if (!step.type || !['task', 'appointment'].includes(step.type.toLowerCase())) {
+        errors.push(`Step ${index + 1} has invalid type: ${step.type}. Must be 'task' or 'appointment'`);
       }
     });
-    
-    // Check for required compliance steps (if financial domain)
-    if (state.workflowDomain?.toLowerCase().includes('financial')) {
-      const hasCompliance = design.steps?.some(s => 
-        s.name?.toLowerCase().includes('compliance') ||
-        s.name?.toLowerCase().includes('regulatory')
-      );
-      if (!hasCompliance) {
-        console.log("[WORKFLOW:VALIDATE] Adding compliance step for financial workflow");
-        // Auto-add compliance step
-        design.steps.push({
-          name: "Compliance Review",
-          description: "Ensure regulatory compliance",
-          type: "approval",
-          duration: "1 day",
-          assignee: "Compliance Officer",
-          source: "bestpractice"
-        });
-      }
-    }
-    
+
     if (errors.length > 0) {
       console.log("[WORKFLOW:VALIDATE] Validation errors:", errors);
     } else {
       console.log("[WORKFLOW:VALIDATE] Validation passed");
     }
-    
+
     return {
       ...state,
-      validationErrors: errors,
-      workflowDesign: design
+      validationErrors: errors
     };
   }
 
@@ -622,16 +341,16 @@ class WorkflowSubgraph {
    */
   async generatePreview(state) {
     console.log("[WORKFLOW:PREVIEW] Generating workflow preview");
-    
+
     if (!state.workflowDesign) {
       return {
         ...state,
         error: "No workflow to preview"
       };
     }
-    
+
     const design = state.workflowDesign;
-    
+
     // Create preview structure
     const preview = {
       type: "workflow",
@@ -647,12 +366,10 @@ class WorkflowSubgraph {
           name: step.name,
           type: step.type,
           duration: step.duration,
-          assignee: step.assignee,
-          source: step.source // Shows if user-defined or added
+          assignee: step.assignee
         })),
         validationErrors: state.validationErrors,
-        guidanceMode: state.guidanceMode,
-        enhancements: design.enhancements
+        reasoning: design.reasoning
       },
       // Add spec for UI rendering
       spec: {
@@ -664,18 +381,15 @@ class WorkflowSubgraph {
         }))
       }
     };
-    
+
     // Add warnings if any
     preview.warnings = [];
     if (state.validationErrors?.length > 0) {
       preview.warnings.push(...state.validationErrors);
     }
-    if (design.steps?.length > 15) {
-      preview.warnings.push(`Workflow has ${design.steps.length} steps (consider simplifying)`);
-    }
-    
+
     console.log("[WORKFLOW:PREVIEW] Preview generated");
-    
+
     return {
       ...state,
       preview
@@ -687,34 +401,41 @@ class WorkflowSubgraph {
    */
   async waitForApproval(state) {
     console.log("[WORKFLOW:APPROVAL] Requesting user approval");
-    
-    try {
-      // Increment refinement attempts
-      const attempts = (state.refinementAttempts || 0) + 1;
-      
-      // Throw interrupt for approval
-      throw interrupt({
-        value: {
-          type: "workflow_approval",
-          message: `Please review the ${state.guidanceMode} workflow:`,
-          previews: [state.preview],
-          refinementAttempt: attempts,
-          maxRefinements: this.maxRefinements
-        }
-      });
-      
-    } catch (error) {
-      // If it's an interrupt, re-throw it
-      if (error.name === "Interrupt") {
-        throw error;
-      }
-      
-      console.error("[WORKFLOW:APPROVAL] Error:", error);
+
+    // Check if we're resuming from an approval decision
+    if (state.approval_decision) {
+      console.log(`[WORKFLOW:APPROVAL] Resuming with decision: ${state.approval_decision}`);
       return {
         ...state,
-        error: `Approval failed: ${error.message}`
+        approved: state.approval_decision === 'approve',
+        rejected: state.approval_decision === 'reject',
+        requiresApproval: false  // Clear the flag
       };
     }
+
+    if (!state.preview) {
+      console.log("[WORKFLOW:APPROVAL] No preview available, auto-approving");
+      return { ...state, approved: true };
+    }
+
+    // Return approval request structure
+    console.log("[WORKFLOW:APPROVAL] Returning approval request for coordinator to handle");
+
+    return {
+      ...state,
+      requiresApproval: true,
+      approvalRequest: {
+        domain: 'workflow',
+        type: 'approval_required',
+        actionId: `workflow_${Date.now()}`,
+        action: 'create',
+        preview: state.preview,
+        data: state.workflowDesign,
+        message: `Please review the workflow:`,
+        thread_id: state.thread_id || null
+      },
+      approved: false
+    };
   }
 
   /**
@@ -723,49 +444,93 @@ class WorkflowSubgraph {
   async createWorkflow(state, config) {
     console.log("[WORKFLOW:CREATE] Creating workflow in BSA");
     this.metrics.startTimer("workflow_creation");
-    
+
     try {
       const passKey = await config.configurable.getPassKey();
       const design = state.workflowDesign;
-      
+
       // Create main workflow
-      const workflowData = {
-        name: design.name,
-        description: design.description,
-        type: "standard",
-        status: "active"
-      };
-      
       const workflowResult = await this.errorHandler.executeWithRetry(
-        async () => await createWorkflow(workflowData, passKey),
+        async () => await createWorkflow(
+          design.name,
+          design.description,
+          passKey,
+          state.org_id || config.configurable.org_id
+        ),
         {
           operation: "create_workflow",
           maxRetries: 2,
           circuitBreakerKey: "bsa_workflow"
         }
       );
-      
+
       const workflowId = workflowResult.id || workflowResult.Id;
       console.log(`[WORKFLOW:CREATE] Created workflow ${workflowId}`);
-      
-      // Add steps
+
+      // Add steps sequentially
       if (design.steps?.length > 0) {
-        const stepsResult = await this.errorHandler.executeWithRetry(
-          async () => await addWorkflowSteps(workflowId, design.steps, passKey),
-          {
-            operation: "add_workflow_steps",
-            maxRetries: 2,
-            circuitBreakerKey: "bsa_workflow"
+        const orgId = state.org_id || config.configurable.org_id;
+        let addedCount = 0;
+        for (let i = 0; i < design.steps.length; i++) {
+          const step = design.steps[i];
+          const stepData = {
+            sequence: i + 1,
+            subject: step.name || `Step ${i + 1}`,
+            description: step.description || "",
+            activityType: (step.type && step.type.toLowerCase().includes('appointment')) ? 'Appointment' : 'Task',
+            dayOffset: typeof step.dayOffset === 'number' ? step.dayOffset : 0,
+            assigneeType: (step.assignee && /assistant/i.test(step.assignee)) ? 'ContactsOwnersAssistant' : 'ContactsOwner',
+            rollOver: true,
+            allDay: ((step.type || '').toLowerCase() === 'task')
+          };
+
+          try {
+            await this.errorHandler.executeWithRetry(
+              async () => await addWorkflowStep(workflowId, stepData, passKey, orgId),
+              {
+                operation: 'add_workflow_step',
+                maxRetries: 2,
+                circuitBreakerKey: 'bsa_workflow'
+              }
+            );
+            addedCount += 1;
+          } catch (e) {
+            console.error(`[WORKFLOW:CREATE] Failed to add step ${i + 1}:`, e.message);
           }
-        );
-        
-        console.log(`[WORKFLOW:CREATE] Added ${design.steps.length} steps`);
+        }
+        console.log(`[WORKFLOW:CREATE] Added ${addedCount}/${design.steps.length} steps`);
       }
-      
-      this.metrics.endTimer("workflow_creation", true, { 
-        steps: design.steps?.length || 0 
+
+      this.metrics.endTimer("workflow_creation", true, {
+        steps: design.steps?.length || 0
       });
-      
+
+      // Store workflow info for memory
+      if (this.mem0.client) {
+        try {
+          const memoryContent = `
+            Created workflow: ${design.name}
+            Description: ${design.description}
+            Steps: ${design.steps?.map(s => s.name).join(', ')}
+            Total steps: ${design.steps?.length}
+          `;
+
+          await this.mem0.synthesize(
+            memoryContent,
+            state.org_id || "default-org",
+            state.user_id || "default-user",
+            {
+              type: "workflow_created",
+              workflowId: workflowId,
+              stepCount: design.steps?.length
+            }
+          );
+        } catch (error) {
+          console.error("[WORKFLOW:CREATE] Error storing memory:", error);
+          // Continue without storing
+        }
+      }
+
       return {
         ...state,
         workflowId,
@@ -791,11 +556,11 @@ class WorkflowSubgraph {
           }
         }
       };
-      
+
     } catch (error) {
       console.error("[WORKFLOW:CREATE] Error creating workflow:", error);
       this.metrics.endTimer("workflow_creation", false, { error: error.message });
-      
+
       return {
         ...state,
         error: `Failed to create workflow: ${error.message}`
@@ -804,121 +569,44 @@ class WorkflowSubgraph {
   }
 
   /**
-   * Link contacts to workflow if any
-   */
-  async linkContacts(state, config) {
-    console.log("[WORKFLOW:LINK] Checking for contacts to link");
-    
-    if (!state.workflowId || !state.entities) {
-      return state;
-    }
-    
-    try {
-      const passKey = await config.configurable.getPassKey();
-      
-      // Find contact entities
-      const contactIds = [];
-      for (const [key, entity] of Object.entries(state.entities)) {
-        if (entity.type === "contact" && entity.data?.id) {
-          contactIds.push(entity.data.id);
-        }
-      }
-      
-      if (contactIds.length > 0) {
-        console.log(`[WORKFLOW:LINK] Linking ${contactIds.length} contacts`);
-        
-        const result = await this.contactLinker.linkMultipleContacts(
-          "workflow",
-          state.workflowId,
-          contactIds,
-          passKey
-        );
-        
-        console.log(`[WORKFLOW:LINK] Linked ${result.successful} contacts`);
-      }
-      
-      return state;
-      
-    } catch (error) {
-      console.error("[WORKFLOW:LINK] Error linking contacts:", error);
-      // Continue without linking
-      return state;
-    }
-  }
-
-  /**
-   * Store successful workflow pattern in memory
-   */
-  async synthesizeMemory(state) {
-    console.log("[WORKFLOW:MEMORY] Synthesizing workflow memory");
-    
-    if (!state.workflowId || !state.workflowDesign || !this.mem0.client) {
-      return state;
-    }
-    
-    try {
-      const orgId = state.org_id || "default-org";
-      const userId = state.user_id || "default-user";
-      
-      // Create memory content
-      const memoryContent = `
-        Created ${state.guidanceMode} workflow: ${state.workflowDesign.name}
-        Domain: ${state.workflowDomain}
-        Steps: ${state.workflowDesign.steps?.map(s => s.name).join(', ')}
-        Total steps: ${state.workflowDesign.steps?.length}
-      `;
-      
-      await this.mem0.synthesize(
-        memoryContent,
-        orgId,
-        userId,
-        {
-          type: "workflow_pattern",
-          domain: state.workflowDomain,
-          guidanceMode: state.guidanceMode,
-          stepCount: state.workflowDesign.steps?.length
-        }
-      );
-      
-      console.log("[WORKFLOW:MEMORY] Pattern stored in memory");
-      
-      return state;
-      
-    } catch (error) {
-      console.error("[WORKFLOW:MEMORY] Error synthesizing memory:", error);
-      // Continue without storing
-      return state;
-    }
-  }
-
-  /**
    * Format final response
    */
   async formatResponse(state) {
     console.log("[WORKFLOW:RESPONSE] Formatting response");
-    
+
     if (state.error) {
       return {
         ...state,
         response: `Error: ${state.error}`
       };
     }
-    
+
+    // If approval is required, preserve the approval request
+    if (state.requiresApproval && state.approvalRequest) {
+      console.log("[WORKFLOW:RESPONSE] Approval pending - preserving approval request");
+      return {
+        ...state,
+        response: "Awaiting approval...",
+        requiresApproval: true,
+        approvalRequest: state.approvalRequest
+      };
+    }
+
     if (state.workflowId) {
       const design = state.workflowDesign;
       return {
         ...state,
-        response: `Successfully created ${state.guidanceMode} workflow "${design.name}" with ${design.steps?.length || 0} steps. Workflow ID: ${state.workflowId}`
+        response: `Successfully created workflow "${design.name}" with ${design.steps?.length || 0} steps. Workflow ID: ${state.workflowId}`
       };
     }
-    
-    if (!state.approved && state.refinementAttempts >= this.maxRefinements) {
+
+    if (state.rejected) {
       return {
         ...state,
-        response: "Workflow creation cancelled after maximum refinement attempts"
+        response: "Workflow creation cancelled by user"
       };
     }
-    
+
     return {
       ...state,
       response: "Workflow creation was not completed"
@@ -930,22 +618,25 @@ class WorkflowSubgraph {
    */
   async create(messages, context = {}) {
     console.log("[WORKFLOW] Creating workflow");
-    
+
     const initialState = {
       messages,
       memory_context: context.memory_context || {},
       entities: context.entities || {},
       org_id: context.org_id,
-      user_id: context.user_id
+      user_id: context.user_id,
+      session_id: context.session_id,
+      thread_id: context.thread_id,
+      timezone: context.timezone
     };
-    
+
     try {
       const result = await this.graph.invoke(initialState, {
         configurable: context.configurable || {}
       });
-      
+
       return result;
-      
+
     } catch (error) {
       console.error("[WORKFLOW] Error creating workflow:", error);
       return {

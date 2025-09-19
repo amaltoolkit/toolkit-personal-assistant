@@ -767,9 +767,16 @@ router.post('/approve', async (req, res) => {
         const { Command } = await import('@langchain/langgraph');
         console.log(`[AGENT:APPROVE:${requestId}] ✅ Command imported successfully in ${Date.now() - startTime}ms`);
 
-        // Merge the approval decision into the resume command
+        // Merge the approval decision into coordinator state on resume
+        // Without this, approval_handler doesn't see the decision and re-throws an interrupt
         const resumeCommand = new Command({
-          resume: resumePayload
+          // Deliver payload to the interrupted node (standard resume semantics)
+          resume: resumePayload,
+          // ALSO update coordinator state so approval_handler can detect the decision immediately
+          // and avoid throwing another interrupt on resume.
+          update: {
+            approval_decision: decision
+          }
         });
 
         const resumeConfig = checkpoint.config || config;

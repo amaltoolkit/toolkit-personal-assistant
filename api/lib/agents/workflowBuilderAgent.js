@@ -703,22 +703,12 @@ async function createWorkflowBuilderAgent(passKey, orgId, dependencies) {
     prompt
   });
   
-  // Configure executor with LangSmith tracing if available
   const executorConfig = {
     agent,
     tools,
     verbose: false,
     maxIterations: 25
   };
-  
-  // Add LangSmith metadata if tracing is enabled
-  if (process.env.LANGCHAIN_TRACING_V2 === 'true') {
-    executorConfig.tags = ['agent:workflow', `org:${orgId}`];
-    executorConfig.metadata = {
-      agent: 'workflow_builder',
-      orgId
-    };
-  }
   
   return new AgentExecutor(executorConfig);
 }

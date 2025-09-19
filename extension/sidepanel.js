@@ -796,77 +796,96 @@ function showApprovalUI(previews, threadId) {
   approvalDiv.className = 'approval-container';
   approvalDiv.id = `approval-${Date.now()}`;
   
-  // Add title
+  // Add title (minimal)
   const titleDiv = document.createElement('div');
   titleDiv.className = 'approval-title';
-  titleDiv.innerHTML = '<strong>🔍 Review and Approve Actions:</strong>';
+  titleDiv.textContent = 'Review:';
   approvalDiv.appendChild(titleDiv);
   
-  // Create approval cards
+  // Single-card layout
   const approvals = {};
+  const card = document.createElement('div');
+  card.className = 'approval-card';
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'approval-content';
+
   previews.forEach((preview, index) => {
-    const card = document.createElement('div');
-    card.className = 'approval-card';
-    
-    // Action type and ID
-    const headerDiv = document.createElement('div');
-    headerDiv.className = 'approval-header';
-    headerDiv.innerHTML = `
-      <span class="approval-type">${preview.type || preview.kind || 'Action'}</span>
-      <span class="approval-id">#${preview.actionId || index + 1}</span>
-    `;
-    card.appendChild(headerDiv);
-    
-    // Preview content
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'approval-content';
-    
-    // Format the preview - pass both spec and preview for proper handling
-    if (preview.spec || preview.details) {
-      const specHtml = formatPreviewSpec(preview.spec, preview);
-      contentDiv.innerHTML = specHtml;
-    } else {
-      contentDiv.textContent = JSON.stringify(preview, null, 2);
+    const item = preview && preview.preview ? preview.preview : preview;
+    const key = preview?.actionId || `action-${index}`;
+    approvals[key] = true;
+
+    let structured = item && (item.spec || item.details);
+    let derivedPreview = null;
+    if (!structured) {
+      const dataObj = preview?.data || item?.data;
+      const details = [];
+      const isAppointment = (item?.type || '').toLowerCase() === 'appointment';
+      if (isAppointment && dataObj) {
+        if (dataObj.startTime || dataObj.endTime) {
+          try {
+            const start = dataObj.startTime ? new Date(dataObj.startTime) : null;
+            const end = dataObj.endTime ? new Date(dataObj.endTime) : null;
+            const dateOpts = { year: 'numeric', month: 'short', day: 'numeric' };
+            const timeOpts = { hour: 'numeric', minute: '2-digit' };
+            const dateStr = start ? start.toLocaleDateString(undefined, dateOpts) : null;
+            const timeStr = start && end
+              ? `${start.toLocaleTimeString(undefined, timeOpts)} – ${end.toLocaleTimeString(undefined, timeOpts)}`
+              : start
+                ? start.toLocaleTimeString(undefined, timeOpts)
+                : '';
+            if (dateStr) details.push({ label: 'Date', value: dateStr });
+            if (timeStr) details.push({ label: 'Time', value: timeStr });
+          } catch (_) {}
+        }
+        if (dataObj.location) details.push({ label: 'Location', value: dataObj.location });
+        if (Array.isArray(dataObj.attendees) && dataObj.attendees.length > 0) {
+          details.push({ label: 'Attendees', value: dataObj.attendees.join(', ') });
+        }
+        if (details.length > 0) {
+          derivedPreview = {
+            type: item?.type || 'appointment',
+            title: item?.title || dataObj.subject || 'Appointment',
+            details
+          };
+          structured = true;
+        }
+      }
     }
-    card.appendChild(contentDiv);
-    
-    // Approval buttons
-    const buttonsDiv = document.createElement('div');
-    buttonsDiv.className = 'approval-buttons';
-    
-    const approveBtn = document.createElement('button');
-    approveBtn.className = 'approve-btn';
-    approveBtn.textContent = '✓ Approve';
-    approveBtn.dataset.actionId = preview.actionId || `action-${index}`;
-    
-    const rejectBtn = document.createElement('button');
-    rejectBtn.className = 'reject-btn';
-    rejectBtn.textContent = '✗ Reject';
-    rejectBtn.dataset.actionId = preview.actionId || `action-${index}`;
-    
-    // Set default to approve
-    approvals[preview.actionId || `action-${index}`] = true;
-    approveBtn.classList.add('selected');
-    
-    // Button event handlers
-    approveBtn.onclick = () => {
-      approvals[approveBtn.dataset.actionId] = true;
-      approveBtn.classList.add('selected');
-      rejectBtn.classList.remove('selected');
-    };
-    
-    rejectBtn.onclick = () => {
-      approvals[rejectBtn.dataset.actionId] = false;
-      rejectBtn.classList.add('selected');
-      approveBtn.classList.remove('selected');
-    };
-    
-    buttonsDiv.appendChild(approveBtn);
-    buttonsDiv.appendChild(rejectBtn);
-    card.appendChild(buttonsDiv);
-    
-    approvalDiv.appendChild(card);
+
+    const displayPreview = structured ? (derivedPreview || item) : null;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'spec-details';
+    if (displayPreview) {
+      wrapper.innerHTML = formatPreviewSpec(displayPreview.spec, displayPreview);
+    } else {
+      const title = item?.title || item?.name || item?.subject || 'Action';
+      wrapper.innerHTML = `
+        <div class="preview-title"><strong>${escapeHtml(title)}</strong></div>
+        <div class="preview-detail">No additional details available.</div>
+      `;
+    }
+    contentDiv.appendChild(wrapper);
   });
+
+  card.appendChild(contentDiv);
+
+  // Global buttons that apply to all items
+  const buttonsDiv = document.createElement('div');
+  buttonsDiv.className = 'approval-buttons';
+  const approveBtn = document.createElement('button');
+  approveBtn.className = 'approve-btn selected';
+  approveBtn.textContent = '✓ Approve';
+  const rejectBtn = document.createElement('button');
+  rejectBtn.className = 'reject-btn';
+  rejectBtn.textContent = '✗ Reject';
+  approveBtn.onclick = () => { Object.keys(approvals).forEach(k => approvals[k] = true); approveBtn.classList.add('selected'); rejectBtn.classList.remove('selected'); };
+  rejectBtn.onclick = () => { Object.keys(approvals).forEach(k => approvals[k] = false); rejectBtn.classList.add('selected'); approveBtn.classList.remove('selected'); };
+  buttonsDiv.appendChild(approveBtn);
+  buttonsDiv.appendChild(rejectBtn);
+  card.appendChild(buttonsDiv);
+
+  approvalDiv.appendChild(card);
   
   // Submit button
   const submitDiv = document.createElement('div');
@@ -874,7 +893,7 @@ function showApprovalUI(previews, threadId) {
   
   const submitBtn = document.createElement('button');
   submitBtn.className = 'submit-approval-btn';
-  submitBtn.textContent = 'Submit Decisions';
+  submitBtn.textContent = 'Confirm';
   submitBtn.onclick = () => handleApprovalSubmit(approvals, approvalDiv.id);
   
   submitDiv.appendChild(submitBtn);
@@ -925,6 +944,83 @@ function formatPreviewSpec(spec, preview) {
     preview.details.forEach(detail => {
       html += `<div class="preview-detail"><strong>${detail.label}:</strong> ${detail.value}</div>`;
     });
+
+    html += '</div>';
+    return html;
+  }
+
+  // Handle workflow previews
+  if (preview?.type === 'workflow' && preview?.details) {
+    let html = '<div class="spec-details">';
+
+    // Add title
+    if (preview.title) {
+      html += `<div class="preview-title"><strong>${preview.title}</strong></div>`;
+    }
+
+    // Add main details (description, step count, etc.)
+    if (preview.details.description) {
+      html += `<div class="preview-detail"><strong>Description:</strong> ${preview.details.description}</div>`;
+    }
+    if (preview.details.stepCount) {
+      html += `<div class="preview-detail"><strong>Total Steps:</strong> ${preview.details.stepCount}</div>`;
+    }
+    if (preview.details.totalDuration) {
+      html += `<div class="preview-detail"><strong>Estimated Duration:</strong> ${preview.details.totalDuration}</div>`;
+    }
+    if (preview.details.guidanceMode) {
+      html += `<div class="preview-detail"><strong>Mode:</strong> ${preview.details.guidanceMode}</div>`;
+    }
+
+    // Add workflow steps if available
+    if (preview.details.steps && preview.details.steps.length > 0) {
+      html += '<div class="workflow-steps-section">';
+      html += '<div class="steps-header"><strong>Workflow Steps:</strong></div>';
+      html += '<ol class="workflow-steps-list">';
+
+      preview.details.steps.forEach(step => {
+        html += '<li class="workflow-step-item">';
+        html += `<span class="step-name"><strong>${escapeHtml(step.name)}</strong></span>`;
+        if (step.type) {
+          html += ` <span class="step-type">[${step.type}]</span>`;
+        }
+        if (step.duration) {
+          html += ` <span class="step-duration">(${step.duration})</span>`;
+        }
+        if (step.assignee) {
+          html += `<br><span class="step-assignee">Assigned to: ${escapeHtml(step.assignee)}</span>`;
+        }
+        if (step.source) {
+          html += ` <span class="step-source">(${step.source})</span>`;
+        }
+        html += '</li>';
+      });
+
+      html += '</ol>';
+      html += '</div>';
+    }
+
+    // Add enhancements if any (for hybrid mode)
+    if (preview.details.enhancements && preview.details.enhancements.length > 0) {
+      html += '<div class="workflow-enhancements">';
+      html += '<div class="enhancements-header"><strong>Enhancements Applied:</strong></div>';
+      html += '<ul>';
+      preview.details.enhancements.forEach(enhancement => {
+        html += `<li>${escapeHtml(enhancement)}</li>`;
+      });
+      html += '</ul>';
+      html += '</div>';
+    }
+
+    // Add validation errors/warnings
+    if (preview.warnings && preview.warnings.length > 0) {
+      html += '<div class="preview-warnings">';
+      html += '<div class="warning-header">⚠️ <strong>Warnings:</strong></div>';
+      preview.warnings.forEach(warning => {
+        html += `<div class="warning-item">${escapeHtml(warning)}</div>`;
+      });
+      html += '</div>';
+    }
 
     html += '</div>';
     return html;

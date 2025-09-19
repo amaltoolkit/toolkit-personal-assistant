@@ -11,28 +11,6 @@ These are NOT replacements for each other. The PostgreSQL checkpointer remains t
 
 This document outlines the complete migration from our current complex orchestrator architecture to a streamlined domain-based subgraph system. The new architecture reduces complexity while maintaining all functionality, improves performance by 3x for simple queries, and provides clear domain boundaries for better maintainability.
 
-## Current Status (2025-01-14)
-
-### ✅ What's Working
-- **V2 Architecture Enabled**: USE_V2_ARCHITECTURE=true in .env
-- **Mem0 Integration Verified**: API connection tested and working
-- **Core Services Implemented**: All services and subgraphs created
-- **UI Components Integrated**: Approval and contact disambiguation UIs ready
-- **Memory Migration Ready**: 107 memories identified for migration
-- **Coordinator Fixed**: Critical syntax errors resolved
-
-### 🚧 Immediate Next Steps
-1. **Run Memory Migration**: Execute `node api/scripts/migrate-memories-to-mem0.js`
-2. **Test with Real Session**: Need actual authentication for PassKey testing
-3. **Complete Week 4 Tasks**: Entity System and Multi-Domain Planner
-4. **Performance Testing**: Benchmark V1 vs V2 performance
-5. **Production Deployment**: Prepare for gradual rollout
-
-### ⚠️ Known Issues
-- PassKey tests fail without proper session context (expected behavior)
-- Some test infrastructure still needs setup (PostgreSQL test DB)
-- CI/CD pipeline not yet configured
-
 ## Current State Analysis
 
 ### What We Have Now
@@ -216,19 +194,14 @@ class ContactResolver {
       }
     }
 
-    // Search BSA contacts using correct endpoint
+    // Search BSA contacts
     const response = await axios.post(
-      `${process.env.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/search.json`,
+      `${process.env.BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.portal.VCPortalEndpoint/doRetrieveCRMData.json`,
       {
-        IncludeExtendedProperties: false,
-        OrderBy: "LastName, FirstName",
-        AscendingOrder: true,
-        ResultsPerPage: limit,
-        OrganizationId: orgId,
-        PassKey: passKey,
-        SearchTerm: query,
-        PageOffset: 1,
-        ObjectName: "contact"
+        entity: "Contact",
+        searchText: query,
+        maxResults: limit,
+        fields: ["id", "name", "email", "phone", "company"]
       },
       {
         headers: {
@@ -258,23 +231,22 @@ class ContactResolver {
     // Use context to score candidates
     const scored = candidates.map(contact => {
       let score = 0;
-
-      // Check if mentioned in context (using BSA field names)
-      const fullName = contact.FullName || `${contact.FirstName} ${contact.LastName}`;
-      if (context.toLowerCase().includes(fullName.toLowerCase())) {
+      
+      // Check if mentioned in context
+      if (context.toLowerCase().includes(contact.name.toLowerCase())) {
         score += 10;
       }
-
-      // Check if company mentioned (CompanyName in BSA)
-      if (contact.CompanyName && context.toLowerCase().includes(contact.CompanyName.toLowerCase())) {
+      
+      // Check if company mentioned
+      if (contact.company && context.toLowerCase().includes(contact.company.toLowerCase())) {
         score += 5;
       }
-
-      // Check for email domain match (EMailAddress1 in BSA)
-      if (contact.EMailAddress1 && context.includes(contact.EMailAddress1.split('@')[1])) {
+      
+      // Check for email domain match
+      if (contact.email && context.includes(contact.email.split('@')[1])) {
         score += 3;
       }
-
+      
       return { ...contact, score };
     });
 
@@ -1252,18 +1224,14 @@ async function searchBSAContacts(state, config) {
   
   const passKey = await getPassKey();
   
-  // Search BSA contacts using correct endpoint
-  const searchEndpoint = '/endpoints/ajax/com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/search.json';
+  // Search BSA contacts
+  const searchEndpoint = '/endpoints/ajax/com.platform.vc.endpoints.directory.ContactDirectoryEndpoint/search.json';
   const searchPayload = {
-    IncludeExtendedProperties: false,
-    OrderBy: "LastName, FirstName",
-    AscendingOrder: true,
-    ResultsPerPage: 10,
-    OrganizationId: config?.configurable?.orgId,
-    PassKey: passKey,
-    SearchTerm: searchQuery,
-    PageOffset: 1,
-    ObjectName: "contact"
+    criteria: {
+      name: searchQuery,
+      includeInactive: false
+    },
+    limit: 10
   };
   
   const response = await callBSAAPI(passKey, searchEndpoint, searchPayload);
@@ -1273,14 +1241,13 @@ async function searchBSAContacts(state, config) {
   
   return {
     candidates: contacts.map(c => ({
-      id: c.Id,
-      name: c.FullName || `${c.FirstName || ''} ${c.LastName || ''}`.trim(),
-      email: c.EMailAddress1,
-      phone: c.Telephone1,
-      mobile: c.MobilePhone,
-      company: c.CompanyName,
-      role: c.JobTitle,
-      lastInteraction: c.ClientSince
+      id: c.contactId,
+      name: c.displayName,
+      email: c.email,
+      phone: c.phone,
+      company: c.company,
+      role: c.title,
+      lastInteraction: c.lastActivityDate
     }))
   };
 }
@@ -2639,23 +2606,7 @@ module.exports = {
 
 ## Implementation Checklist (Comprehensive)
 
-### Recently Completed
-#### 2025-09-13 (Latest Session)
-- ✅ **Enhanced Date/Time Parser** (`/api/lib/dateParser.js`) - Added time extraction and timezone-aware parsing for queries like "tomorrow at 8am"
-- ✅ **Calendar Subgraph Update** (`/api/subgraphs/calendar.js`) - Integrated enhanced date/time parsing for natural language processing
-- ✅ **Lightweight Planner** (`/api/services/planner.js`) - Implemented dependency analysis and execution planning for multi-domain queries
-- ✅ **Coordinator Integration** (`/api/coordinator/index.js`) - Integrated lightweight planner, replaced LLM routing with pattern-based analysis
-- ✅ **Contact Subgraph Exists** (`/api/subgraphs/contact.js`) - Comprehensive contact resolution with disambiguation already implemented
-- ✅ **Complete Flow Test** (`/api/test/test-appointment-flow.js`) - Verified "create appointment with John for 8am tomorrow" works correctly
-
-#### 2025-01-14 (Previous Session)
-- ✅ **Mem0 Service Test** (`/api/test/test-mem0-connection.js`) - Verified Mem0 API connection with recall, synthesis, history, and deletion
-- ✅ **V2 Coordinator Test** (`/api/test/test-v2-coordinator.js`) - Created comprehensive test suite for domain routing and coordinator functionality
-- ✅ **Coordinator Syntax Fixes** (`/api/coordinator/index.js`) - Fixed critical syntax errors (misplaced catch blocks at lines 353 and 387)
-- ✅ **UI Component Integration** - Added approval and contact disambiguation containers to sidepanel.html with CSS/JS references
-- ✅ **Memory Migration Script** (`/api/scripts/migrate-memories-to-mem0.js`) - Created script for migrating 107 memories from ltm_memories to Mem0
-- ✅ **V2 Architecture Enabled** - Set USE_V2_ARCHITECTURE=true in .env for development testing
-
+### Recently Completed 
 #### 2025-01-13
 - ✅ **ContactSubgraph** (`/api/subgraphs/contact.js`) - Complete contact resolution with caching, scoring, and disambiguation
 - ✅ **ContactLinker Service** (`/api/services/contactLinker.js`) - Batch linking of contacts to activities with error recovery
@@ -2673,10 +2624,10 @@ module.exports = {
 - [x] Sign up at app.mem0.ai and get API key
 - [x] Add `MEM0_API_KEY` to .env
 - [x] Install mem0ai npm package
-- [x] ✅ Verify Mem0 connection with test script (test-mem0-connection.js created and working)
+- [x] Verify Mem0 connection with test script
 - [ ] Set up PostgreSQL test database
-- [x] ✅ Configure test environment variables (MEM0_API_KEY and other env vars configured)
-- [x] ✅ Set up local development environment
+- [ ] Configure test environment variables
+- [ ] Set up local development environment
 - [ ] Configure IDE with debugging
 
 #### Code Extraction & Modularization  
@@ -2699,7 +2650,7 @@ module.exports = {
 - [ ] Set up development database
 - [x] Document state compatibility requirements
 - [x] Install WebSocket dependencies (`ws` package)
-- [x] ✅ Update manifest.json to include new JS/CSS resources (web_accessible_resources added)
+- [ ] Update manifest.json to include new JS/CSS resources
 
 ### Week 1: Foundation & Services
 
@@ -2709,7 +2660,6 @@ module.exports = {
   - [x] Extract createAppointment with validation
   - [x] Extract updateAppointment with conflict detection
   - [x] Extract deleteAppointment with cascade handling
-  - [x] ✅ Enhanced date/time parsing with timezone support (2025-09-13)
   - [ ] Add appointment search functionality
   - [ ] Create appointment templates
   - [ ] Write unit tests (target: 90% coverage)
@@ -2813,16 +2763,16 @@ module.exports = {
   - [x] Add automatic reconnection logic
   - [x] Create WebSocket authentication via session_id
   - [x] Create `/api/websocket/pollingFallback.js` for production environment
-  - [x] ✅ Write WebSocket unit tests (WebSocket infrastructure already in place and tested)
+  - [ ] Write WebSocket unit tests
 
 - [x] **Frontend Infrastructure for UI Components**
   - [x] Create `/extension/js/websocketClient.js` for real-time interrupts
   - [x] Set up base UI component structure
   - [x] Create `/extension/components/approvalUI.js` for workflow/task approvals
-  - [x] ✅ Create `/extension/components/contactDisambiguation.js` for contact selection
+  - [ ] Create `/extension/components/contactDisambiguation.js` for contact selection
   - [x] Add base CSS files for both UI components
-  - [x] ✅ Update sidepanel.html to include UI containers (approval-container and contact-disambiguation-container added)
-  - [x] ✅ Update manifest.json with new resources (web_accessible_resources configured)
+  - [ ] Update sidepanel.html to include UI containers
+  - [ ] Update manifest.json with new resources
 
 #### Day 2: Approval UI Implementation (Accept/Reject/Modify)
 - [x] **ApprovalUI Component** (`/extension/components/approvalUI.js`)
@@ -3005,13 +2955,6 @@ module.exports = {
 ### Week 4: Multi-Domain Coordination & Entity System
 
 #### Day 1-2: Enhanced Context Sharing & Entity System
-- [x] **Lightweight Planner Implementation** (Completed 2025-09-13)
-  - [x] Create domain detection logic with pattern matching
-  - [x] Implement dependency analysis with DEPENDENCY_RULES
-  - [x] Add execution order optimization with topological sort
-  - [x] Create plan validation for circular dependencies
-  - [x] Handle inter-domain references and entity extraction
-  - [x] Export analyzeQuery, buildExecutionPlan, createExecutionPlan functions
 - [ ] **Enhanced Context Sharing Implementation**
   - [ ] Update entity schema to include semantic_tags and subject fields
   - [ ] Implement resolveReferencesWithContext function
@@ -3041,12 +2984,12 @@ module.exports = {
   - [ ] Implement linker type resolution helpers
 
 #### Day 3: Multi-Domain Planner & Executor
-- [x] **Lightweight Planner Implementation** (Completed 2025-09-13 - moved from Day 1-2)
-  - [x] Create domain detection logic
-  - [x] Implement dependency analysis
-  - [x] Add execution order optimization
-  - [x] Create plan validation
-  - [x] Handle inter-domain references
+- [ ] **Lightweight Planner Implementation**
+  - [ ] Create domain detection logic
+  - [ ] Implement dependency analysis
+  - [ ] Add execution order optimization
+  - [ ] Create plan validation
+  - [ ] Handle inter-domain references
 
 - [ ] **Execution Strategies**
   - [ ] Implement sequential executor for dependent tasks

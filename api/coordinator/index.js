@@ -11,7 +11,12 @@ const { getMem0Service } = require("../services/mem0Service");
 const { getPassKeyManager } = require("../services/passKeyManager");
 const { getErrorHandler } = require("../services/errorHandler");
 const { getPerformanceMetrics } = require("./metrics");
-const { createExecutionPlan, validateExecutionPlan } = require("../services/planner");
+const { createExecutionPlan, validateExecutionPlan } = require("../services/llmPlanner");
+
+const langSmithEnabled = process.env.LANGCHAIN_TRACING_V2 === 'true' && !!process.env.LANGCHAIN_API_KEY;
+if (langSmithEnabled) {
+  console.log('[COORDINATOR:TRACING] LangSmith tracing enabled for V2 architecture:', process.env.LANGCHAIN_PROJECT || 'default');
+}
 
 // State definition for the coordinator
 // Using plain object definition for LangGraph compatibility
@@ -33,7 +38,8 @@ const CoordinatorStateChannels = {
     default: () => null
   },
   subgraph_results: {
-    value: (x, y) => y ? y : x,
+    // Allow explicit clearing with {}
+    value: (x, y) => (y !== undefined ? y : x),
     default: () => ({})
   },
   entities: {
@@ -45,7 +51,7 @@ const CoordinatorStateChannels = {
     default: () => ""
   },
   error: {
-    value: (x, y) => y ? y : x,
+    value: (x, y) => (y !== undefined ? y : x),
     default: () => null
   },
   // Context fields that need to be preserved through the coordinator flow
@@ -70,12 +76,13 @@ const CoordinatorStateChannels = {
     default: () => 'UTC'
   },
   // Approval-related fields
+  // Use explicit undefined check so we can clear by setting null/false
   approval_decision: {
-    value: (x, y) => y ? y : x,
+    value: (x, y) => (y !== undefined ? y : x),
     default: () => null
   },
   pendingApproval: {
-    value: (x, y) => y ? y : x,
+    value: (x, y) => (y !== undefined ? y : x),
     default: () => null
   }
 };
@@ -92,6 +99,7 @@ class Coordinator {
     this.errorHandler = getErrorHandler();
     this.metrics = getPerformanceMetrics();
     this.checkpointer = checkpointer;
+    this.tracingEnabled = langSmithEnabled;
     
     // Initialize domain subgraphs (will be loaded dynamically)
     this.subgraphs = new Map();
@@ -191,7 +199,94 @@ class Coordinator {
       console.log("[COORDINATOR] Compiling graph with checkpointer");
     }
 
+    if (this.tracingEnabled) {
+      const tags = ['architecture:v2'];
+      if (process.env.LANGCHAIN_PROJECT) {
+        tags.push(`project:${process.env.LANGCHAIN_PROJECT}`);
+      }
+
+      compileOptions.tags = tags;
+      compileOptions.metadata = {
+        architecture: 'v2',
+        project: process.env.LANGCHAIN_PROJECT || 'default'
+      };
+    }
+
     return workflow.compile(compileOptions);
+  }
+
+  buildRunConfig(baseConfig, context = {}, options = {}) {
+    if (!this.tracingEnabled) {
+      return baseConfig;
+    }
+
+    const config = {
+      ...baseConfig,
+      configurable: { ...(baseConfig.configurable || {}) }
+    };
+
+    const tags = ['architecture:v2'];
+    const metadata = {
+      architecture: 'v2'
+    };
+
+    if (process.env.LANGCHAIN_PROJECT) {
+      const projectTag = `project:${process.env.LANGCHAIN_PROJECT}`;
+      tags.push(projectTag);
+      metadata.project = process.env.LANGCHAIN_PROJECT;
+    }
+
+    if (context.org_id) {
+      tags.push(`org:${context.org_id}`);
+      metadata.orgId = context.org_id;
+    }
+
+    if (context.user_id) {
+      metadata.userId = context.user_id;
+    }
+
+    if (context.session_id) {
+      tags.push(`session:${context.session_id}`);
+      metadata.sessionId = context.session_id;
+    }
+
+    if (context.timezone) {
+      tags.push(`timezone:${context.timezone}`);
+      metadata.timezone = context.timezone;
+    }
+
+    if (options.domain) {
+      tags.push(`domain:${options.domain}`);
+      metadata.domain = options.domain;
+    }
+
+    if (options.runType) {
+      tags.push(`run:${options.runType}`);
+      metadata.runType = options.runType;
+    }
+
+    if (typeof options.stepIndex === 'number') {
+      metadata.stepIndex = options.stepIndex;
+    }
+
+    if (options.query) {
+      metadata.query = options.query.slice(0, 200);
+    }
+
+    if (options.approvalDecision) {
+      metadata.approvalDecision = options.approvalDecision;
+    }
+
+    if (options.resume) {
+      metadata.resume = true;
+    }
+
+    const runNamePrefix = options.runNamePrefix || (options.domain ? `subgraph_${options.domain}` : 'coordinator');
+    config.runName = `${runNamePrefix}_${Date.now()}`;
+    config.tags = Array.from(new Set(tags));
+    config.metadata = metadata;
+
+    return config;
   }
 
   /**
@@ -293,7 +388,7 @@ class Coordinator {
 
     try {
       // Use the lightweight planner to analyze and create execution plan
-      const executionPlan = createExecutionPlan(
+      const executionPlan = await createExecutionPlan(
         lastMessage.content,
         state.memory_context
       );
@@ -333,7 +428,8 @@ class Coordinator {
       return {
         ...state,
         domains,
-        execution_plan: executionPlan
+        execution_plan: executionPlan,
+        error: null
       };
       
     } catch (error) {
@@ -486,14 +582,28 @@ class Coordinator {
           // Create config for subgraph with unique namespace
           // Use same thread_id as parent for interrupt propagation
           // Namespace provides isolation to prevent checkpoint conflicts
-          const subgraphConfig = {
+          const subgraphConfigBase = {
             configurable: {
               ...config.configurable,
               // Unique namespace for this subgraph's checkpoints
               checkpoint_ns: `${domain}_subgraph`
-              // Keep parent's thread_id for interrupt propagation
             }
           };
+
+          const userMessage = Array.isArray(subgraphState.messages)
+            ? [...subgraphState.messages].reverse().find(m => m?.role === 'user')
+            : null;
+
+          const subgraphConfig = this.buildRunConfig(
+            subgraphConfigBase,
+            subgraphState,
+            {
+              runNamePrefix: `subgraph_${domain}`,
+              runType: 'parallel',
+              domain,
+              query: userMessage?.content
+            }
+          );
 
           // Execute subgraph and handle interrupts
           try {
@@ -575,7 +685,8 @@ class Coordinator {
       if (execution_plan?.sequential?.length > 0) {
         console.log("[COORDINATOR:EXECUTOR] Running sequential subgraphs");
         
-        for (const step of execution_plan.sequential) {
+        for (let idx = 0; idx < execution_plan.sequential.length; idx++) {
+          const step = execution_plan.sequential[idx];
           const subgraph = await this.loadSubgraph(step.domain, config);
           if (!subgraph) {
             console.warn(`[COORDINATOR:EXECUTOR] Subgraph not found: ${step.domain}`);
@@ -607,14 +718,29 @@ class Coordinator {
           // Create unique config for subgraph to avoid checkpoint conflicts
           // Each subgraph gets its own namespace to prevent deadlocks
           // Use same thread_id as parent for interrupt propagation
-          const subgraphConfig = {
+          const subgraphConfigBase = {
             configurable: {
               ...config.configurable,
               // Unique namespace for this subgraph's checkpoints
               checkpoint_ns: `${step.domain}_subgraph`
-              // Keep parent's thread_id for interrupt propagation
             }
           };
+
+          const userMessage = Array.isArray(subgraphState.messages)
+            ? [...subgraphState.messages].reverse().find(m => m?.role === 'user')
+            : null;
+
+          const subgraphConfig = this.buildRunConfig(
+            subgraphConfigBase,
+            subgraphState,
+            {
+              runNamePrefix: `subgraph_${step.domain}`,
+              runType: 'sequential',
+              domain: step.domain,
+              query: step.extractQuery || userMessage?.content,
+              stepIndex: idx
+            }
+          );
 
           // Execute subgraph and handle interrupts
           try {
@@ -816,21 +942,60 @@ class Coordinator {
     console.log("[COORDINATOR:FINALIZER] Generating final response");
 
     try {
-      // If no subgraphs were executed, provide a simple response
+      // Quick Q&A over recent entities for follow-ups like
+      // "Who was it with?" or "Who was the appointment with?"
+      const lastMessage = state.messages[state.messages.length - 1];
+      const lastText = String(lastMessage?.content || '').toLowerCase();
+      const apptEntity = state.entities?.appointment;
+      if (apptEntity && typeof lastText === 'string') {
+        const asksWho = /\bwho\b/.test(lastText) && /(with|attendee|attendees|appointment)/.test(lastText);
+        if (asksWho) {
+          const names = Array.isArray(apptEntity.participants) ? apptEntity.participants.filter(Boolean) : [];
+          if (names.length > 0) {
+            return {
+              ...state,
+              // Clear approval markers and results as part of end-of-turn hygiene
+              approval_decision: null,
+              pendingApproval: null,
+              subgraph_results: {},
+              final_response: names.join(', ')
+            };
+          }
+        }
+      }
+
+      // If no subgraphs were executed, provide a context-aware response
       if (!state.subgraph_results || Object.keys(state.subgraph_results).length === 0) {
         const lastMessage = state.messages[state.messages.length - 1];
-        
-        // Use LLM to generate a response
+        // Build lightweight context from entities to help resolve pronouns like "it"
+        const entityContext = (() => {
+          const appt = state.entities?.appointment;
+          if (!appt) return '';
+          const parts = [
+            `Last appointment: ${appt.name || 'Untitled'}`,
+            appt.time ? `at ${new Date(appt.time).toLocaleString()}` : null,
+            Array.isArray(appt.participants) && appt.participants.length > 0
+              ? `with ${appt.participants.join(', ')}`
+              : null
+          ].filter(Boolean).join('; ');
+          return parts ? `Context: ${parts}` : '';
+        })();
+
+        // Use LLM to generate a response with entity context
         const response = await this.llm.invoke(`
           User query: "${lastMessage.content}"
+          ${entityContext ? `\n${entityContext}` : ''}
           ${state.memory_context?.recalled_memories ? 
-            `Context: ${JSON.stringify(state.memory_context.recalled_memories[0]?.content || '')}` : ''}
-          
-          Provide a helpful response.
+            `\nMemory hint: ${JSON.stringify(state.memory_context.recalled_memories[0]?.content || '')}` : ''}
+          \nProvide a concise, direct answer using the context above when relevant.
         `);
         
         return {
           ...state,
+          // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+          approval_decision: null,
+          pendingApproval: null,
+          subgraph_results: {},
           final_response: response.content
         };
       }
@@ -883,12 +1048,20 @@ class Coordinator {
         
         return {
           ...state,
+          // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+          approval_decision: null,
+          pendingApproval: null,
+          subgraph_results: {},
           final_response: finalResponse
         };
       }
       
       return {
         ...state,
+        // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+        approval_decision: null,
+        pendingApproval: null,
+        subgraph_results: {},
         final_response: "I couldn't process your request. Please try again."
       };
       
@@ -896,6 +1069,10 @@ class Coordinator {
       console.error("[COORDINATOR:FINALIZER] Error finalizing response:", error);
       return {
         ...state,
+        // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+        approval_decision: null,
+        pendingApproval: null,
+        subgraph_results: {},
         error: `Failed to generate response: ${error.message}`
       };
     }
@@ -985,7 +1162,23 @@ class Coordinator {
       // Resume the graph with approval decision
       console.log("[COORDINATOR:RESUME] 🚀 Invoking graph with resume state...");
       const resumeStart = Date.now();
-      const result = await this.graph.invoke(resumeState, config);
+      const resumeConfig = this.buildRunConfig(
+        config,
+        {
+          org_id: context.org_id,
+          user_id: context.user_id,
+          session_id: context.session_id,
+          timezone: context.timezone || 'UTC'
+        },
+        {
+          runNamePrefix: 'coordinator_resume',
+          runType: 'resume',
+          query: resumeState.messages?.find(m => m.role === 'user')?.content,
+          approvalDecision: context.approval_decision,
+          resume: true
+        }
+      );
+      const result = await this.graph.invoke(resumeState, resumeConfig);
       console.log(`[COORDINATOR:RESUME] ⏱️ Graph invoke completed in ${Date.now() - resumeStart}ms`);
 
       // Handle any new interrupts
@@ -1041,7 +1234,12 @@ class Coordinator {
       session_id: context.session_id,
       thread_id: context.thread_id,
       checkpoint_id: context.checkpoint_id,
-      timezone: context.timezone || 'UTC'
+      timezone: context.timezone || 'UTC',
+      // Proactively clear any stale approval markers from previous turns
+      approval_decision: null,
+      pendingApproval: null,
+      // Ensure stale results aren't re-aggregated
+      subgraph_results: {}
     };
 
     try {
@@ -1062,12 +1260,26 @@ class Coordinator {
       });
 
       // Execute the coordinator graph WITH config (critical for checkpointer)
-      const result = await this.graph.invoke(initialState, config);
+      const invokeConfig = this.buildRunConfig(
+        config,
+        {
+          org_id: context.org_id,
+          user_id: context.user_id,
+          session_id: context.session_id,
+          timezone: context.timezone || 'UTC'
+        },
+        {
+          runNamePrefix: 'coordinator',
+          runType: 'initial',
+          query
+        }
+      );
+      const result = await this.graph.invoke(initialState, invokeConfig);
 
       // IMPORTANT: For invoke(), we must use getState() to check for interrupts
       // This is documented behavior in LangGraph JS - interrupts are not returned in result
       console.log("[COORDINATOR:INTERRUPT] Calling getState() to check for interrupts (required for invoke)");
-      const graphState = await this.graph.getState(config);
+      const graphState = await this.graph.getState(invokeConfig);
 
       // DEBUGGING: Log complete state structure
       console.log("[COORDINATOR:INTERRUPT] 🔍 Graph state structure:", {
@@ -1135,7 +1347,7 @@ class Coordinator {
 
             // Log checkpoint saving expectation
             console.log("[COORDINATOR:INTERRUPT] 💾 Note: LangGraph should save checkpoint automatically when interrupt is thrown");
-            console.log("[COORDINATOR:INTERRUPT] Thread ID for checkpoint:", config.configurable.thread_id);
+            console.log("[COORDINATOR:INTERRUPT] Thread ID for checkpoint:", invokeConfig.configurable.thread_id);
             console.log("[COORDINATOR:INTERRUPT] Checkpointer type:", this.checkpointer?.constructor?.name);
 
             this.metrics.endTimer('total', true, { interrupt: true });

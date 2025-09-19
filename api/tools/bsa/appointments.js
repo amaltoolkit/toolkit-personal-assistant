@@ -37,7 +37,34 @@ async function getAppointments(params, passKey, orgId) {
       effectiveTo = parsed.endDate;
     }
   }
-  
+
+  // BSA API quirk: Same From/To date returns empty results
+  // Must use From = date-1, To = date for single-day queries
+  const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const addDays = (ymd, days) => {
+    const d = new Date(ymd + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+
+  // Apply the fix before converting to ISO timestamps
+  if (isDate(effectiveFrom) && isDate(effectiveTo)) {
+    if (effectiveFrom === effectiveTo) {
+      // Single day query - expand backwards
+      console.log("[BSA:APPOINTMENTS] Single day detected, expanding range backwards");
+      effectiveFrom = addDays(effectiveFrom, -1);
+    }
+  } else if (isDate(effectiveFrom) && !effectiveTo) {
+    // Only start date provided - assume single day
+    console.log("[BSA:APPOINTMENTS] Only start date provided, treating as single day");
+    effectiveTo = effectiveFrom;
+    effectiveFrom = addDays(effectiveFrom, -1);
+  } else if (!effectiveFrom && isDate(effectiveTo)) {
+    // Only end date provided - assume single day
+    console.log("[BSA:APPOINTMENTS] Only end date provided, treating as single day");
+    effectiveFrom = addDays(effectiveTo, -1);
+  }
+
   // Convert date strings to ISO 8601 format with time
   // BSA expects full timestamps, not just dates
   const toISODateTime = (dateStr, isEndOfDay = false) => {
@@ -66,13 +93,9 @@ async function getAppointments(params, passKey, orgId) {
     effectiveTo = toISODateTime(effectiveTo, true); // End of day
   }
 
-  // If only one date provided, use full day range
-  if (effectiveFrom && !effectiveTo) {
-    effectiveTo = effectiveFrom.replace('T00:00:00.000Z', 'T23:59:59.999Z');
-  } else if (!effectiveFrom && effectiveTo) {
-    effectiveFrom = effectiveTo.replace('T23:59:59.999Z', 'T00:00:00.000Z');
-  }
-  
+  // Note: Single-day handling is done above with date expansion to avoid BSA quirk
+  // We no longer need to handle single dates here as they've been properly expanded
+
   console.log("[BSA:APPOINTMENTS] Fetching with date range:", { effectiveFrom, effectiveTo });
   
   const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json';

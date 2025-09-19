@@ -12,6 +12,11 @@ const { StateGraph, END } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { z } = require("zod");
 const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/chronoParser");
+const dayjs = require('dayjs');
+const utc = require('dayjs/plugin/utc');
+const tz = require('dayjs/plugin/timezone');
+dayjs.extend(utc);
+dayjs.extend(tz);
 const { getAppointments, createAppointment, updateAppointment } = require("../tools/bsa/appointments");
 const { getContactResolver } = require("../services/contactResolver");
 const { getApprovalBatcher } = require("../services/approvalBatcher");
@@ -332,8 +337,8 @@ class CalendarSubgraph {
           } else if (parsedDateTime && parsedDateTime.dateComponent) {
             // We have date but no time - use default business hours
             const dateOnly = parsedDateTime.dateComponent.startDate;
-            const defaultStart = new Date(dateOnly + 'T09:00:00');
-            startTime = defaultStart.toISOString();
+            // Build 9:00 AM in the user's timezone, then convert to ISO (UTC)
+            startTime = dayjs.tz(`${dateOnly} 09:00`, userTimezone).toISOString();
             const duration = parsed.appointment?.duration || 60;
             endTime = calculateEndTime(startTime, duration);
             console.log("[CALENDAR:PARSE] Date only, using 9 AM default");
@@ -631,18 +636,19 @@ class CalendarSubgraph {
     };
 
     if (state.appointment_data) {
-      const start = new Date(state.appointment_data.startTime);
-      const end = new Date(state.appointment_data.endTime);
+      const userTz = state.timezone || 'UTC';
+      const start = dayjs(state.appointment_data.startTime).tz(userTz);
+      const end = dayjs(state.appointment_data.endTime).tz(userTz);
       
       preview.details.push({
         label: "Date",
-        value: start.toLocaleDateString()
+        value: start.format('M/D/YYYY')
       });
       
       if (!state.appointment_data.isAllDay) {
         preview.details.push({
           label: "Time",
-          value: `${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+          value: `${start.format('h:mm A')} - ${end.format('h:mm A')}`
         });
       }
       
@@ -805,7 +811,26 @@ class CalendarSubgraph {
       }
       
       console.log(`[CALENDAR:ATTENDEES] Linked ${state.resolved_contacts.length} attendees`);
-      
+
+      // Enrich appointment entity with participants for follow-up questions
+      try {
+        const participants = state.resolved_contacts.map(c => c.name).filter(Boolean);
+        if (!state.entities) state.entities = {};
+        const existing = state.entities.appointment || {
+          type: 'appointment',
+          id: state.appointments?.[0]?.Id || state.appointments?.[0]?.id,
+          name: state.appointments?.[0]?.Subject || state.appointments?.[0]?.subject,
+          time: state.appointments?.[0]?.StartTime || state.appointments?.[0]?.startTime
+        };
+        state.entities.appointment = {
+          ...existing,
+          participants,
+          participantCount: participants.length
+        };
+      } catch (e) {
+        console.warn('[CALENDAR:ATTENDEES] Failed to enrich entities with participants:', e?.message);
+      }
+
       return state;
       
     } catch (error) {
@@ -834,7 +859,12 @@ class CalendarSubgraph {
         ...state.messages,
         {
           role: "assistant",
-          content: `${state.action} appointment: ${state.appointment_data?.subject || 'Appointment'}`
+          content: (() => {
+            const subject = state.appointment_data?.subject || 'Appointment';
+            const participants = (state.resolved_contacts || []).map(c => c.name).filter(Boolean);
+            const withStr = participants.length ? ` with ${participants.join(', ')}` : '';
+            return `${state.action} appointment: ${subject}${withStr}`;
+          })()
         }
       ];
       
@@ -845,7 +875,8 @@ class CalendarSubgraph {
         {
           domain: 'calendar',
           action: state.action,
-          appointmentId: state.appointments?.[0]?.id
+          appointmentId: state.appointments?.[0]?.id || state.appointments?.[0]?.Id,
+          participants: (state.resolved_contacts || []).map(c => ({ id: c.id, name: c.name }))
         }
       );
       

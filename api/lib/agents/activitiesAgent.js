@@ -958,22 +958,11 @@ async function createActivitiesAgent(passKey, orgId, timeZone = "UTC", dependenc
     prompt
   });
   
-  // Configure executor with LangSmith tracing if available
   const executorConfig = {
     agent,
     tools,
     verbose: false
   };
-  
-  // Add LangSmith metadata if tracing is enabled
-  if (process.env.LANGCHAIN_TRACING_V2 === 'true') {
-    executorConfig.tags = ['agent:activities', `org:${orgId}`, `timezone:${timeZone}`];
-    executorConfig.metadata = {
-      agent: 'activities',
-      orgId,
-      timeZone
-    };
-  }
   
   return new AgentExecutor(executorConfig);
 }

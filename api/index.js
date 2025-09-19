@@ -1,3 +1,8 @@
+// Load environment variables in development
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
 // Ensure LangSmith callbacks complete in serverless environment
 // This MUST be set before any LangChain imports for proper tracing
 if (!process.env.LANGCHAIN_CALLBACKS_BACKGROUND) {
@@ -12,6 +17,9 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const http = require('http');
 const https = require('https');
+
+// Import BSA configuration
+const bsaConfig = require('./config/bsa');
 
 // Performance optimizations
 const keepAliveAgent = new http.Agent({
@@ -81,11 +89,36 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// PostgreSQL connection pool for direct database operations
+// Lazy initialized on first use to avoid issues if POSTGRES_CONNECTION_STRING is not set
+let pgPool = null;
+function getPgPool() {
+  if (!pgPool && process.env.POSTGRES_CONNECTION_STRING) {
+    const { Pool } = require('pg');
+    pgPool = new Pool({
+      connectionString: process.env.POSTGRES_CONNECTION_STRING,
+      ssl: { rejectUnauthorized: false },
+      max: 10, // Maximum number of clients in the pool
+      idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+      connectionTimeoutMillis: 2000, // Timeout for new connections
+    });
+    
+    pgPool.on('error', (err) => {
+      console.error('[PG_POOL] Unexpected error on idle client', err);
+    });
+    
+    console.log('[PG_POOL] PostgreSQL connection pool initialized');
+  }
+  return pgPool;
+}
+
 // Environment variables
-const BSA_BASE = process.env.BSA_BASE;
 const BSA_CLIENT_ID = process.env.BSA_CLIENT_ID;
 const BSA_CLIENT_SECRET = process.env.BSA_CLIENT_SECRET;
 const BSA_REDIRECT_URI = process.env.BSA_REDIRECT_URI;
+
+// BSA_BASE is now managed by the config module
+// Use bsaConfig.getBaseUrl() or bsaConfig.buildEndpoint() methods directly
 
 // LangSmith Configuration (for observability)
 // These environment variables enable comprehensive tracing when set in Vercel:
@@ -130,7 +163,7 @@ app.get("/auth/start", async (req, res) => {
     }
     
     // Construct the BSA OAuth authorization URL
-    const authUrl = new URL(`${BSA_BASE}/oauth2/authorize`);
+    const authUrl = new URL(bsaConfig.buildOAuthUrl('authorize'));
     
     // OAuth 2.0 standard parameters
     authUrl.searchParams.set("response_type", "code");        // We want an authorization code
@@ -164,7 +197,7 @@ app.get("/auth/callback", async (req, res) => {
     // Immediately redirect user to BSA main page
     // This provides better UX - user doesn't see a loading page
     // The OAuth processing happens asynchronously in the background
-    res.redirect(`${BSA_BASE}`);
+    res.redirect(bsaConfig.getBaseUrl());
 
     // Process the OAuth callback asynchronously (non-blocking)
     // This performs the token exchange and stores the PassKey
@@ -208,7 +241,7 @@ async function processOAuthCallback(code, state) {
     // Exchange authorization code for bearer token
     let tokenResp;
     try {
-      const tokenUrl = `${BSA_BASE}/oauth2/token`;
+      const tokenUrl = bsaConfig.buildOAuthUrl('token');
       
       // Create properly encoded form data for OAuth token exchange
       // Using URLSearchParams ensures RFC-compliant encoding
@@ -237,7 +270,23 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
+    // Log the FULL token response to see all fields
+    console.log("[PROCESS OAUTH] Token endpoint full response:", JSON.stringify(tokenResp.data, null, 2));
+    console.log("[PROCESS OAUTH] Token response keys:", Object.keys(tokenResp.data));
+    
+    // Extract all possible fields
     const bearerToken = tokenResp.data.access_token;
+    const userIdFromToken = tokenResp.data.user_id || tokenResp.data.UserId || tokenResp.data.UserID || tokenResp.data.userId;
+    const refreshToken = tokenResp.data.refresh_token;
+    const expiresIn = tokenResp.data.expires_in;
+    
+    console.log("[PROCESS OAUTH] Token endpoint extracted values:", {
+      hasAccessToken: !!bearerToken,
+      hasUserId: !!userIdFromToken,
+      userId: userIdFromToken || "not in token response",
+      hasRefreshToken: !!refreshToken,
+      expiresIn
+    });
     
     // Validate bearer token was received
     if (!bearerToken) {
@@ -248,7 +297,7 @@ async function processOAuthCallback(code, state) {
     // Exchange bearer token for PassKey (BSA-specific)
     let passKeyResp;
     try {
-      const passKeyUrl = `${BSA_BASE}/oauth2/passkey`;
+      const passKeyUrl = bsaConfig.buildOAuthUrl('passkey');
       
       // Exchange bearer token for PassKey
       // Note: Empty body, authorization via Bearer token header
@@ -270,20 +319,34 @@ async function processOAuthCallback(code, state) {
       return;
     }
 
+    // Log the FULL passkey response to see all fields
+    console.log("[PROCESS OAUTH] PassKey endpoint full response:", JSON.stringify(passKeyResp.data, null, 2));
+    console.log("[PROCESS OAUTH] PassKey response keys:", Object.keys(passKeyResp.data));
+    
     // Extract PassKey from response
     // BSA may return PassKey in different formats:
     // - Array format: [{ PassKey: "...", Valid: true, ... }]
     // - Direct object with lowercase: { passkey: "...", user_id: "...", expires_in: 3600 }
     const responseData = Array.isArray(passKeyResp.data) ? passKeyResp.data[0] : passKeyResp.data;
     const passKey = responseData?.PassKey || responseData?.passkey;
-    const userId = responseData?.user_id || responseData?.UserId || responseData?.UserID;
+    const userIdFromPassKey = responseData?.user_id || responseData?.UserId || responseData?.UserID || responseData?.userId;
     
-    // Log the response structure for debugging
-    console.log("[PROCESS OAUTH] PassKey response structure:", {
+    console.log("[PROCESS OAUTH] PassKey endpoint extracted values:", {
       hasPassKey: !!passKey,
-      hasUserId: !!userId,
-      userId: userId || "not found",
-      responseKeys: Object.keys(responseData || {})
+      hasUserId: !!userIdFromPassKey,
+      userId: userIdFromPassKey || "not in passkey response",
+      responseStructure: Array.isArray(passKeyResp.data) ? "array" : "object",
+      responseDataKeys: responseData ? Object.keys(responseData) : []
+    });
+    
+    // Determine where userId came from
+    const userId = userIdFromToken || userIdFromPassKey || null;
+    
+    console.log("[PROCESS OAUTH] Final userId determination:", {
+      fromToken: userIdFromToken || "none",
+      fromPassKey: userIdFromPassKey || "none",
+      final: userId || "not found",
+      source: userIdFromToken ? "token" : (userIdFromPassKey ? "passkey" : "none")
     });
     
     // Validate PassKey was received
@@ -297,6 +360,14 @@ async function processOAuthCallback(code, state) {
     // Calculate expiry time (1 hour from now)
     // BSA PassKeys have a fixed 1-hour lifetime
     const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+    
+    console.log("[PROCESS OAUTH] About to store in database:", {
+      session_id: row.session_id,
+      hasPassKey: !!passKey,
+      hasUserId: !!userId,
+      userId: userId || "null",
+      expires_at: expiresAt
+    });
 
     // Upsert the PassKey into bsa_tokens table
     // Using upsert to handle case where session already has a token
@@ -359,7 +430,7 @@ async function refreshPassKey(sessionId) {
     }
     
     // Call BSA refresh endpoint
-    const refreshUrl = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/login.json`;
+    const refreshUrl = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.data.VCDataEndpoint/login.json');
     
     try {
       // Make refresh request using current PassKey
@@ -588,7 +659,7 @@ function normalizeBSAResponse(response) {
 
 // Fetch organizations helper
 async function fetchOrganizations(passKey) {
-  const url = `${BSA_BASE}/endpoints/ajax/com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json`;
+  const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.data.VCDataEndpoint/listMyOrganizations.json');
   
   try {
     // Make API call to BSA
@@ -771,7 +842,7 @@ app.post("/api/assistant/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       parseDateQuery,
       getLLMClient
@@ -844,7 +915,7 @@ app.post("/api/workflow/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       getLLMClient: getWorkflowLLMClient,  // Use GPT-5 for workflow agent
       parseDateQuery,
@@ -865,6 +936,25 @@ app.post("/api/workflow/query", async (req, res) => {
     res.status(500).json({ error: "Failed to process workflow request" });
   }
 });
+
+// Multi-Agent Routes (V2 Architecture)
+// Only mount if feature flag is enabled
+if (process.env.USE_V2_ARCHITECTURE === 'true') {
+  console.log('[SERVER] V2 architecture enabled - mounting agent routes');
+  const agentRoutes = require('./routes/agent');
+  app.use('/api/agent', agentRoutes);
+} else {
+  console.log('[SERVER] V2 architecture disabled - using legacy endpoints');
+}
+
+// Monitoring Routes (Always available)
+try {
+  const monitoringRoutes = require('./routes/monitoring');
+  app.use('/api', monitoringRoutes);
+  console.log('[SERVER] Monitoring routes loaded');
+} catch (error) {
+  console.error('[SERVER] Error loading monitoring routes:', error.message);
+}
 
 // Orchestrator API endpoint - Unified multi-agent interface
 app.post("/api/orchestrator/query", async (req, res) => {
@@ -915,7 +1005,7 @@ app.post("/api/orchestrator/query", async (req, res) => {
     const dependencies = {
       axios,
       axiosConfig,
-      BSA_BASE,
+      BSA_BASE: bsaConfig.getBaseUrl(),
       normalizeBSAResponse,
       getLLMClient,
       getWorkflowLLMClient,  // Add GPT-5 client for workflow agent
@@ -968,18 +1058,192 @@ app.use((err, _, res, __) => {
   res.status(500).json({ error: "internal server error" });
 });
 
+// Reset conversation endpoint - clears checkpoint data
+app.post("/api/reset-conversation", async (req, res) => {
+  const requestId = crypto.randomBytes(4).toString("hex");
+  console.log(`[RESET:${requestId}] Starting conversation reset`);
+  
+  try {
+    const { session_id } = req.body;
+    
+    if (!session_id) {
+      return res.status(400).json({ error: "session_id required" });
+    }
+    
+    // Get user_id from session
+    const { data: tokenData, error: tokenError } = await supabase
+      .from("bsa_tokens")
+      .select("user_id")
+      .eq("session_id", session_id)
+      .single();
+    
+    if (tokenError || !tokenData) {
+      console.error(`[RESET:${requestId}] Invalid session:`, tokenError);
+      return res.status(401).json({ error: "Invalid session" });
+    }
+    
+    const userId = tokenData.user_id;
+    const threadId = `${session_id}:${userId}`;
+    
+    console.log(`[RESET:${requestId}] Clearing checkpoints for thread: ${threadId}`);
+    
+    // Get the shared connection pool
+    const pool = getPgPool();
+    if (!pool) {
+      console.error(`[RESET:${requestId}] PostgreSQL connection not configured`);
+      return res.status(500).json({ error: "Database connection not configured" });
+    }
+    
+    // Use a transaction for atomic deletion
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Clear all checkpoint-related data for this thread
+      // Track deletion counts for each table
+      const writesResult = await client.query('DELETE FROM checkpoint_writes WHERE thread_id = $1', [threadId]);
+      const blobsResult = await client.query('DELETE FROM checkpoint_blobs WHERE thread_id = $1', [threadId]);
+      const checkpointsResult = await client.query('DELETE FROM checkpoints WHERE thread_id = $1', [threadId]);
+      
+      // Also clear checkpoint_migrations if any exist for this thread
+      // Note: checkpoint_migrations might not have thread_id column, so we check first
+      let migrationsDeleted = 0;
+      try {
+        const migrationCheckResult = await client.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_name = 'checkpoint_migrations' AND column_name = 'thread_id'"
+        );
+        if (migrationCheckResult.rows.length > 0) {
+          const migrationsResult = await client.query('DELETE FROM checkpoint_migrations WHERE thread_id = $1', [threadId]);
+          migrationsDeleted = migrationsResult.rowCount;
+        }
+      } catch (migrationErr) {
+        console.log(`[RESET:${requestId}] Note: checkpoint_migrations table may not have thread_id column`);
+      }
+      
+      // Commit the transaction
+      await client.query('COMMIT');
+      
+      const deletionCounts = {
+        checkpoint_writes: writesResult.rowCount,
+        checkpoint_blobs: blobsResult.rowCount,
+        checkpoints: checkpointsResult.rowCount,
+        checkpoint_migrations: migrationsDeleted
+      };
+      
+      console.log(`[RESET:${requestId}] Successfully cleared checkpoints:`, deletionCounts);
+      
+      res.json({ 
+        success: true, 
+        message: "Conversation reset successfully",
+        thread_id: threadId,
+        deleted: deletionCounts
+      });
+      
+    } catch (err) {
+      // Rollback transaction on error
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      // Release the client back to the pool
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error(`[RESET:${requestId}] Error:`, error);
+    res.status(500).json({ error: "Failed to reset conversation" });
+  }
+});
+
+// =========================
+// Interrupt Polling Endpoints (for production/Vercel)
+// =========================
+
+const { getInterruptPollingService } = require('./websocket/pollingFallback');
+const pollingService = getInterruptPollingService();
+
+// Check for pending interrupts
+app.get('/api/interrupts/poll', async (req, res) => {
+  const sessionId = req.query.session_id;
+  
+  if (!sessionId) {
+    return res.status(400).json({ error: 'Session ID required' });
+  }
+  
+  const interrupt = pollingService.checkPending(sessionId);
+  
+  if (interrupt) {
+    res.json({
+      hasInterrupt: true,
+      interrupt: interrupt
+    });
+  } else {
+    res.json({
+      hasInterrupt: false
+    });
+  }
+});
+
+// Acknowledge interrupt receipt
+app.post('/api/interrupts/acknowledge', async (req, res) => {
+  const { session_id } = req.body;
+  
+  if (!session_id) {
+    return res.status(400).json({ error: 'Session ID required' });
+  }
+  
+  pollingService.acknowledgeInterrupt(session_id);
+  
+  res.json({
+    success: true,
+    message: 'Interrupt acknowledged'
+  });
+});
+
+// Submit approval response
+app.post('/api/interrupts/approve', async (req, res) => {
+  const { session_id, approval_data } = req.body;
+  
+  if (!session_id || !approval_data) {
+    return res.status(400).json({ error: 'Session ID and approval data required' });
+  }
+  
+  const result = await pollingService.handleApprovalResponse(session_id, approval_data);
+  
+  res.json(result);
+});
+
+// Get polling service stats (for debugging)
+app.get('/api/interrupts/stats', async (req, res) => {
+  const stats = pollingService.getStats();
+  res.json(stats);
+});
+
 // Module exports for Vercel
 module.exports = app;
 
-// Local development server
+// Local development server with WebSocket support
 if (require.main === module) {
   // Use PORT from environment or default to 3000
   const PORT = process.env.PORT || 3000;
   
-  // Start the Express server
-  app.listen(PORT, () => {
+  // Create HTTP server for WebSocket attachment
+  const server = require('http').createServer(app);
+  
+  // Initialize WebSocket server (only in development)
+  if (process.env.NODE_ENV !== 'production') {
+    const { getInterruptWebSocketServer } = require('./websocket/interrupts');
+    const wsServer = getInterruptWebSocketServer();
+    wsServer.initialize(server);
+    console.log('WebSocket server initialized for development');
+  }
+  
+  // Start the server
+  server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log(`OAuth start: http://localhost:${PORT}/auth/start?session_id=test`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws`);
+    }
   });
 }

@@ -49,6 +49,13 @@ BlueSquare Assistant - A secure Chrome Extension with AI-powered assistant capab
 4. All BSA API calls use PassKey from Supabase (auto-refreshes when <5 min remaining)
 5. Background processing for better UX (immediate redirect, async token exchange)
 
+### BSA URL Configuration
+- Centralized configuration module at `api/config/bsa.js`
+- Smart environment detection based on URL in `BSA_BASE`
+- Automatically detects RC vs Production environments
+- Single point of control - change `BSA_BASE` in Vercel to switch environments
+- No frontend changes needed - entirely backend-controlled
+
 ### Key Security Principles
 - PassKeys NEVER sent to extension (only session IDs)
 - Backend is the ONLY entity with database access (service role key)
@@ -138,9 +145,12 @@ if (!normalized.valid) {
 ## Environment Variables
 
 Required in Vercel:
-- `BSA_BASE` - https://rc.bluesquareapps.com
+- `BSA_BASE` - BSA API URL (auto-detects environment)
+  - RC: `https://rc.bluesquareapps.com`
+  - Production: `https://toolkit.bluesquareapps.com`
+  - System automatically detects which environment based on URL
 - `BSA_CLIENT_ID` - OAuth client ID
-- `BSA_CLIENT_SECRET` - OAuth client secret  
+- `BSA_CLIENT_SECRET` - OAuth client secret
 - `BSA_REDIRECT_URI` - Your Vercel URL + /auth/callback
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` - Full access key (keep secure)

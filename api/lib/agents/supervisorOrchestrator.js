@@ -1,19 +1,6 @@
 // Supervisor Orchestrator Module for Multi-Agent Coordination
 // Uses LangGraph to route queries to appropriate specialized agents
 // Enables seamless coordination between Activities and Workflow Builder agents
-// Integrated with LangSmith for comprehensive observability
-
-// Check if LangSmith tracing is enabled via environment variables
-// LangChain/LangGraph automatically instruments when these are set
-const langSmithEnabled = process.env.LANGCHAIN_TRACING_V2 === 'true' && !!process.env.LANGCHAIN_API_KEY;
-
-if (langSmithEnabled) {
-  console.log('[LangSmith] Tracing enabled for project:', process.env.LANGCHAIN_PROJECT || 'default');
-  console.log('[LangSmith] Traces will be visible at: https://smith.langchain.com');
-} else {
-  console.log('[LangSmith] Tracing not configured (set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY)');
-}
-
 // Supervisor Orchestrator Prompt Template
 const SUPERVISOR_PROMPT = `You are a supervisor orchestrator managing specialized agents for a financial advisory firm.
 
@@ -365,22 +352,9 @@ async function createOrchestratorGraph(passKey, orgId, timeZone = "UTC", depende
     .addEdge("activities_agent", END)
     .addEdge("workflow_agent", END);
   
-  // Compile the graph with LangSmith metadata if available
-  const compileOptions = {};
+  const app = workflow.compile();
   
-  // Add LangSmith project name to metadata
-  if (langSmithEnabled && process.env.LANGCHAIN_PROJECT) {
-    compileOptions.tags = [`project:${process.env.LANGCHAIN_PROJECT}`];
-    compileOptions.metadata = {
-      project: process.env.LANGCHAIN_PROJECT,
-      orgId: orgId,
-      environment: process.env.NODE_ENV || 'production'
-    };
-  }
-  
-  const app = workflow.compile(compileOptions);
-  
-  console.log('[Orchestrator] Graph compiled with tracing:', langSmithEnabled ? 'enabled' : 'disabled');
+  console.log('[Orchestrator] Graph compiled (legacy tracing disabled)');
   
   return app;
 }
@@ -405,29 +379,8 @@ async function createSupervisorOrchestrator(passKey, orgId, timeZone = "UTC", de
           next: "supervisor"
         };
         
-        // Prepare invocation config with LangSmith metadata
-        const invokeConfig = {
-          recursionLimit: 10,
-          tags: [],
-          metadata: {}
-        };
-        
-        if (langSmithEnabled) {
-          invokeConfig.runName = `orchestrator_${Date.now()}`;
-          invokeConfig.tags = [
-            `org:${orgId}`,
-            `timezone:${timeZone}`,
-            'orchestrator:supervisor'
-          ];
-          invokeConfig.metadata = {
-            query: input.substring(0, 100),
-            orgId: orgId,
-            timestamp: new Date().toISOString()
-          };
-        }
-        
-        // Run the graph with tracing config
-        const result = await graph.invoke(initialState, invokeConfig);
+        // Run the graph using the default invocation config
+        const result = await graph.invoke(initialState, { recursionLimit: 10 });
         
         // Extract the final response
         const messages = result.messages || [];

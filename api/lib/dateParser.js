@@ -284,8 +284,8 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
     
     if (normalizedQuery === `next ${day}`) {
-      const nextWeek = now.add(1, 'week');
-      const targetDay = nextWeek.day(dayMap[day]);
+      // Use dayjs overflow: day number + 7 = next week's day
+      const targetDay = now.day(dayMap[day] + 7);
       const date = formatDate(targetDay);
       return {
         startDate: date,
@@ -295,8 +295,8 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
     
     if (normalizedQuery === `last ${day}`) {
-      const lastWeek = now.subtract(1, 'week');
-      const targetDay = lastWeek.day(dayMap[day]);
+      // Use dayjs overflow: day number - 7 = last week's day
+      const targetDay = now.day(dayMap[day] - 7);
       const date = formatDate(targetDay);
       return {
         startDate: date,
@@ -306,6 +306,29 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     }
   }
   
+  // Helper to normalize date strings for parsing (capitalize months, lowercase ordinals)
+  const normalizeDateString = (str) => {
+    // First, lowercase ordinal suffixes (1ST -> 1st, 2ND -> 2nd, etc.)
+    let result = str.replace(/(\d+)(ST|ND|RD|TH)/gi, (match, num, suffix) => {
+      return num + suffix.toLowerCase();
+    });
+
+    // Then capitalize month names
+    const months = ['january', 'february', 'march', 'april', 'may', 'june',
+                    'july', 'august', 'september', 'october', 'november', 'december',
+                    'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                    'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+    months.forEach(month => {
+      const regex = new RegExp(`\\b${month}\\b`, 'gi');
+      result = result.replace(regex, match =>
+        match.charAt(0).toUpperCase() + match.slice(1).toLowerCase()
+      );
+    });
+
+    return result;
+  };
+
   // Check if it's a specific date in various formats
   const dateFormats = [
     'YYYY-MM-DD',
@@ -314,17 +337,39 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     'MMM DD, YYYY',
     'DD MMM YYYY',
     'MMMM DD, YYYY',
-    'DD MMMM YYYY'
+    'DD MMMM YYYY',
+    // Ordinal formats (Day.js handles these with customParseFormat plugin)
+    'MMM Do',        // "Sep 17th"
+    'MMMM Do',       // "September 17th"
+    'Do MMM',        // "17th Sep"
+    'Do MMMM',       // "17th September"
+    'MMM Do, YYYY',  // "Sep 17th, 2025"
+    'MMMM Do, YYYY', // "September 17th, 2025"
+    'Do MMM YYYY',   // "17th Sep 2025"
+    'Do MMMM YYYY'   // "17th September 2025"
   ];
   
   for (const format of dateFormats) {
-    const parsed = dayjs(normalizedQuery, format, true);
+    // Try parsing with original case first, then with capitalized months
+    const parsed = dayjs(query.trim(), format, true);
     if (parsed.isValid()) {
       const date = formatDate(parsed);
       return {
         startDate: date,
         endDate: date,
         interpreted: `${parsed.format('MMMM D, YYYY')} (${date})`
+      };
+    }
+
+    // If that fails, try with normalized date string
+    const normalizedQuery = normalizeDateString(query.trim());
+    const parsedCapitalized = dayjs(normalizedQuery, format, true);
+    if (parsedCapitalized.isValid()) {
+      const date = formatDate(parsedCapitalized);
+      return {
+        startDate: date,
+        endDate: date,
+        interpreted: `${parsedCapitalized.format('MMMM D, YYYY')} (${date})`
       };
     }
   }
@@ -407,7 +452,114 @@ function extractDateFromQuery(query, userTimezone = 'UTC') {
   };
 }
 
+/**
+ * Extract time from a date query string
+ * @param {string} dateQuery - Query containing time expression
+ * @returns {Object} - { hour, minute, hasTime } or { hasTime: false }
+ */
+function extractTimeFromDateQuery(dateQuery) {
+  // Match various time patterns
+  // Handles: 8am, 8:30am, 8 am, 8:30 am, 8PM, 8:30PM, etc.
+  const timeMatch = dateQuery.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)/i);
+
+  if (timeMatch) {
+    let hour = parseInt(timeMatch[1]);
+    const minute = timeMatch[2] ? parseInt(timeMatch[2]) : 0;
+    const meridiem = timeMatch[3]?.toLowerCase();
+
+    // Convert to 24-hour format
+    if (meridiem === 'pm' && hour !== 12) hour += 12;
+    if (meridiem === 'am' && hour === 12) hour = 0;
+
+    // Validate hour and minute
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute, hasTime: true };
+    }
+  }
+
+  // Check for special time words
+  if (/\bnoon\b/i.test(dateQuery)) {
+    return { hour: 12, minute: 0, hasTime: true };
+  }
+  if (/\bmidnight\b/i.test(dateQuery)) {
+    return { hour: 0, minute: 0, hasTime: true };
+  }
+
+  return { hasTime: false };
+}
+
+/**
+ * Parse natural language date and time queries into ISO timestamps
+ * @param {string} query - Natural language date/time query (e.g., "tomorrow at 8am")
+ * @param {string} userTimezone - User's timezone (e.g., 'America/New_York')
+ * @returns {Object|null} - { startDateTime, endDateTime, dateComponent, timeComponent, interpreted }
+ */
+function parseDateTimeQuery(query, userTimezone = 'UTC') {
+  if (!query) return null;
+
+  // Step 1: Extract date part by removing time patterns
+  const datePartOnly = query
+    .replace(/\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)/gi, '')
+    .replace(/\s+at\s+noon/gi, '')
+    .replace(/\s+at\s+midnight/gi, '')
+    .trim();
+
+  // Step 2: Parse the date part using existing function
+  const dateResult = parseDateQuery(datePartOnly, userTimezone);
+  if (!dateResult) {
+    console.log(`[dateParser] Could not parse date from: "${datePartOnly}"`);
+    return null;
+  }
+
+  // Step 3: Extract time component
+  const timeResult = extractTimeFromDateQuery(query);
+
+  // Step 4: Combine date and time if time was found
+  if (timeResult.hasTime) {
+    // Use dayjs with timezone to create the full datetime
+    const startDateTime = dayjs.tz(dateResult.startDate, userTimezone)
+      .hour(timeResult.hour)
+      .minute(timeResult.minute)
+      .second(0)
+      .millisecond(0);
+
+    const timeString = `${timeResult.hour % 12 || 12}:${String(timeResult.minute).padStart(2, '0')} ${timeResult.hour >= 12 ? 'PM' : 'AM'}`;
+
+    return {
+      startDateTime: startDateTime.toISOString(),
+      endDateTime: null, // Let caller determine duration
+      dateComponent: dateResult,
+      timeComponent: timeResult,
+      interpreted: `${dateResult.interpreted} at ${timeString}`,
+      hasTime: true
+    };
+  }
+
+  // No time found, return date-only result
+  return {
+    startDateTime: null,
+    endDateTime: null,
+    dateComponent: dateResult,
+    timeComponent: null,
+    interpreted: dateResult.interpreted,
+    hasTime: false
+  };
+}
+
+/**
+ * Create end time based on start time and duration
+ * @param {string} startDateTime - ISO format start time
+ * @param {number} durationMinutes - Duration in minutes (default 60)
+ * @returns {string} - ISO format end time
+ */
+function calculateEndTime(startDateTime, durationMinutes = 60) {
+  return dayjs(startDateTime).add(durationMinutes, 'minute').toISOString();
+}
+
 module.exports = {
   parseDateQuery,
-  extractDateFromQuery
+  extractDateFromQuery,
+  extractTimeFromDateQuery,
+  parseDateTimeQuery,
+  calculateEndTime
 };

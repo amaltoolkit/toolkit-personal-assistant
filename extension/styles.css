@@ -240,6 +240,23 @@ body {
   background-color: var(--text);
 }
 
+/* Reset button specific styling */
+.reset-btn {
+  margin-right: 0.5rem;
+}
+
+.reset-btn:hover {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.icon-reset {
+  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* Chat Messages Area */
 .chat-messages {
   flex: 1;
@@ -1062,3 +1079,759 @@ body {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 /* ===== End dropdown refresh ===== */
+
+/* ================================ */
+/* APPROVAL UI STYLES (NEW ARCHITECTURE) */
+/* ================================ */
+
+.approval-container {
+  margin: 10px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  animation: slideIn 0.3s ease-out;
+}
+
+.approval-title {
+  margin-bottom: 15px;
+  color: #333;
+  font-size: 16px;
+}
+
+.approval-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.approval-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.approval-type {
+  background: #007bff;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.approval-id {
+  color: #666;
+  font-size: 12px;
+}
+
+.approval-content {
+  margin: 10px 0;
+  color: #333;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.spec-details {
+  padding: 5px 0;
+}
+
+.spec-details > div {
+  margin-bottom: 8px;
+}
+
+/* Workflow Preview Styles */
+.workflow-steps-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.steps-header {
+  margin-bottom: 8px;
+  color: #374151;
+}
+
+.workflow-steps-list {
+  margin-left: 20px;
+  padding-left: 0;
+}
+
+.workflow-step-item {
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f9fafb;
+  border-radius: 4px;
+  list-style-position: inside;
+}
+
+.step-name {
+  color: #1f2937;
+}
+
+.step-type {
+  color: #6b7280;
+  font-size: 0.875em;
+  margin-left: 4px;
+}
+
+.step-duration {
+  color: #9ca3af;
+  font-size: 0.875em;
+  margin-left: 4px;
+}
+
+.step-assignee {
+  color: #6b7280;
+  font-size: 0.875em;
+  margin-top: 4px;
+  display: inline-block;
+}
+
+.step-source {
+  color: #9ca3af;
+  font-size: 0.75em;
+  font-style: italic;
+  margin-left: 4px;
+}
+
+.workflow-enhancements {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.enhancements-header {
+  margin-bottom: 8px;
+  color: #374151;
+}
+
+.workflow-enhancements ul {
+  margin-left: 20px;
+  padding-left: 0;
+}
+
+.workflow-enhancements li {
+  margin-bottom: 4px;
+  color: #6b7280;
+}
+
+.spec-steps {
+  margin-left: 20px;
+  margin-top: 5px;
+}
+
+.spec-steps li {
+  margin-bottom: 5px;
+  color: #555;
+}
+
+.approval-buttons {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.approve-btn,
+.reject-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.approve-btn:hover {
+  border-color: #28a745;
+  background: #f0fff4;
+}
+
+.reject-btn:hover {
+  border-color: #dc3545;
+  background: #fff5f5;
+}
+
+.approve-btn.selected {
+  border-color: #28a745;
+  background: #28a745;
+  color: white;
+}
+
+.reject-btn.selected {
+  border-color: #dc3545;
+  background: #dc3545;
+  color: white;
+}
+
+.approval-submit {
+  margin-top: 15px;
+  text-align: center;
+}
+
+.submit-approval-btn {
+  padding: 10px 24px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.submit-approval-btn:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.submit-approval-btn:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Follow-up Questions */
+.followup-container {
+  margin: 10px;
+  padding: 12px;
+  background: #e3f2fd;
+  border-radius: 8px;
+  animation: slideIn 0.3s ease-out;
+}
+
+.followup-title {
+  margin-bottom: 10px;
+  color: #1976d2;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.followup-question {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: white;
+  border: 1px solid #90caf9;
+  border-radius: 4px;
+  color: #333;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.followup-question:hover {
+  background: #1976d2;
+  color: white;
+  border-color: #1976d2;
+  transform: translateX(2px);
+}
+
+/* ============================================ */
+/* CONTACT DISAMBIGUATION UI */
+/* ============================================ */
+
+.disambiguation-container {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid #e0e0e0;
+}
+
+.disambiguation-title {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #1a73e8;
+}
+
+.disambiguation-explain {
+  color: #5f6368;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.contact-card {
+  background: white;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.contact-card:hover {
+  border-color: #1a73e8;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.contact-card.selected {
+  border-color: #1a73e8;
+  background: #e8f0fe;
+}
+
+.contact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.contact-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: #202124;
+}
+
+.contact-company {
+  font-size: 14px;
+  color: #5f6368;
+}
+
+.contact-role {
+  font-size: 13px;
+  color: #5f6368;
+  font-style: italic;
+}
+
+.contact-score {
+  font-size: 12px;
+  color: #1a73e8;
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+.contact-interaction {
+  font-size: 12px;
+  color: #5f6368;
+}
+
+.disambiguation-submit {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.submit-disambiguation-btn {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.submit-disambiguation-btn:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.submit-disambiguation-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================ */
+/* WORKFLOW GUIDANCE UI */
+/* ============================================ */
+
+.workflow-guidance-container {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid #e0e0e0;
+}
+
+.workflow-title {
+  font-size: 16px;
+  margin-bottom: 8px;
+  color: #1a73e8;
+}
+
+.workflow-explain {
+  color: #5f6368;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.workflow-steps-preview {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.steps-title {
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: #202124;
+}
+
+.suggested-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.step-item {
+  margin: 8px 0;
+  color: #5f6368;
+}
+
+.step-name {
+  color: #202124;
+  font-weight: 500;
+}
+
+.step-desc {
+  display: block;
+  font-size: 13px;
+  color: #5f6368;
+  margin-top: 2px;
+}
+
+.workflow-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.workflow-accept-btn,
+.workflow-modify-btn,
+.workflow-custom-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.workflow-accept-btn {
+  background: #34a853;
+  color: white;
+}
+
+.workflow-accept-btn:hover {
+  background: #2d8e47;
+}
+
+.workflow-modify-btn {
+  background: #fbbc04;
+  color: #202124;
+}
+
+.workflow-modify-btn:hover {
+  background: #f9ab00;
+}
+
+.workflow-custom-btn {
+  background: #1a73e8;
+  color: white;
+}
+
+.workflow-custom-btn:hover {
+  background: #1557b0;
+}
+
+.workflow-custom-input {
+  margin-top: 16px;
+}
+
+.input-label {
+  font-size: 14px;
+  color: #5f6368;
+  margin-bottom: 8px;
+}
+
+.workflow-steps-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  resize: vertical;
+}
+
+.workflow-steps-input:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.submit-custom-workflow-btn {
+  background: #1a73e8;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  margin-top: 12px;
+}
+
+.submit-custom-workflow-btn:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.submit-custom-workflow-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ============================================ */
+/* APPROVAL UI MODERN OVERRIDES (non-breaking)  */
+/* ============================================ */
+
+.approval-container {
+  margin: 24px auto; /* center within chat column */
+  padding: 24px 24px 28px 24px; /* generous breathable padding */
+  max-width: 840px; /* readable measure on large screens */
+  width: calc(100% - 40px); /* respect side gutters on small screens */
+  align-self: stretch;
+  background: var(--surface-translucent);
+  backdrop-filter: saturate(120%) blur(10px);
+  -webkit-backdrop-filter: saturate(120%) blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.approval-title {
+  margin-bottom: 12px;
+  color: #ffffff !important;
+  opacity: 1 !important;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.approval-card {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-bottom: 12px;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.approval-header { display: none; }
+
+.approval-type {
+  background: var(--primary-100);
+  color: var(--primary-700);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+
+.approval-id {
+  color: var(--muted);
+}
+
+.approval-content {
+  color: var(--text);
+  max-height: 50vh; /* allow more content before scrolling */
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface-translucent) !important;
+  backdrop-filter: saturate(130%) blur(10px);
+  -webkit-backdrop-filter: saturate(130%) blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+
+.spec-steps li {
+  color: var(--muted);
+}
+
+.approve-btn,
+.reject-btn {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.approve-btn:hover {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.06);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.18);
+}
+
+.reject-btn:hover {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.06);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.18);
+}
+
+.approve-btn.selected {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.28);
+}
+
+.reject-btn.selected {
+  border-color: rgba(239, 68, 68, 0.55);
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.28);
+}
+
+.approval-submit {
+  margin-top: 18px;
+}
+
+.submit-approval-btn {
+  padding: 11px 24px;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-600) 100%);
+  color: #ffffff;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  font-weight: 600;
+  box-shadow: 0 10px 24px rgba(99, 102, 241, 0.28);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  width: 100%;
+}
+
+.submit-approval-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(99, 102, 241, 0.35);
+}
+
+.submit-approval-btn:disabled {
+  background: #9ca3af;
+}
+
+.approve-btn:focus-visible,
+.reject-btn:focus-visible,
+.submit-approval-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), var(--shadow-sm);
+  border-color: var(--primary);
+}
+
+/* Minimal content formatting for approval previews */
+.approval-content .preview-title {
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.approval-content .preview-detail {
+  font-size: 13px;
+  color: var(--text);
+  margin: 6px 0;
+}
+
+.approval-content .preview-detail strong {
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.approval-content .preview-warnings {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+  border-radius: 10px;
+}
+
+.approval-content .warning-header {
+  color: #ef4444;
+  margin-bottom: 6px;
+}
+
+.approval-content .warning-item {
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Prevent long blocks from overflowing the card */
+.approval-content pre,
+.approval-content code,
+.approval-content .json-block {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ===== Dark, minimal approval card body and workflow preview overrides ===== */
+.approval-content {
+  background: var(--surface-translucent) !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+
+/* Workflow preview: adopt minimal/dark tokens */
+.workflow-steps-section {
+  border-top: 1px solid var(--border);
+}
+
+.steps-header {
+  color: var(--text);
+}
+
+.workflow-steps-list {
+  margin: 12px 0 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.workflow-step-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+
+.step-name { color: var(--text); }
+.step-type { color: var(--muted); }
+.step-duration { color: #9ca3af; }
+.step-assignee { color: var(--muted); }
+.step-source { color: #9ca3af; font-style: italic; }
+
+.workflow-enhancements { border-top: 1px solid var(--border); }
+.enhancements-header { color: var(--text); }
+.workflow-enhancements li { color: var(--muted); }
+
+/* Stronger minimal dark body for approval cards */
+.approval-card .approval-content {
+  /* already styled above */
+}
+
+/* Ensure readable, high-contrast typography inside approval content */
+.approval-card .approval-content,
+.approval-card .approval-content * {
+  color: var(--text) !important;
+  opacity: 1 !important;
+}

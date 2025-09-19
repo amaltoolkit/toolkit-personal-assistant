@@ -453,11 +453,16 @@ class CalendarSubgraph {
         // Disambiguate if multiple matches
         const selected = await this.contactResolver.disambiguate(
           candidates,
-          state.messages[state.messages.length - 1].content
+          {
+            query: contactName,
+            memoryContext: state.memory_context || {},
+            orgId: config.configurable.org_id,
+            userId: config.configurable.user_id
+          }
         );
 
         // Handle disambiguation that requires user input
-        if (selected.requiresConfirmation) {
+        if (selected.needsDisambiguation) {
           // Save partial progress before interrupt
           if (resolved.length > 0) {
             state.resolved_contacts = resolved;
@@ -474,7 +479,8 @@ class CalendarSubgraph {
           });
         }
 
-        resolved.push(selected);
+        // If auto-selected, use the contact directly
+        resolved.push(selected.topCandidate || selected);
       }
 
       console.log(`[CALENDAR:CONTACTS] Resolved ${resolved.length} contacts`);
@@ -801,10 +807,17 @@ class CalendarSubgraph {
       const appointmentId = state.appointments[0].id || state.appointments[0].Id;
       
       for (const contact of state.resolved_contacts) {
+        // Validate contact has an ID before attempting to link
+        const contactId = contact.id || contact.Id;
+        if (!contactId) {
+          console.warn(`[CALENDAR:ATTENDEES] Skipping contact without ID: ${contact.name || 'Unknown'}`);
+          continue;
+        }
+
         await this.contactResolver.linkActivity(
           'appointment',
           appointmentId,
-          contact.id,
+          contactId,
           passKey,
           orgId
         );

@@ -513,6 +513,48 @@ class CalendarSubgraph {
     console.log("[CALENDAR:USERS] Resolving users");
     console.log("[CALENDAR:USERS] Users to resolve:", state.users_to_resolve);
 
+    // Check if we're resuming from a user clarification
+    if (state.user_clarification_response) {
+      console.log("[CALENDAR:USERS] Resuming with clarification:", state.user_clarification_response);
+
+      const clarifiedName = state.user_clarification_response.clarified_name;
+      const originalQuery = state.user_clarification_response.original_query;
+      const skipUser = state.user_clarification_response.skip;
+
+      if (!skipUser && clarifiedName && clarifiedName.toLowerCase() !== 'skip') {
+        // Replace the original query with the clarified name in users_to_resolve
+        const updatedUsers = state.users_to_resolve.map(name =>
+          name === originalQuery ? clarifiedName : name
+        );
+
+        // Continue with resolution using the clarified name
+        return {
+          ...state,
+          users_to_resolve: updatedUsers,
+          user_clarification_response: null // Clear the response
+        };
+      } else {
+        // User chose to skip this user
+        console.log(`[CALENDAR:USERS] User chose to skip user: ${originalQuery}`);
+
+        // Remove the problematic user from the list and track as unresolved
+        const remainingUsers = state.users_to_resolve.filter(name => name !== originalQuery);
+        const unresolved = state.unresolved_users || [];
+        unresolved.push({
+          query: originalQuery,
+          type: 'user_skipped',
+          message: `Skipped adding "${originalQuery}" (name not found)`
+        });
+
+        return {
+          ...state,
+          users_to_resolve: remainingUsers,
+          unresolved_users: unresolved,
+          user_clarification_response: null
+        };
+      }
+    }
+
     if (!state.users_to_resolve || state.users_to_resolve.length === 0) {
       return state;
     }
@@ -553,12 +595,63 @@ class CalendarSubgraph {
 
         if (candidates.length === 0) {
           console.warn(`[CALENDAR:USERS] No matches for: ${userQuery}`);
-          unresolved.push({
-            query: userQuery,
-            type: 'no_matches',
-            message: `No internal team member found with name "${userQuery}"`
+
+          // Try fuzzy search for suggestions
+          console.log(`[CALENDAR:USERS] Attempting fuzzy search for suggestions`);
+          const partialQuery = userQuery.substring(0, Math.min(userQuery.length - 1, 3));
+          const fuzzyResults = await this.userResolver.search(partialQuery, orgId, 10, false);
+
+          // Get top suggestions
+          const suggestions = fuzzyResults
+            .filter(u => {
+              const similarity = this.userResolver.calculateNameSimilarity(userQuery, u.name);
+              return similarity > 0.3;
+            })
+            .sort((a, b) => {
+              const simA = this.userResolver.calculateNameSimilarity(userQuery, a.name);
+              const simB = this.userResolver.calculateNameSimilarity(userQuery, b.name);
+              return simB - simA;
+            })
+            .slice(0, 3)
+            .map(u => u.name);
+
+          // Throw interrupt for user clarification
+          console.log(`[CALENDAR:USERS] Throwing interrupt for clarification`);
+          throw interrupt({
+            value: {
+              type: 'user_clarification',
+              message: `I couldn't find a team member named "${userQuery}".`,
+              suggestions: suggestions,
+              original_query: userQuery,
+              prompt: suggestions.length > 0
+                ? `Did you mean one of these team members: ${suggestions.join(', ')}? Or please type the correct name:`
+                : `Could you please check the spelling and provide the correct name?`,
+              allow_skip: true
+            }
           });
-          continue;
+        }
+
+        // Check if we have only fuzzy matches
+        const fuzzyMatches = candidates.filter(c => c.fuzzyMatch);
+        if (fuzzyMatches.length > 0 && fuzzyMatches.length === candidates.length) {
+          console.log(`[CALENDAR:USERS] Only fuzzy matches found for "${userQuery}"`);
+
+          const topSuggestions = fuzzyMatches
+            .slice(0, 3)
+            .map(u => u.name);
+
+          // Ask user to confirm fuzzy match
+          throw interrupt({
+            value: {
+              type: 'user_clarification',
+              message: `No exact match for team member "${userQuery}".`,
+              suggestions: topSuggestions,
+              original_query: userQuery,
+              prompt: `Did you mean: ${topSuggestions[0]}? Or select from: ${topSuggestions.join(', ')}`,
+              fuzzy_candidates: fuzzyMatches.slice(0, 3),
+              allow_skip: true
+            }
+          });
         }
 
         // Disambiguate if multiple matches
@@ -627,6 +720,48 @@ class CalendarSubgraph {
       };
     }
 
+    // Check if we're resuming from a contact clarification
+    if (state.contact_clarification_response) {
+      console.log("[CALENDAR:CONTACTS] Resuming with clarification:", state.contact_clarification_response);
+
+      const clarifiedName = state.contact_clarification_response.clarified_name;
+      const originalQuery = state.contact_clarification_response.original_query;
+      const skipContact = state.contact_clarification_response.skip;
+
+      if (!skipContact && clarifiedName && clarifiedName.toLowerCase() !== 'skip') {
+        // Replace the original query with the clarified name in contacts_to_resolve
+        const updatedContacts = state.contacts_to_resolve.map(name =>
+          name === originalQuery ? clarifiedName : name
+        );
+
+        // Continue with resolution using the clarified name
+        return {
+          ...state,
+          contacts_to_resolve: updatedContacts,
+          contact_clarification_response: null // Clear the response
+        };
+      } else {
+        // User chose to skip this contact
+        console.log(`[CALENDAR:CONTACTS] User chose to skip contact: ${originalQuery}`);
+
+        // Remove the problematic contact from the list and track as unresolved
+        const remainingContacts = state.contacts_to_resolve.filter(name => name !== originalQuery);
+        const unresolved = state.unresolved_contacts || [];
+        unresolved.push({
+          query: originalQuery,
+          type: 'user_skipped',
+          message: `Skipped adding "${originalQuery}" (name not found)`
+        });
+
+        return {
+          ...state,
+          contacts_to_resolve: remainingContacts,
+          unresolved_contacts: unresolved,
+          contact_clarification_response: null
+        };
+      }
+    }
+
     if (!state.contacts_to_resolve || state.contacts_to_resolve.length === 0) {
       return state;
     }
@@ -652,35 +787,69 @@ class CalendarSubgraph {
 
         if (candidates.length === 0) {
           console.warn(`[CALENDAR:CONTACTS] No matches for: ${contactName}`);
-          unresolved.push({
-            query: contactName,
-            type: 'no_matches',
-            message: `No contact found with name "${contactName}"`,
-            suggestions: []
+
+          // Before giving up, try fuzzy search to get suggestions
+          console.log(`[CALENDAR:CONTACTS] Attempting fuzzy search for suggestions`);
+          const fuzzyResults = await this.contactResolver.search(
+            contactName.substring(0, Math.min(contactName.length, 4)),
+            10,
+            passKey,
+            config.configurable.org_id,
+            false // Don't recurse fuzzy search
+          );
+
+          // Filter for reasonable matches
+          const suggestions = fuzzyResults
+            .filter(c => {
+              const similarity = this.contactResolver.calculateNameSimilarity(contactName, c.name);
+              return similarity > 0.3;
+            })
+            .sort((a, b) => {
+              const simA = this.contactResolver.calculateNameSimilarity(contactName, a.name);
+              const simB = this.contactResolver.calculateNameSimilarity(contactName, b.name);
+              return simB - simA;
+            })
+            .slice(0, 3)
+            .map(c => c.name);
+
+          // Throw interrupt for user clarification
+          console.log(`[CALENDAR:CONTACTS] Throwing interrupt for clarification`);
+          throw interrupt({
+            value: {
+              type: 'contact_clarification',
+              message: `I couldn't find anyone named "${contactName}".`,
+              suggestions: suggestions,
+              original_query: contactName,
+              prompt: suggestions.length > 0
+                ? `Did you mean one of these: ${suggestions.join(', ')}? Or please type the correct name:`
+                : `Could you please check the spelling and provide the correct name?`,
+              allow_skip: true
+            }
           });
-          continue;
         }
 
-        // Check if we have fuzzy matches
+        // Check if we have only fuzzy matches (no exact matches)
         const fuzzyMatches = candidates.filter(c => c.fuzzyMatch);
-        if (fuzzyMatches.length > 0) {
-          console.log(`[CALENDAR:CONTACTS] Found ${fuzzyMatches.length} fuzzy matches for "${contactName}"`);
+        if (fuzzyMatches.length > 0 && fuzzyMatches.length === candidates.length) {
+          console.log(`[CALENDAR:CONTACTS] Only fuzzy matches found for "${contactName}"`);
 
-          // If all matches are fuzzy, add them as suggestions in the unresolved list
-          if (fuzzyMatches.length === candidates.length) {
-            const topSuggestions = fuzzyMatches
-              .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-              .slice(0, 3)
-              .map(c => c.name);
+          const topSuggestions = fuzzyMatches
+            .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+            .slice(0, 3)
+            .map(c => c.name);
 
-            unresolved.push({
-              query: contactName,
-              type: 'fuzzy_matches',
-              message: `No exact match for "${contactName}". Did you mean one of these?`,
-              suggestions: topSuggestions
-            });
-            continue;
-          }
+          // Ask user to confirm fuzzy match
+          throw interrupt({
+            value: {
+              type: 'contact_clarification',
+              message: `No exact match for "${contactName}".`,
+              suggestions: topSuggestions,
+              original_query: contactName,
+              prompt: `Did you mean: ${topSuggestions[0]}? Or select from: ${topSuggestions.join(', ')}`,
+              fuzzy_candidates: fuzzyMatches.slice(0, 3),
+              allow_skip: true
+            }
+          });
         }
 
         // Disambiguate if multiple matches
@@ -914,13 +1083,38 @@ class CalendarSubgraph {
       }
     }
     
-    // Add warnings for conflicts
+    // Add warnings for conflicts and unresolved attendees
+    const warnings = [];
+
     if (state.conflicts?.length > 0) {
-      preview.warnings = [
-        `Conflicts with: ${state.conflicts.map(c => c.subject).join(", ")}`
-      ];
+      warnings.push(`Conflicts with: ${state.conflicts.map(c => c.subject).join(", ")}`);
     }
-    
+
+    // Add warnings for unresolved/skipped attendees
+    if (state.unresolved_contacts?.length > 0) {
+      for (const unresolved of state.unresolved_contacts) {
+        if (unresolved.type === 'user_skipped') {
+          warnings.push(`⚠️ Skipped: ${unresolved.query} (not found)`);
+        } else {
+          warnings.push(`⚠️ Could not add: ${unresolved.query}`);
+        }
+      }
+    }
+
+    if (state.unresolved_users?.length > 0) {
+      for (const unresolved of state.unresolved_users) {
+        if (unresolved.type === 'user_skipped') {
+          warnings.push(`⚠️ Skipped: ${unresolved.query} (not found)`);
+        } else {
+          warnings.push(`⚠️ Could not add: ${unresolved.query}`);
+        }
+      }
+    }
+
+    if (warnings.length > 0) {
+      preview.warnings = warnings;
+    }
+
     return {
       ...state,
       preview
@@ -951,6 +1145,17 @@ class CalendarSubgraph {
     // Return approval request structure instead of throwing interrupt
     console.log("[CALENDAR:APPROVAL] Returning approval request for coordinator to handle");
 
+    // Customize message based on unresolved attendees
+    let message = `Please review this ${state.action} action:`;
+    if (state.unresolved_contacts?.length > 0 || state.unresolved_users?.length > 0) {
+      const unresolvedCount = (state.unresolved_contacts?.length || 0) + (state.unresolved_users?.length || 0);
+      if (unresolvedCount === 1) {
+        message = `⚠️ Note: 1 attendee could not be found. Please review:`;
+      } else {
+        message = `⚠️ Note: ${unresolvedCount} attendees could not be found. Please review:`;
+      }
+    }
+
     return {
       ...state,
       requiresApproval: true,
@@ -961,7 +1166,7 @@ class CalendarSubgraph {
         action: state.action,
         preview: state.preview,
         data: state.appointment_data,
-        message: `Please review this ${state.action} action:`,
+        message: message,
         thread_id: state.thread_id || null
       },
       // Don't set approved yet - waiting for decision

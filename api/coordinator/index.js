@@ -117,6 +117,7 @@ class Coordinator {
     workflow.addNode("recall_memory", this.recallMemory.bind(this));
     workflow.addNode("route_domains", this.routeDomains.bind(this));
     workflow.addNode("execute_subgraphs", this.executeSubgraphs.bind(this));
+    workflow.addNode("clarification_handler", this.handleClarification.bind(this));
     workflow.addNode("approval_handler", this.handleApproval.bind(this));
     workflow.addNode("finalize_response", this.finalizeResponse.bind(this));
     workflow.addNode("handle_error", this.handleError.bind(this));
@@ -140,11 +141,19 @@ class Coordinator {
       }
     );
 
-    // Add conditional edge from execute_subgraphs to check for approvals
+    // Add conditional edge from execute_subgraphs to check for clarifications or approvals
     workflow.addConditionalEdges(
       "execute_subgraphs",
       (state) => {
-        // Check if any subgraph requested approval AND we don't already have a decision
+        // Check for clarifications first (they take priority)
+        if (state.pendingClarification &&
+            state.pendingClarification.requests &&
+            state.pendingClarification.requests.length > 0 &&
+            !state.pendingClarification.processed) {
+          console.log("[COORDINATOR:ROUTER] Routing to clarification_handler for pending clarifications");
+          return "clarification_handler";
+        }
+        // Then check if any subgraph requested approval AND we don't already have a decision
         if (state.pendingApproval &&
             state.pendingApproval.requests &&
             state.pendingApproval.requests.length > 0 &&
@@ -152,11 +161,33 @@ class Coordinator {
           console.log("[COORDINATOR:ROUTER] Routing to approval_handler for pending approvals");
           return "approval_handler";
         }
-        console.log("[COORDINATOR:ROUTER] No approvals needed or already processed, routing to finalize_response");
+        console.log("[COORDINATOR:ROUTER] No clarifications or approvals needed, routing to finalize_response");
         return "finalize_response";
       },
       {
+        "clarification_handler": "clarification_handler",
         "approval_handler": "approval_handler",
+        "finalize_response": "finalize_response"
+      }
+    );
+
+    // After clarification_handler, re-execute subgraphs with the clarified information
+    workflow.addConditionalEdges(
+      "clarification_handler",
+      (state) => {
+        // If we have a clarification response, re-execute subgraphs
+        if ((state.contact_clarification_response || state.user_clarification_response) &&
+            state.pendingClarification) {
+          console.log("[COORDINATOR:ROUTER] Clarification response received, re-executing subgraphs");
+          // Mark clarification as processed before re-executing
+          state.pendingClarification.processed = true;
+          return "execute_subgraphs";
+        }
+        // Otherwise this is an interrupt waiting for user response
+        return "finalize_response";
+      },
+      {
+        "execute_subgraphs": "execute_subgraphs",
         "finalize_response": "finalize_response"
       }
     );
@@ -573,6 +604,13 @@ class Coordinator {
             org_id: state.org_id,
             user_id: state.user_id,
             thread_id: state.thread_id,
+            // Pass clarification responses if resuming from clarification
+            ...(state.contact_clarification_response && state.pendingClarification?.domains?.includes(domain) ? {
+              contact_clarification_response: state.contact_clarification_response
+            } : {}),
+            ...(state.user_clarification_response && state.pendingClarification?.domains?.includes(domain) ? {
+              user_clarification_response: state.user_clarification_response
+            } : {}),
             // Pass approval decision if resuming and this domain requested approval
             ...(state.approval_decision && state.pendingApproval?.domains?.includes(domain) ? {
               approval_decision: state.approval_decision
@@ -627,10 +665,31 @@ class Coordinator {
               result: result || { error: `${domain} subgraph returned no result` }
             };
           } catch (error) {
-            // Re-throw interrupts to propagate to parent graph
+            // Handle interrupts from subgraphs
             if (error && error.name === 'GraphInterrupt') {
+              const interruptValue = error.value?.value || error.value;
+
+              // Check if it's a clarification interrupt (contact or user)
+              if (interruptValue?.type === 'contact_clarification' ||
+                  interruptValue?.type === 'user_clarification') {
+                console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph needs clarification:`, interruptValue.type);
+
+                // Return special result indicating clarification needed
+                // This will be handled by the coordinator's clarification_handler node
+                return {
+                  domain,
+                  result: {
+                    needsClarification: true,
+                    clarificationType: interruptValue.type,
+                    clarificationData: interruptValue,
+                    // Preserve other state from the subgraph
+                    ...subgraphState
+                  }
+                };
+              }
+
+              // For other interrupts, propagate as before
               console.log(`[COORDINATOR:EXECUTOR] Interrupt exception from ${domain} subgraph - propagating to parent`);
-              // Add domain info to interrupt for context
               error.domain = domain;
               throw error;  // Propagate interrupt to parent graph
             }
@@ -776,8 +835,39 @@ class Coordinator {
       }
       
       // Check if any subgraph is requesting approval
+      // Check for clarification needs BEFORE checking for approvals
+      // Clarifications take priority as they need to be resolved first
+      const clarificationRequests = [];
+      for (const [domain, result] of Object.entries(results)) {
+        if (result && result.needsClarification) {
+          console.log(`[COORDINATOR:EXECUTOR] Clarification needed from ${domain} subgraph:`, result.clarificationType);
+          clarificationRequests.push({
+            domain,
+            type: result.clarificationType,
+            data: result.clarificationData
+          });
+          // Store the partial state from the subgraph
+          subgraph_results[`${domain}_partial`] = result;
+        }
+      }
+
+      // If we have clarification requests, store them and skip approval check
+      if (clarificationRequests.length > 0) {
+        console.log(`[COORDINATOR:EXECUTOR] Found ${clarificationRequests.length} clarification request(s) - storing in state`);
+
+        // Store clarification context for the clarification_handler node
+        state.pendingClarification = {
+          requests: clarificationRequests,
+          domains: clarificationRequests.map(req => req.domain),
+          results: results
+        };
+
+        console.log("[COORDINATOR:EXECUTOR] Clarification requests stored - will route to clarification_handler");
+      }
+
       // ONLY check for new approvals if we're not already processing an approval decision
-      if (!state.approval_decision) {
+      // AND if we don't have pending clarifications
+      if (!state.approval_decision && !state.pendingClarification) {
         const approvalRequests = [];
         for (const [domain, result] of Object.entries(results)) {
           if (result && result.requiresApproval && result.approvalRequest) {
@@ -834,6 +924,59 @@ class Coordinator {
    * Handle approval requests from subgraphs
    * This is a dedicated node that throws interrupts for approvals
    */
+  /**
+   * Handle clarification interrupts for contacts/users
+   * This is a dedicated node that throws interrupts when names need clarification
+   */
+  async handleClarification(state) {
+    console.log("[COORDINATOR:CLARIFICATION] Processing clarification requests");
+
+    // Check if we're resuming with a clarification response
+    if (state.contact_clarification_response || state.user_clarification_response) {
+      console.log("[COORDINATOR:CLARIFICATION] Resuming with clarification response");
+
+      // Pass the clarification response to the appropriate subgraph
+      const clarificationType = state.contact_clarification_response ? 'contact' : 'user';
+      console.log(`[COORDINATOR:CLARIFICATION] Processing ${clarificationType} clarification`);
+
+      // Mark as processed and return to re-execute subgraphs
+      return {
+        ...state,
+        pendingClarification: {
+          ...state.pendingClarification,
+          processed: true
+        }
+      };
+    }
+
+    // Check if we have pending clarifications
+    if (!state.pendingClarification || !state.pendingClarification.requests ||
+        state.pendingClarification.requests.length === 0) {
+      console.log("[COORDINATOR:CLARIFICATION] No pending clarifications found");
+      return state;
+    }
+
+    const clarificationRequest = state.pendingClarification.requests[0]; // Handle one at a time
+    console.log(`[COORDINATOR:CLARIFICATION] Found clarification request: ${clarificationRequest.type}`);
+
+    // Throw interrupt for clarification UI
+    const interruptData = {
+      ...clarificationRequest.data,
+      domain: clarificationRequest.domain,
+      thread_id: state.thread_id || null
+    };
+
+    console.log("[COORDINATOR:CLARIFICATION] Throwing interrupt for clarification UI");
+    console.log("[COORDINATOR:CLARIFICATION] Interrupt type:", clarificationRequest.type);
+
+    // Throw the interrupt with checkpoint
+    console.log("[COORDINATOR:CLARIFICATION] 🔴 THROWING INTERRUPT - Checkpoint should be saved by LangGraph");
+
+    throw interrupt({
+      value: interruptData
+    });
+  }
+
   async handleApproval(state) {
     console.log("[COORDINATOR:APPROVAL] Processing approval requests");
 

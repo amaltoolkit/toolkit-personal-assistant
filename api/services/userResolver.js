@@ -42,13 +42,14 @@ class UserResolver {
   }
 
   /**
-   * Search for users in organization
+   * Search for users in organization with fuzzy matching
    * @param {string} query - Search query
    * @param {string} orgId - Organization ID
    * @param {number} limit - Maximum results
+   * @param {boolean} fuzzyFallback - Try fuzzy matching if exact fails
    * @returns {Promise<Array>} Array of matching users
    */
-  async search(query, orgId, limit = 5) {
+  async search(query, orgId, limit = 5, fuzzyFallback = true) {
     console.log(`[USER_RESOLVER] Searching for user: "${query}"`);
 
     // Check if query is "me" or similar
@@ -72,6 +73,38 @@ class UserResolver {
     }));
 
     console.log(`[USER_RESOLVER] Found ${mappedUsers.length} users`);
+
+    // If no results and fuzzy fallback is enabled, try partial matches
+    if (mappedUsers.length === 0 && fuzzyFallback && query.length > 2) {
+      console.log(`[USER_RESOLVER] No exact matches, trying fuzzy search`);
+
+      // Try searching with partial query (first few characters)
+      const partialQuery = query.substring(0, Math.min(query.length - 1, 3));
+      const fuzzyUsers = await this.userSyncService.searchUsers(partialQuery, orgId, limit * 3);
+
+      // Filter and score results
+      const scoredResults = fuzzyUsers
+        .map(u => ({
+          id: u.user_id,
+          name: u.full_name,
+          email: u.email,
+          title: u.job_title,
+          firstName: u.first_name,
+          lastName: u.last_name,
+          isCurrentUser: u.is_current_user,
+          fuzzyMatch: true,
+          similarity: this.calculateNameSimilarity(query, u.full_name)
+        }))
+        .filter(u => u.similarity > 0.3)
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
+
+      if (scoredResults.length > 0) {
+        console.log(`[USER_RESOLVER] Found ${scoredResults.length} fuzzy matches`);
+        return scoredResults;
+      }
+    }
+
     return mappedUsers;
   }
 

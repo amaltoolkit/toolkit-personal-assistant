@@ -71,6 +71,14 @@ const CalendarStateChannels = {
     value: (x, y) => y ? y : x,
     default: () => []
   },
+  unresolved_contacts: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  unresolved_users: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
   conflicts: {
     value: (x, y) => y ? y : x,
     default: () => []
@@ -303,6 +311,46 @@ class CalendarSubgraph {
     const userTimezone = state.timezone || 'UTC';
 
     try {
+      // Check if this might be a correction for a previously unresolved name
+      let isCorrection = false;
+      let correctionContext = null;
+
+      if (state.memory_context?.recalled_memories?.length > 0) {
+        // Look for mentions of unresolved names in recent memory
+        for (const memory of state.memory_context.recalled_memories) {
+          const content = memory.content || memory.value?.text || '';
+          if (content.includes('Could not find')) {
+            // Extract the unresolved name from memory
+            const unresolvedMatch = content.match(/Could not find (?:contact|user) "([^"]+)"/);
+            if (unresolvedMatch) {
+              const unresolvedName = unresolvedMatch[1];
+
+              // Check if current message might be a correction
+              const words = userQuery.toLowerCase().split(/\s+/);
+              if (words.length <= 3 && !words.includes('appointment') && !words.includes('meeting')) {
+                isCorrection = true;
+                correctionContext = {
+                  original: unresolvedName,
+                  correction: userQuery.trim(),
+                  type: content.includes('contact') ? 'contact' : 'user'
+                };
+                console.log(`[CALENDAR:PARSE] Detected possible correction: "${unresolvedName}" -> "${userQuery}"`);
+              }
+            }
+          }
+        }
+      }
+
+      // If this is a correction, return it for special handling
+      if (isCorrection && correctionContext) {
+        return {
+          ...state,
+          action: 'correction',
+          correction_context: correctionContext,
+          response: `I'll note that "${correctionContext.correction}" is the correct spelling. Please try your request again with the correct name.`
+        };
+      }
+
       // First, try to parse date/time directly from the query
       const dateTimeResult = parseDateTimeQuery(userQuery, userTimezone);
 
@@ -479,6 +527,7 @@ class CalendarSubgraph {
       }
 
       const resolved = [];
+      const unresolved = [];
 
       for (const userQuery of state.users_to_resolve) {
         // Check for "me" reference
@@ -490,6 +539,11 @@ class CalendarSubgraph {
             resolved.push(currentUser);
           } else {
             console.warn("[CALENDAR:USERS] Could not resolve 'me' - no current user found");
+            unresolved.push({
+              query: userQuery,
+              type: 'self_reference',
+              message: "Could not identify current user"
+            });
           }
           continue;
         }
@@ -499,6 +553,11 @@ class CalendarSubgraph {
 
         if (candidates.length === 0) {
           console.warn(`[CALENDAR:USERS] No matches for: ${userQuery}`);
+          unresolved.push({
+            query: userQuery,
+            type: 'no_matches',
+            message: `No internal team member found with name "${userQuery}"`
+          });
           continue;
         }
 
@@ -531,11 +590,12 @@ class CalendarSubgraph {
         resolved.push(selected);
       }
 
-      console.log(`[CALENDAR:USERS] Resolved ${resolved.length} users`);
+      console.log(`[CALENDAR:USERS] Resolved ${resolved.length} users, ${unresolved.length} unresolved`);
 
       return {
         ...state,
-        resolved_users: resolved
+        resolved_users: resolved,
+        unresolved_users: unresolved
       };
 
     } catch (error) {
@@ -574,6 +634,7 @@ class CalendarSubgraph {
     try {
       const passKey = await config.configurable.getPassKey();
       const resolved = state.resolved_contacts || [];
+      const unresolved = [];
 
       for (const contactName of state.contacts_to_resolve) {
         // Skip if we already have this contact resolved (from resume)
@@ -591,7 +652,35 @@ class CalendarSubgraph {
 
         if (candidates.length === 0) {
           console.warn(`[CALENDAR:CONTACTS] No matches for: ${contactName}`);
+          unresolved.push({
+            query: contactName,
+            type: 'no_matches',
+            message: `No contact found with name "${contactName}"`,
+            suggestions: []
+          });
           continue;
+        }
+
+        // Check if we have fuzzy matches
+        const fuzzyMatches = candidates.filter(c => c.fuzzyMatch);
+        if (fuzzyMatches.length > 0) {
+          console.log(`[CALENDAR:CONTACTS] Found ${fuzzyMatches.length} fuzzy matches for "${contactName}"`);
+
+          // If all matches are fuzzy, add them as suggestions in the unresolved list
+          if (fuzzyMatches.length === candidates.length) {
+            const topSuggestions = fuzzyMatches
+              .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+              .slice(0, 3)
+              .map(c => c.name);
+
+            unresolved.push({
+              query: contactName,
+              type: 'fuzzy_matches',
+              message: `No exact match for "${contactName}". Did you mean one of these?`,
+              suggestions: topSuggestions
+            });
+            continue;
+          }
         }
 
         // Disambiguate if multiple matches
@@ -627,11 +716,12 @@ class CalendarSubgraph {
         resolved.push(selected.topCandidate || selected);
       }
 
-      console.log(`[CALENDAR:CONTACTS] Resolved ${resolved.length} contacts`);
+      console.log(`[CALENDAR:CONTACTS] Resolved ${resolved.length} contacts, ${unresolved.length} unresolved`);
 
       return {
         ...state,
-        resolved_contacts: resolved
+        resolved_contacts: resolved,
+        unresolved_contacts: unresolved
       };
 
     } catch (error) {
@@ -1053,16 +1143,45 @@ class CalendarSubgraph {
       const userId = config.configurable.user_id || "default";
       
       // Build conversation for memory
+      let assistantContent = '';
+      const subject = state.appointment_data?.subject || 'Appointment';
+      const participants = (state.resolved_contacts || []).map(c => c.name).filter(Boolean);
+      const teamMembers = (state.resolved_users || []).map(u => u.name).filter(Boolean);
+
+      // Base message
+      if (state.action === 'create' && state.appointments?.[0]) {
+        assistantContent = `Created appointment: ${subject}`;
+        if (participants.length) assistantContent += ` with ${participants.join(', ')}`;
+        if (teamMembers.length) assistantContent += ` and team members: ${teamMembers.join(', ')}`;
+      } else {
+        assistantContent = `${state.action} appointment: ${subject}`;
+      }
+
+      // Add unresolved context for future reference
+      const unresolvedInfo = [];
+      if (state.unresolved_contacts?.length > 0) {
+        for (const unresolved of state.unresolved_contacts) {
+          unresolvedInfo.push(`Could not find contact "${unresolved.query}"`);
+          if (unresolved.suggestions?.length > 0) {
+            unresolvedInfo.push(`Possible matches: ${unresolved.suggestions.join(', ')}`);
+          }
+        }
+      }
+      if (state.unresolved_users?.length > 0) {
+        for (const unresolved of state.unresolved_users) {
+          unresolvedInfo.push(`Could not find user "${unresolved.query}"`);
+        }
+      }
+
+      if (unresolvedInfo.length > 0) {
+        assistantContent += '. ' + unresolvedInfo.join('. ');
+      }
+
       const messages = [
         ...state.messages,
         {
           role: "assistant",
-          content: (() => {
-            const subject = state.appointment_data?.subject || 'Appointment';
-            const participants = (state.resolved_contacts || []).map(c => c.name).filter(Boolean);
-            const withStr = participants.length ? ` with ${participants.join(', ')}` : '';
-            return `${state.action} appointment: ${subject}${withStr}`;
-          })()
+          content: assistantContent
         }
       ];
       
@@ -1137,6 +1256,29 @@ class CalendarSubgraph {
 
         if (attendeesParts.length > 0) {
           response += ` with ${attendeesParts.join(' and ')}`;
+        }
+
+        // Add warnings for unresolved attendees
+        const warnings = [];
+        if (state.unresolved_users?.length > 0) {
+          for (const unresolved of state.unresolved_users) {
+            warnings.push(`⚠️ ${unresolved.message}`);
+          }
+        }
+        if (state.unresolved_contacts?.length > 0) {
+          for (const unresolved of state.unresolved_contacts) {
+            warnings.push(`⚠️ ${unresolved.message}`);
+
+            // Add suggestions if available
+            if (unresolved.suggestions?.length > 0) {
+              warnings.push(`   Suggestions: ${unresolved.suggestions.join(', ')}`);
+            }
+          }
+        }
+
+        if (warnings.length > 0) {
+          response += "\n\n" + warnings.join("\n");
+          response += "\n\n💡 The appointment was created without these attendees. Please check the spelling and try adding them again if needed.";
         }
       } else {
         response = "Appointment creation was processed.";

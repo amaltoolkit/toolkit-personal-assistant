@@ -17,14 +17,15 @@ class ContactResolver {
   }
 
   /**
-   * Search for contacts in BSA
+   * Search for contacts in BSA with fuzzy matching fallback
    * @param {string} query - Search query (name, email, etc.)
    * @param {number} limit - Maximum results
    * @param {string} passKey - BSA authentication key
    * @param {string} orgId - Organization ID
+   * @param {boolean} fuzzyFallback - Try fuzzy matching if exact fails
    * @returns {Promise<Array>} Array of matching contacts
    */
-  async search(query, limit = 5, passKey, orgId) {
+  async search(query, limit = 5, passKey, orgId, fuzzyFallback = true) {
     // Check cache first
     const cacheKey = `search:${query}:${limit}`;
     if (this.cache.has(cacheKey)) {
@@ -88,6 +89,58 @@ class ContactResolver {
       });
 
       console.log(`[CONTACT:SEARCH] Found ${contacts.length} contacts`);
+
+      // If no results and fuzzy fallback is enabled, try partial matches
+      if (contacts.length === 0 && fuzzyFallback && query.length > 2) {
+        console.log(`[CONTACT:SEARCH] No exact matches, trying fuzzy search`);
+
+        // Try searching with just the first part of the name
+        const nameParts = query.split(' ');
+        if (nameParts.length > 1) {
+          // Try first name only
+          const fuzzyResults = await this.search(nameParts[0], limit * 2, passKey, orgId, false);
+
+          // Filter results that have some similarity to the original query
+          const filteredResults = fuzzyResults.filter(contact => {
+            const similarity = this.calculateNameSimilarity(query, contact.name);
+            return similarity > 0.5; // At least 50% similar
+          });
+
+          if (filteredResults.length > 0) {
+            console.log(`[CONTACT:SEARCH] Found ${filteredResults.length} fuzzy matches`);
+
+            // Add fuzzy match indicator
+            return filteredResults.map(c => ({
+              ...c,
+              fuzzyMatch: true,
+              similarity: this.calculateNameSimilarity(query, c.name)
+            }));
+          }
+        }
+
+        // Try searching for partial matches
+        const partialQuery = query.substring(0, Math.min(query.length, 4));
+        if (partialQuery !== query) {
+          const partialResults = await this.search(partialQuery, limit * 3, passKey, orgId, false);
+
+          // Filter and score results
+          const scoredResults = partialResults
+            .map(contact => ({
+              ...contact,
+              fuzzyMatch: true,
+              similarity: this.calculateNameSimilarity(query, contact.name)
+            }))
+            .filter(c => c.similarity > 0.3)
+            .sort((a, b) => b.similarity - a.similarity)
+            .slice(0, limit);
+
+          if (scoredResults.length > 0) {
+            console.log(`[CONTACT:SEARCH] Found ${scoredResults.length} partial matches`);
+            return scoredResults;
+          }
+        }
+      }
+
       return contacts;
     } catch (error) {
       console.error('[CONTACT:SEARCH] Error:', error.message);

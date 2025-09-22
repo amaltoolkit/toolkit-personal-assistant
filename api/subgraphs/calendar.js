@@ -8,7 +8,7 @@
  * - Managing attendees
  */
 
-const { StateGraph, END } = require("@langchain/langgraph");
+const { StateGraph, END, interrupt } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { z } = require("zod");
 const { parseDateQuery, parseDateTimeQuery, calculateEndTime } = require("../lib/chronoParser");
@@ -19,6 +19,7 @@ dayjs.extend(utc);
 dayjs.extend(tz);
 const { getAppointments, createAppointment, updateAppointment } = require("../tools/bsa/appointments");
 const { getContactResolver } = require("../services/contactResolver");
+const { getUserResolver } = require("../services/userResolver");
 const { getApprovalBatcher } = require("../services/approvalBatcher");
 const { getMem0Service } = require("../services/mem0Service");
 
@@ -59,6 +60,14 @@ const CalendarStateChannels = {
     default: () => []
   },
   resolved_contacts: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  users_to_resolve: {
+    value: (x, y) => y ? y : x,
+    default: () => []
+  },
+  resolved_users: {
     value: (x, y) => y ? y : x,
     default: () => []
   },
@@ -130,6 +139,7 @@ class CalendarSubgraph {
     });
 
     this.contactResolver = getContactResolver();
+    this.userResolver = getUserResolver();
     this.approvalBatcher = getApprovalBatcher();
     this.mem0 = getMem0Service();
     this.checkpointer = checkpointer;
@@ -145,6 +155,7 @@ class CalendarSubgraph {
     // Add nodes
     workflow.addNode("parse_request", this.parseRequest.bind(this));
     workflow.addNode("resolve_contacts", this.resolveContacts.bind(this));
+    workflow.addNode("resolve_users", this.resolveUsers.bind(this));
     workflow.addNode("fetch_appointments", this.fetchAppointments.bind(this));
     workflow.addNode("check_conflicts", this.checkConflicts.bind(this));
     workflow.addNode("generate_preview", this.generatePreview.bind(this));
@@ -165,14 +176,22 @@ class CalendarSubgraph {
         console.log("[CALENDAR:ROUTER] After parse_request:", {
           hasError: !!state.error,
           action: state.action,
-          contactsToResolve: state.contacts_to_resolve?.length || 0
+          contactsToResolve: state.contacts_to_resolve?.length || 0,
+          usersToResolve: state.users_to_resolve?.length || 0
         });
 
         if (state.error) return "format_response";
         if (state.action === "view") return "fetch_appointments";
         if (state.action === "create") {
-          const nextNode = state.contacts_to_resolve?.length > 0 ?
-            "resolve_contacts" : "check_conflicts";
+          // Determine next node based on what needs resolution
+          let nextNode;
+          if (state.users_to_resolve?.length > 0) {
+            nextNode = "resolve_users";
+          } else if (state.contacts_to_resolve?.length > 0) {
+            nextNode = "resolve_contacts";
+          } else {
+            nextNode = "check_conflicts";
+          }
           console.log(`[CALENDAR:ROUTER] Create action routing to: ${nextNode}`);
           return nextNode;
         }
@@ -182,11 +201,27 @@ class CalendarSubgraph {
       {
         "fetch_appointments": "fetch_appointments",
         "resolve_contacts": "resolve_contacts",
+        "resolve_users": "resolve_users",
         "check_conflicts": "check_conflicts",
         "format_response": "format_response"
       }
     );
-    
+
+    // User resolution flow - check if contacts need resolution after users
+    workflow.addConditionalEdges(
+      "resolve_users",
+      (state) => {
+        if (state.contacts_to_resolve?.length > 0) {
+          return "resolve_contacts";
+        }
+        return "check_conflicts";
+      },
+      {
+        "resolve_contacts": "resolve_contacts",
+        "check_conflicts": "check_conflicts"
+      }
+    );
+
     // Contact resolution flow
     workflow.addEdge("resolve_contacts", "check_conflicts");
     
@@ -276,8 +311,10 @@ class CalendarSubgraph {
         Analyze this calendar-related query and extract:
         1. Action: view, create, update, or delete
         2. Appointment details (if creating/updating)
-        3. Contact names mentioned
-        4. Keep the EXACT date/time expression as the user stated it
+        3. Contact names mentioned (external people)
+        4. User names mentioned (internal team members)
+        5. Self-references like "me", "myself", "I"
+        6. Keep the EXACT date/time expression as the user stated it
 
         Query: "${userQuery}"
         ${state.memory_context?.recalled_memories ?
@@ -294,13 +331,20 @@ class CalendarSubgraph {
             "duration": "in minutes",
             "isAllDay": boolean
           },
-          "contacts": ["name1", "name2"]
+          "contacts": ["external person names"],
+          "users": ["internal team member names"],
+          "selfReferences": ["me", "myself", "I"] // if user refers to themselves
         }
 
-        IMPORTANT: For date_query, preserve EXACTLY what the user said, including the time.
+        IMPORTANT:
+        - For date_query, preserve EXACTLY what the user said, including the time.
+        - Distinguish between external contacts and internal team members (users)
+        - Detect self-references like "me", "myself", "I" and list them
+
         Examples:
-        - User says "tomorrow at 8am" → date_query: "tomorrow at 8am"
-        - User says "next Monday at 2:30pm" → date_query: "next Monday at 2:30pm"
+        - "Schedule a meeting with John and me" → contacts: ["John"], selfReferences: ["me"]
+        - "Book time with Sarah and Tyler" → users: ["Sarah", "Tyler"]
+        - "Meeting with client Bob and myself" → contacts: ["Bob"], selfReferences: ["myself"]
       `;
 
       const response = await this.llm.invoke(parsePrompt);
@@ -379,12 +423,19 @@ class CalendarSubgraph {
         }
       }
 
+      // Combine users and self-references
+      const usersToResolve = [
+        ...(parsed.users || []),
+        ...(parsed.selfReferences || [])
+      ];
+
       const result = {
         ...state,
         action: parsed.action,
         date_range: dateRange,
         appointment_data: appointmentData,
-        contacts_to_resolve: parsed.contacts || []
+        contacts_to_resolve: parsed.contacts || [],
+        users_to_resolve: usersToResolve
       };
 
       console.log("[CALENDAR:PARSE] Returning state:", {
@@ -392,6 +443,7 @@ class CalendarSubgraph {
         hasDateRange: !!result.date_range,
         hasAppointmentData: !!result.appointment_data,
         contactsToResolve: result.contacts_to_resolve?.length || 0,
+        usersToResolve: result.users_to_resolve?.length || 0,
         hasError: !!result.error
       });
 
@@ -402,6 +454,98 @@ class CalendarSubgraph {
       return {
         ...state,
         error: `Failed to understand request: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Resolve user names to IDs (internal team members)
+   */
+  async resolveUsers(state, config) {
+    console.log("[CALENDAR:USERS] Resolving users");
+    console.log("[CALENDAR:USERS] Users to resolve:", state.users_to_resolve);
+
+    if (!state.users_to_resolve || state.users_to_resolve.length === 0) {
+      return state;
+    }
+
+    try {
+      const sessionId = state.session_id || config?.configurable?.session_id;
+      const orgId = state.org_id || config?.configurable?.org_id;
+
+      if (!sessionId || !orgId) {
+        console.warn("[CALENDAR:USERS] Missing session or org ID, skipping user resolution");
+        return state;
+      }
+
+      const resolved = [];
+
+      for (const userQuery of state.users_to_resolve) {
+        // Check for "me" reference
+        if (this.userResolver.isSelfReference(userQuery)) {
+          console.log("[CALENDAR:USERS] Resolving 'me' pronoun");
+          const currentUser = await this.userResolver.resolveMe(sessionId, orgId);
+
+          if (currentUser) {
+            resolved.push(currentUser);
+          } else {
+            console.warn("[CALENDAR:USERS] Could not resolve 'me' - no current user found");
+          }
+          continue;
+        }
+
+        // Search for user by name
+        const candidates = await this.userResolver.search(userQuery, orgId, 5);
+
+        if (candidates.length === 0) {
+          console.warn(`[CALENDAR:USERS] No matches for: ${userQuery}`);
+          continue;
+        }
+
+        // Disambiguate if multiple matches
+        const selected = await this.userResolver.disambiguate(candidates, {
+          query: userQuery,
+          memoryContext: state.memory_context || {},
+          orgId,
+          userId: state.user_id
+        });
+
+        // Handle disambiguation that requires user input
+        if (selected.needsDisambiguation) {
+          // Save partial progress before interrupt
+          if (resolved.length > 0) {
+            state.resolved_users = resolved;
+          }
+
+          // Use interrupt for user selection
+          throw interrupt({
+            value: {
+              type: 'user_disambiguation',
+              message: `Multiple users found for "${userQuery}". Please select:`,
+              candidates: selected.alternatives,
+              original_query: userQuery
+            }
+          });
+        }
+
+        resolved.push(selected);
+      }
+
+      console.log(`[CALENDAR:USERS] Resolved ${resolved.length} users`);
+
+      return {
+        ...state,
+        resolved_users: resolved
+      };
+
+    } catch (error) {
+      if (error.name === 'GraphInterrupt') throw error;
+
+      console.error("[CALENDAR:USERS] Error resolving users:", error);
+      // Continue without users rather than failing
+      return {
+        ...state,
+        resolved_users: []
       };
     }
   }
@@ -665,9 +809,16 @@ class CalendarSubgraph {
         });
       }
       
+      if (state.resolved_users?.length > 0) {
+        preview.details.push({
+          label: "Team Members",
+          value: state.resolved_users.map(u => u.name).join(", ")
+        });
+      }
+
       if (state.resolved_contacts?.length > 0) {
         preview.details.push({
-          label: "Attendees",
+          label: "External Attendees",
           value: state.resolved_contacts.map(c => c.name).join(", ")
         });
       }
@@ -792,11 +943,14 @@ class CalendarSubgraph {
    */
   async linkAttendees(state, config) {
     console.log("[CALENDAR:ATTENDEES] Linking attendees");
-    
-    if (!state.resolved_contacts || state.resolved_contacts.length === 0) {
+
+    const hasContacts = state.resolved_contacts && state.resolved_contacts.length > 0;
+    const hasUsers = state.resolved_users && state.resolved_users.length > 0;
+
+    if (!hasContacts && !hasUsers) {
       return state;
     }
-    
+
     if (!state.appointments || state.appointments.length === 0) {
       return state;
     }
@@ -805,29 +959,58 @@ class CalendarSubgraph {
       const passKey = await config.configurable.getPassKey();
       const orgId = config.configurable.org_id;
       const appointmentId = state.appointments[0].id || state.appointments[0].Id;
-      
-      for (const contact of state.resolved_contacts) {
-        // Validate contact has an ID before attempting to link
-        const contactId = contact.id || contact.Id;
-        if (!contactId) {
-          console.warn(`[CALENDAR:ATTENDEES] Skipping contact without ID: ${contact.name || 'Unknown'}`);
-          continue;
-        }
 
-        await this.contactResolver.linkActivity(
-          'appointment',
-          appointmentId,
-          contactId,
-          passKey,
-          orgId
-        );
+      // Link contacts (external people)
+      if (hasContacts) {
+        for (const contact of state.resolved_contacts) {
+          // Validate contact has an ID before attempting to link
+          const contactId = contact.id || contact.Id;
+          if (!contactId) {
+            console.warn(`[CALENDAR:ATTENDEES] Skipping contact without ID: ${contact.name || 'Unknown'}`);
+            continue;
+          }
+
+          await this.contactResolver.linkActivity(
+            'appointment',
+            appointmentId,
+            contactId,
+            passKey,
+            orgId
+          );
+        }
+        console.log(`[CALENDAR:ATTENDEES] Linked ${state.resolved_contacts.length} contacts`);
       }
-      
-      console.log(`[CALENDAR:ATTENDEES] Linked ${state.resolved_contacts.length} attendees`);
+
+      // Link users (internal team members)
+      if (hasUsers) {
+        for (const user of state.resolved_users) {
+          // Validate user has an ID before attempting to link
+          const userId = user.id || user.Id;
+          if (!userId) {
+            console.warn(`[CALENDAR:ATTENDEES] Skipping user without ID: ${user.name || 'Unknown'}`);
+            continue;
+          }
+
+          await this.userResolver.linkActivity(
+            'appointment',
+            appointmentId,
+            userId,
+            passKey,
+            orgId
+          );
+        }
+        console.log(`[CALENDAR:ATTENDEES] Linked ${state.resolved_users.length} users`);
+      }
+
+      const totalAttendees = (state.resolved_contacts?.length || 0) + (state.resolved_users?.length || 0);
+      console.log(`[CALENDAR:ATTENDEES] Total ${totalAttendees} attendees linked`);
 
       // Enrich appointment entity with participants for follow-up questions
       try {
-        const participants = state.resolved_contacts.map(c => c.name).filter(Boolean);
+        const contactNames = (state.resolved_contacts || []).map(c => c.name).filter(Boolean);
+        const userNames = (state.resolved_users || []).map(u => u.name).filter(Boolean);
+        const participants = [...contactNames, ...userNames];
+
         if (!state.entities) state.entities = {};
         const existing = state.entities.appointment || {
           type: 'appointment',
@@ -838,7 +1021,9 @@ class CalendarSubgraph {
         state.entities.appointment = {
           ...existing,
           participants,
-          participantCount: participants.length
+          participantCount: participants.length,
+          externalAttendees: contactNames,
+          internalAttendees: userNames
         };
       } catch (e) {
         console.warn('[CALENDAR:ATTENDEES] Failed to enrich entities with participants:', e?.message);
@@ -941,8 +1126,17 @@ class CalendarSubgraph {
       const appt = state.appointments?.[0];
       if (appt) {
         response = `✅ Successfully created appointment "${appt.subject || appt.Subject}"`;
+
+        const attendeesParts = [];
+        if (state.resolved_users?.length > 0) {
+          attendeesParts.push(`${state.resolved_users.length} team member(s)`);
+        }
         if (state.resolved_contacts?.length > 0) {
-          response += ` with ${state.resolved_contacts.length} attendee(s)`;
+          attendeesParts.push(`${state.resolved_contacts.length} external attendee(s)`);
+        }
+
+        if (attendeesParts.length > 0) {
+          response += ` with ${attendeesParts.join(' and ')}`;
         }
       } else {
         response = "Appointment creation was processed.";

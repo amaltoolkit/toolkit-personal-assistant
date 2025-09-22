@@ -744,6 +744,96 @@ app.get("/api/orgs", async (req, res) => {
   }
 });
 
+// Select organization endpoint with user sync
+app.post("/api/orgs/select", async (req, res) => {
+  console.log("[API/ORGS/SELECT] =================================");
+  console.log("[API/ORGS/SELECT] Endpoint called with body:", JSON.stringify(req.body));
+  console.log("[API/ORGS/SELECT] Headers:", req.headers);
+
+  try {
+    const { session_id: sessionId, org_id: orgId } = req.body;
+
+    // Validate required fields
+    if (!sessionId) {
+      console.error("[API/ORGS/SELECT] ERROR: Missing session_id");
+      return res.status(400).json({ error: "missing session_id" });
+    }
+
+    if (!orgId) {
+      console.error("[API/ORGS/SELECT] ERROR: Missing org_id");
+      return res.status(400).json({ error: "missing org_id" });
+    }
+
+    console.log(`[API/ORGS/SELECT] Starting org selection process`);
+    console.log(`[API/ORGS/SELECT] Session ID: ${sessionId}`);
+    console.log(`[API/ORGS/SELECT] Org ID: ${orgId}`);
+
+    // Get valid PassKey
+    console.log("[API/ORGS/SELECT] Getting PassKey for session...");
+    const passKey = await getValidPassKey(sessionId);
+
+    if (!passKey) {
+      console.error("[API/ORGS/SELECT] ERROR: No PassKey found for session");
+      return res.status(401).json({ error: "not authenticated", requiresReauth: true });
+    }
+    console.log("[API/ORGS/SELECT] PassKey retrieved successfully");
+
+    // Get the user ID from the session
+    console.log("[API/ORGS/SELECT] Fetching user ID from database...");
+    const { data: tokenData, error: tokenError } = await supabase
+      .from("bsa_tokens")
+      .select("user_id")
+      .eq("session_id", sessionId)
+      .single();
+
+    if (tokenError) {
+      console.error("[API/ORGS/SELECT] ERROR fetching user ID from DB:", JSON.stringify(tokenError));
+    } else {
+      console.log("[API/ORGS/SELECT] Token data from DB:", JSON.stringify(tokenData));
+    }
+
+    const currentUserId = tokenData?.user_id;
+    console.log("[API/ORGS/SELECT] Current user ID extracted:", currentUserId || "NOT FOUND - will sync without marking current user");
+
+    // Import and use the user sync service
+    const { getUserSyncService } = require('./services/userSyncService');
+    const userSyncService = getUserSyncService();
+
+    // Sync organization users
+    const syncResult = await userSyncService.syncOrganizationUsers(
+      passKey,
+      orgId,
+      sessionId,
+      currentUserId
+    );
+
+    console.log("[API/ORGS/SELECT] User sync result:", syncResult);
+
+    // Get the current user details
+    let currentUser = null;
+    if (currentUserId) {
+      currentUser = await userSyncService.getCurrentUser(sessionId, orgId);
+    }
+
+    // Return success response
+    res.json({
+      success: true,
+      orgId,
+      userSync: syncResult,
+      currentUser: currentUser ? {
+        id: currentUser.user_id,
+        name: currentUser.full_name,
+        email: currentUser.email,
+        title: currentUser.job_title
+      } : null
+    });
+
+  } catch (error) {
+    console.error("[API/ORGS/SELECT] Error:", error);
+    res.status(500).json({ error: "Failed to select organization" });
+  }
+});
+
 // Import date parser for natural language date queries
 const { parseDateQuery, extractDateFromQuery } = require('./lib/dateParser');
 

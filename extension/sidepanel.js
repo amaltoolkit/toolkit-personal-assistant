@@ -141,6 +141,28 @@ async function initializeApp() {
         currentOrgId = lastOrgId;
         currentOrgName = lastOrgName;
         showChatInterface();
+
+        // Trigger user sync for the saved organization
+        console.log('[INIT] Triggering user sync for saved org:', lastOrgId);
+        try {
+          const response = await fetch(`${API_BASE}/api/orgs/select`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              session_id: currentSessionId,
+              org_id: lastOrgId
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            console.log('[INIT] Initial org sync completed:', data);
+          }
+        } catch (error) {
+          console.error('[INIT] Error syncing organization on load:', error);
+        }
       } else {
         // Needs to select organization
         showOrgSelectionScreen();
@@ -324,26 +346,57 @@ function displayOrganizations() {
   });
 }
 
-function selectOrganization(orgId, orgName, element) {
+async function selectOrganization(orgId, orgName, element) {
+  console.log('[SELECT_ORG] Selecting organization:', orgId, orgName);
+
   // Update selection state
   currentOrgId = orgId;
   currentOrgName = orgName;
-  
+
   // Update UI
   document.querySelectorAll('.org-item-onboarding').forEach(item => {
     item.classList.remove('selected');
   });
-  
+
   if (element) {
     element.classList.add('selected');
   }
-  
+
   // Enable continue button
   if (elements.continueBtn) {
     elements.continueBtn.classList.remove('hidden');
     elements.continueBtn.disabled = false;
   }
-  
+
+  // Call backend to sync users for this organization
+  try {
+    console.log('[SELECT_ORG] Calling backend /api/orgs/select endpoint...');
+    const response = await fetch(`${API_BASE}/api/orgs/select`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        org_id: orgId
+      })
+    });
+
+    if (!response.ok) {
+      console.error('[SELECT_ORG] Failed to sync organization users:', response.status);
+    } else {
+      const data = await response.json();
+      console.log('[SELECT_ORG] Organization sync response:', data);
+
+      if (data.currentUser) {
+        console.log('[SELECT_ORG] Current user identified:', data.currentUser.name);
+      }
+    }
+  } catch (error) {
+    console.error('[SELECT_ORG] Error syncing organization:', error);
+    // Don't block the UI if sync fails
+  }
+
   // Update dropdown if in chat interface
   updateOrgDisplay();
 }

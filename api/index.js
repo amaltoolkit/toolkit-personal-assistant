@@ -915,26 +915,31 @@ app.post("/api/reset-conversation", async (req, res) => {
   console.log(`[RESET:${requestId}] Starting conversation reset`);
   
   try {
-    const { session_id } = req.body;
-    
+    const { session_id, org_id } = req.body;
+
     if (!session_id) {
       return res.status(400).json({ error: "session_id required" });
     }
-    
-    // Get user_id from session
+
+    if (!org_id) {
+      return res.status(400).json({ error: "org_id required" });
+    }
+
+    // Validate session exists (security check)
     const { data: tokenData, error: tokenError } = await supabase
       .from("bsa_tokens")
       .select("user_id")
       .eq("session_id", session_id)
       .single();
-    
+
     if (tokenError || !tokenData) {
       console.error(`[RESET:${requestId}] Invalid session:`, tokenError);
       return res.status(401).json({ error: "Invalid session" });
     }
-    
+
     const userId = tokenData.user_id;
-    const threadId = `${session_id}:${userId}`;
+    // Use org_id from request body - this matches how thread_id is constructed in the coordinator
+    const threadId = `${session_id}:${org_id}`;
     
     console.log(`[RESET:${requestId}] Clearing checkpoints for thread: ${threadId}`);
     
@@ -980,14 +985,21 @@ app.post("/api/reset-conversation", async (req, res) => {
         checkpoints: checkpointsResult.rowCount,
         checkpoint_migrations: migrationsDeleted
       };
-      
-      console.log(`[RESET:${requestId}] Successfully cleared checkpoints:`, deletionCounts);
-      
-      res.json({ 
-        success: true, 
+
+      const totalDeleted = deletionCounts.checkpoint_writes + deletionCounts.checkpoint_blobs + deletionCounts.checkpoints;
+
+      if (totalDeleted === 0) {
+        console.log(`[RESET:${requestId}] Warning: No checkpoints found for thread ${threadId} - conversation may already be empty`);
+      } else {
+        console.log(`[RESET:${requestId}] Successfully cleared checkpoints:`, deletionCounts);
+      }
+
+      res.json({
+        success: true,
         message: "Conversation reset successfully",
         thread_id: threadId,
-        deleted: deletionCounts
+        deleted: deletionCounts,
+        was_empty: totalDeleted === 0
       });
       
     } catch (err) {

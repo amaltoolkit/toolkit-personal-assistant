@@ -14,7 +14,7 @@ const supabase = createClient(
 
 // Import Coordinator and state management
 const { getCoordinator } = require('../coordinator');
-const { getStore, getCheckpointer } = require('../graph/state');
+const { getCheckpointer } = require('../graph/state');
 
 // Constants
 const RATE_LIMIT = 10; // requests
@@ -142,10 +142,7 @@ async function buildConfig(params) {
     time_zone,
     passKey
   } = params;
-  
-  // Get the UnifiedStore instance for this org/user
-  const store = await getStore();
-  
+
   return {
     configurable: {
       thread_id: thread_id || `${session_id}:${org_id}`,
@@ -153,8 +150,7 @@ async function buildConfig(params) {
       orgId: org_id,
       user_tz: time_zone || DEFAULT_TIMEZONE,
       passKey, // Passed via closure, never in state
-      BSA_BASE: bsaConfig.getBaseUrl(),
-      store // Add UnifiedStore to config for memory nodes
+      BSA_BASE: bsaConfig.getBaseUrl()
     }
   };
 }
@@ -385,6 +381,19 @@ router.post('/execute', async (req, res) => {
               message: interruptData.message,
               thread_id: config.configurable.thread_id
             };
+          } else if (interruptData.type === 'contact_clarification' ||
+                     interruptData.type === 'user_clarification') {
+            // Preserve clarification data
+            state.interrupt = {
+              type: interruptData.type,
+              message: interruptData.message,
+              prompt: interruptData.prompt,
+              suggestions: interruptData.suggestions || [],
+              original_query: interruptData.original_query,
+              allow_skip: interruptData.allow_skip,
+              domain: interruptData.domain,
+              thread_id: config.configurable.thread_id
+            };
           } else if (interruptData.type === 'approval') {
             state.approvalPayload = interruptData;
             state.previews = [interruptData.preview]; // Wrap single preview in array
@@ -422,10 +431,13 @@ router.post('/execute', async (req, res) => {
         }
 
         const interruptData = {
-          type: 'approval_required',
+          type: state.interrupt?.type || 'approval_required',
           threadId: config.configurable.thread_id,
+          // Include clarification-specific data if present
+          ...(state.interrupt ? state.interrupt : {}),
+          // Include approval-specific data if present
           previews: previews,
-          message: message,
+          message: state.interrupt?.message || message,
           approvalPayload: state.approvalPayload || state.approvalContext,
           requestId
         };

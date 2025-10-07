@@ -60,7 +60,16 @@ function parseDateQuery(query, userTimezone = 'UTC') {
   }
 
   // Use Chrono for natural language parsing
-  const referenceDate = dayjs().tz(userTimezone).toDate();
+  // Create reference date in user's timezone to avoid timezone conversion issues
+  const now = dayjs().tz(userTimezone);
+  const referenceDate = new Date(
+    now.year(),
+    now.month(),
+    now.date(),
+    now.hour(),
+    now.minute(),
+    now.second()
+  );
   const parsed = chrono.parseDate(query, referenceDate, {
     timezone: userTimezone
   });
@@ -88,7 +97,16 @@ function parseDateQuery(query, userTimezone = 'UTC') {
 function parseDateTimeQuery(query, userTimezone = 'UTC') {
   if (!query) return null;
 
-  const referenceDate = dayjs().tz(userTimezone).toDate();
+  // Create reference date in user's timezone to avoid timezone conversion issues
+  const now = dayjs().tz(userTimezone);
+  const referenceDate = new Date(
+    now.year(),
+    now.month(),
+    now.date(),
+    now.hour(),
+    now.minute(),
+    now.second()
+  );
   const results = chrono.parse(query, referenceDate, {
     timezone: userTimezone
   });

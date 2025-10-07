@@ -84,6 +84,19 @@ const CoordinatorStateChannels = {
   pendingApproval: {
     value: (x, y) => (y !== undefined ? y : x),
     default: () => null
+  },
+  // Clarification-related fields
+  pendingClarification: {
+    value: (x, y) => (y !== undefined ? y : x),
+    default: () => null
+  },
+  contact_clarification_response: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  user_clarification_response: {
+    value: (x, y) => y ? y : x,
+    default: () => null
   }
 };
 
@@ -145,11 +158,10 @@ class Coordinator {
     workflow.addConditionalEdges(
       "execute_subgraphs",
       (state) => {
-        // Check for clarifications first (they take priority)
-        if (state.pendingClarification &&
-            state.pendingClarification.requests &&
-            state.pendingClarification.requests.length > 0 &&
-            !state.pendingClarification.processed) {
+        // Check for clarifications first (they take priority) - only process fresh ones
+        if (state.pendingClarification?.fresh &&
+            state.pendingClarification?.requests?.length > 0 &&
+            !state.pendingClarification?.processed) {
           console.log("[COORDINATOR:ROUTER] Routing to clarification_handler for pending clarifications");
           return "clarification_handler";
         }
@@ -387,7 +399,12 @@ class Coordinator {
       
       return {
         ...state,
-        memory_context: memoryContext
+        memory_context: memoryContext,
+        // Clear stale state from previous queries
+        pendingClarification: null,
+        pendingApproval: null,
+        contact_clarification_response: null,
+        user_clarification_response: null
       };
       
     } catch (error) {
@@ -847,7 +864,7 @@ class Coordinator {
             data: result.clarificationData
           });
           // Store the partial state from the subgraph
-          subgraph_results[`${domain}_partial`] = result;
+          results[`${domain}_partial`] = result;
         }
       }
 
@@ -859,7 +876,8 @@ class Coordinator {
         state.pendingClarification = {
           requests: clarificationRequests,
           domains: clarificationRequests.map(req => req.domain),
-          results: results
+          results: results,
+          fresh: true  // Mark as fresh to distinguish from stale checkpoint data
         };
 
         console.log("[COORDINATOR:EXECUTOR] Clarification requests stored - will route to clarification_handler");
@@ -907,7 +925,11 @@ class Coordinator {
 
       return {
         ...state,
-        subgraph_results: results
+        subgraph_results: results,
+        // Preserve pendingClarification if it was set
+        ...(state.pendingClarification ? { pendingClarification: state.pendingClarification } : {}),
+        // Also preserve pendingApproval if it was set
+        ...(state.pendingApproval ? { pendingApproval: state.pendingApproval } : {})
       };
       
     } catch (error) {
@@ -939,13 +961,10 @@ class Coordinator {
       const clarificationType = state.contact_clarification_response ? 'contact' : 'user';
       console.log(`[COORDINATOR:CLARIFICATION] Processing ${clarificationType} clarification`);
 
-      // Mark as processed and return to re-execute subgraphs
+      // Clear clarification after processing (will re-execute subgraphs)
       return {
         ...state,
-        pendingClarification: {
-          ...state.pendingClarification,
-          processed: true
-        }
+        pendingClarification: null
       };
     }
 

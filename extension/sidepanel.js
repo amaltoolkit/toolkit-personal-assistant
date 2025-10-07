@@ -1866,7 +1866,13 @@ async function handleResetConversation() {
     console.log('[RESET] No session ID available');
     return;
   }
-  
+
+  // Validate organization is selected
+  if (!currentOrgId) {
+    showError('Please select an organization before resetting the conversation');
+    return;
+  }
+
   // Confirm with user
   if (!confirm('Start a new conversation? This will clear the current conversation history but keep your login and memories.')) {
     return;
@@ -1874,14 +1880,15 @@ async function handleResetConversation() {
   
   try {
     showLoading(true);
-    
+
     const response = await fetch(`${API_BASE}/api/reset-conversation`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        session_id: currentSessionId
+        session_id: currentSessionId,
+        org_id: currentOrgId  // Include org_id for correct thread_id construction
       })
     });
     

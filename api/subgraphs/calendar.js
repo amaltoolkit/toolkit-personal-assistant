@@ -116,6 +116,29 @@ const CalendarStateChannels = {
     default: () => null
   },
 
+  // Clarification-related fields
+  needsClarification: {
+    value: (x, y) => y !== undefined ? y : x,
+    default: () => false
+  },
+  clarificationType: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  clarificationData: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  // Resume fields for clarification responses
+  contact_clarification_response: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+  user_clarification_response: {
+    value: (x, y) => y ? y : x,
+    default: () => null
+  },
+
   // Context fields (required for authentication and state management)
   session_id: {
     value: (x, y) => y ? y : x,
@@ -215,23 +238,46 @@ class CalendarSubgraph {
       }
     );
 
-    // User resolution flow - check if contacts need resolution after users
+    // User resolution flow - check if clarification is needed or contacts need resolution
     workflow.addConditionalEdges(
       "resolve_users",
       (state) => {
+        // If user clarification is needed, go to format_response to return early
+        if (state.needsClarification) {
+          console.log("[CALENDAR:ROUTER] User clarification needed - returning early");
+          return "format_response";
+        }
+        // If contacts need resolution, go to resolve_contacts
         if (state.contacts_to_resolve?.length > 0) {
           return "resolve_contacts";
         }
+        // Otherwise continue to check conflicts
         return "check_conflicts";
       },
       {
+        "format_response": "format_response",
         "resolve_contacts": "resolve_contacts",
         "check_conflicts": "check_conflicts"
       }
     );
 
-    // Contact resolution flow
-    workflow.addEdge("resolve_contacts", "check_conflicts");
+    // Contact resolution flow - check if clarification is needed
+    workflow.addConditionalEdges(
+      "resolve_contacts",
+      (state) => {
+        // If clarification is needed, go to format_response to return early
+        if (state.needsClarification) {
+          console.log("[CALENDAR:ROUTER] Contact clarification needed - returning early");
+          return "format_response";
+        }
+        // Otherwise continue to check conflicts
+        return "check_conflicts";
+      },
+      {
+        "format_response": "format_response",
+        "check_conflicts": "check_conflicts"
+      }
+    );
     
     // View flow
     workflow.addConditionalEdges(
@@ -386,13 +432,15 @@ class CalendarSubgraph {
 
         IMPORTANT:
         - For date_query, preserve EXACTLY what the user said, including the time.
-        - Distinguish between external contacts and internal team members (users)
-        - Detect self-references like "me", "myself", "I" and list them
+        - By default, assume names are external contacts unless clearly indicated as team members
+        - Only put names in "users" if explicitly mentioned as team members, colleagues, or internal staff
+        - Detect self-references like "me", "myself", "I" and list them in selfReferences
 
         Examples:
         - "Schedule a meeting with John and me" → contacts: ["John"], selfReferences: ["me"]
-        - "Book time with Sarah and Tyler" → users: ["Sarah", "Tyler"]
-        - "Meeting with client Bob and myself" → contacts: ["Bob"], selfReferences: ["myself"]
+        - "Book time with team member Sarah" → users: ["Sarah"]
+        - "Meeting with Bob and myself" → contacts: ["Bob"], selfReferences: ["myself"]
+        - "Appointment with Nomran" → contacts: ["Nomran"]
       `;
 
       const response = await this.llm.invoke(parsePrompt);
@@ -615,10 +663,13 @@ class CalendarSubgraph {
             .slice(0, 3)
             .map(u => u.name);
 
-          // Throw interrupt for user clarification
-          console.log(`[CALENDAR:USERS] Throwing interrupt for clarification`);
-          throw interrupt({
-            value: {
+          // Return state indicating clarification is needed
+          console.log(`[CALENDAR:USERS] Needs clarification for: ${userQuery}`);
+          return {
+            ...state,
+            needsClarification: true,
+            clarificationType: 'user_clarification',
+            clarificationData: {
               type: 'user_clarification',
               message: `I couldn't find a team member named "${userQuery}".`,
               suggestions: suggestions,
@@ -628,7 +679,7 @@ class CalendarSubgraph {
                 : `Could you please check the spelling and provide the correct name?`,
               allow_skip: true
             }
-          });
+          };
         }
 
         // Check if we have only fuzzy matches
@@ -640,9 +691,13 @@ class CalendarSubgraph {
             .slice(0, 3)
             .map(u => u.name);
 
-          // Ask user to confirm fuzzy match
-          throw interrupt({
-            value: {
+          // Return state for fuzzy match confirmation
+          console.log(`[CALENDAR:USERS] Needs clarification for fuzzy matches: ${userQuery}`);
+          return {
+            ...state,
+            needsClarification: true,
+            clarificationType: 'user_clarification',
+            clarificationData: {
               type: 'user_clarification',
               message: `No exact match for team member "${userQuery}".`,
               suggestions: topSuggestions,
@@ -651,7 +706,7 @@ class CalendarSubgraph {
               fuzzy_candidates: fuzzyMatches.slice(0, 3),
               allow_skip: true
             }
-          });
+          };
         }
 
         // Disambiguate if multiple matches
@@ -812,10 +867,14 @@ class CalendarSubgraph {
             .slice(0, 3)
             .map(c => c.name);
 
-          // Throw interrupt for user clarification
-          console.log(`[CALENDAR:CONTACTS] Throwing interrupt for clarification`);
-          throw interrupt({
-            value: {
+          // Return state indicating clarification is needed
+          // Don't throw interrupt - let coordinator handle it (subgraphs are stateless)
+          console.log(`[CALENDAR:CONTACTS] Needs clarification for: ${contactName}`);
+          return {
+            ...state,
+            needsClarification: true,
+            clarificationType: 'contact_clarification',
+            clarificationData: {
               type: 'contact_clarification',
               message: `I couldn't find anyone named "${contactName}".`,
               suggestions: suggestions,
@@ -825,7 +884,7 @@ class CalendarSubgraph {
                 : `Could you please check the spelling and provide the correct name?`,
               allow_skip: true
             }
-          });
+          };
         }
 
         // Check if we have only fuzzy matches (no exact matches)
@@ -838,9 +897,13 @@ class CalendarSubgraph {
             .slice(0, 3)
             .map(c => c.name);
 
-          // Ask user to confirm fuzzy match
-          throw interrupt({
-            value: {
+          // Return state for fuzzy match confirmation
+          console.log(`[CALENDAR:CONTACTS] Needs clarification for fuzzy matches: ${contactName}`);
+          return {
+            ...state,
+            needsClarification: true,
+            clarificationType: 'contact_clarification',
+            clarificationData: {
               type: 'contact_clarification',
               message: `No exact match for "${contactName}".`,
               suggestions: topSuggestions,
@@ -849,7 +912,7 @@ class CalendarSubgraph {
               fuzzy_candidates: fuzzyMatches.slice(0, 3),
               allow_skip: true
             }
-          });
+          };
         }
 
         // Disambiguate if multiple matches
@@ -1416,6 +1479,15 @@ class CalendarSubgraph {
    */
   async formatResponse(state) {
     console.log("[CALENDAR:RESPONSE] Formatting response");
+
+    // If clarification is needed, preserve that state and return early
+    if (state.needsClarification) {
+      console.log("[CALENDAR:RESPONSE] Clarification needed - preserving state for coordinator");
+      return {
+        ...state,
+        response: "Awaiting clarification..."
+      };
+    }
 
     if (state.error) {
       return {

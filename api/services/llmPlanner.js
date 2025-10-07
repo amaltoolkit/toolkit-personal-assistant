@@ -43,11 +43,11 @@ class LLMPlanner {
     return cleaned.trim();
   }
 
-  async createExecutionPlan(query, memoryContext = null) {
+  async createExecutionPlan(query, memoryContext = null, entityStats = null, recentMessages = []) {
     console.log("[LLM-PLANNER:MAIN] Creating execution plan for query:", query);
 
-    // Check cache first
-    const cacheKey = query.toLowerCase().trim();
+    // Check cache first (include entity stats in cache key for context-aware caching)
+    const cacheKey = `${query.toLowerCase().trim()}_${JSON.stringify(entityStats?.byType || {})}`;
     if (this.cache.has(cacheKey)) {
       console.log("[LLM-PLANNER:CACHE] Cache hit");
       return this.cache.get(cacheKey);
@@ -58,28 +58,68 @@ class LLMPlanner {
         You are a routing assistant for a business automation system.
 
         Available domains and their purposes:
-        - calendar: Creating/viewing appointments, meetings, scheduling events with specific times/dates
-        - task: Creating/managing tasks, todos, action items, reminders
-        - workflow: Creating multi-step processes, automation sequences, business workflows, procedures
-        - contact: Finding/searching for SPECIFIC people by name in the contact database
+        - calendar: Creating appointments, meetings, scheduling events with specific times/dates [ACTION]
+        - task: Creating/managing tasks, todos, action items, reminders [ACTION]
+        - workflow: Creating multi-step processes, automation sequences, business workflows, procedures [ACTION]
+        - contact: Finding/searching for SPECIFIC people by name in the contact database [ACTION]
+        - general: Answering questions, viewing/reading existing entities, conversations, greetings, system queries [INFORMATIONAL]
 
-        Analyze this query and determine which domain(s) to route to:
-        "${query}"
+        ${entityStats && entityStats.totalEntities > 0 ? `
+        Current session state (entities created so far):
+        - Workflows: ${entityStats.byType?.workflow || 0} created
+        - Appointments: ${entityStats.byType?.appointment || 0} created
+        - Tasks: ${entityStats.byType?.task || 0} created
+
+        IMPORTANT: If user asks about entities that don't exist yet (count = 0), route to general for helpful response.
+        ` : `
+        Current session state: No entities created yet in this session.
+        `}
+
+        ${recentMessages && recentMessages.length > 0 ? `
+        Recent conversation (for context):
+        ${recentMessages.slice(-6).map(m => {
+          const role = m.role === 'user' ? 'User' : 'Assistant';
+          const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+          return `${role}: ${content.substring(0, 150)}${content.length > 150 ? '...' : ''}`;
+        }).join('\n')}
+
+        Use this conversation history to resolve pronouns ("it", "that", "the workflow") and implicit references.
+        ` : ''}
 
         ${memoryContext?.recalled_memories?.length > 0 ? `
-        Previous context from memory:
+        Long-term memory context:
         ${memoryContext.recalled_memories.map(m => m.content).join('\n')}
         ` : ''}
 
-        CRITICAL RULES:
-        1. Only route to 'contact' if searching for a SPECIFIC person by name (e.g., "find John Smith", "look up Sarah")
-        2. Generic terms like "client", "customer", "prospect" in workflow/process contexts should NOT trigger contact
-        3. Examples:
-           - "Create a client outreach process" = workflow only (NOT contact)
-           - "Create a two-step process for client onboarding" = workflow only (NOT contact)
-           - "Find client John" = contact only
-           - "Schedule meeting with Sarah" = calendar + contact
-        4. Prefer single domain unless multiple are explicitly needed
+        User query to route:
+        "${query}"
+
+        CRITICAL ROUTING RULES:
+        1. ACTION DOMAINS (calendar, task, workflow, contact):
+           - Use when creating, modifying, or deleting BSA entities
+           - Use contact only if searching for SPECIFIC person by name
+           - Generic terms like "client", "customer", "prospect" in process contexts = workflow only (NOT contact)
+
+        2. GENERAL DOMAIN (informational, read-only):
+           - Questions about existing entities ("What was step 2?", "Show all workflows")
+           - Greetings/farewells ("Hey, what's up?", "Thanks, bye")
+           - System state queries ("How many workflows did I create?")
+           - Acknowledgments ("ok", "got it", "yes")
+           - Follow-up questions about recently created entities
+
+        3. ROUTING EXAMPLES:
+           - "Create a client outreach process" = workflow only (NOT contact, NOT general)
+           - "What was the second step?" = general only (NOT workflow)
+           - "Show all my workflows" = general only (NOT workflow)
+           - "Find contact John Smith" = contact only
+           - "Schedule meeting with Sarah" = calendar + contact (sequential)
+           - "Hey, what's up?" = general only
+           - "Create appointment then add task" = calendar, task (sequential)
+
+        4. DEFAULT BEHAVIOR:
+           - If query is purely conversational/informational → general
+           - If uncertain → default to general
+           - Prefer single domain unless multiple explicitly needed
         5. Consider dependencies (e.g., task after calendar event needs sequential execution)
 
         Extract any person names (capitalized names), dates, times mentioned.
@@ -88,6 +128,7 @@ class LLMPlanner {
         {
           "parallel": ["domain1"],
           "sequential": [],
+          "confidence": "high|medium|low",
           "metadata": {
             "total_domains": 1,
             "has_dependencies": false,
@@ -96,9 +137,12 @@ class LLMPlanner {
           },
           "analysis": {
             "domains": ["domain1"],
+            "intent": "create|read|converse",
+            "entities_referenced": ["workflow", "appointment"],
+            "requires_context": false,
             "entities": [],
             "dependencies": [],
-            "reasoning": "Brief explanation of routing decision"
+            "reasoning": "Step-by-step: 1. Detected intent X, 2. User has Y entities in session, 3. Therefore route to Z domain"
           }
         }
       `;
@@ -115,6 +159,7 @@ class LLMPlanner {
       // Ensure the structure is complete
       plan.parallel = plan.parallel || [];
       plan.sequential = plan.sequential || [];
+      plan.confidence = plan.confidence || 'medium';
       plan.metadata = plan.metadata || {
         total_domains: 0,
         has_dependencies: false,
@@ -122,18 +167,37 @@ class LLMPlanner {
       };
       plan.analysis = plan.analysis || {
         domains: [],
+        intent: 'unknown',
+        entities_referenced: [],
+        requires_context: false,
         entities: [],
-        dependencies: []
+        dependencies: [],
+        reasoning: ''
       };
 
       // Validate that we have at least one domain
       if (plan.parallel.length === 0 && plan.sequential.length === 0) {
-        console.log("[LLM-PLANNER:VALIDATION] No domains in plan, using fallback");
-        return this.fallbackPlan(query);
+        console.log("[LLM-PLANNER:VALIDATION] No domains in plan, defaulting to general agent");
+        plan.parallel = ['general'];
+        plan.metadata = {
+          total_domains: 1,
+          has_dependencies: false,
+          entities_found: 0,
+          default_to_general: true
+        };
+        plan.analysis = {
+          domains: ['general'],
+          entities: [],
+          dependencies: [],
+          reasoning: "No specific action domains matched - defaulting to general conversational agent"
+        };
       }
 
       console.log("[LLM-PLANNER:MAIN] Analysis complete:", {
         domains: plan.analysis.domains,
+        intent: plan.analysis.intent,
+        confidence: plan.confidence,
+        entities_referenced: plan.analysis.entities_referenced,
         entities: plan.analysis.entities?.length || 0,
         dependencies: plan.analysis.dependencies?.length || 0,
         reasoning: plan.analysis.reasoning
@@ -155,33 +219,35 @@ class LLMPlanner {
     console.log("[LLM-PLANNER:FALLBACK] Using fallback keyword routing for:", query);
     const domains = [];
 
-    // More conservative keyword matching
-    if (/workflow|process|procedure|automation|sequence|steps/i.test(query)) {
-      console.log("[LLM-PLANNER:FALLBACK] Matched workflow keywords");
-      domains.push('workflow');
-    }
-    if (/calendar|appointment|meeting|schedule|book/i.test(query)) {
-      console.log("[LLM-PLANNER:FALLBACK] Matched calendar keywords");
-      domains.push('calendar');
-    }
-    if (/task|todo|to-do|reminder|action item/i.test(query)) {
-      console.log("[LLM-PLANNER:FALLBACK] Matched task keywords");
-      domains.push('task');
-    }
-    // Very conservative contact matching - only explicit searches
-    if (/(?:find|search|look up|lookup|get)\s+(?:contact|person).*(?:named|called)/i.test(query) ||
-        /(?:find|search for|look up)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?/i.test(query)) {
-      console.log("[LLM-PLANNER:FALLBACK] Matched contact keywords");
-      domains.push('contact');
-    }
+    // Check for action keywords first - but exclude questions
+    const isQuestion = /^(what|how many|show|list|who|when|where|which|tell me)/i.test(query);
+    const isCreationQuery = !isQuestion && /create|build|make|design|implement|add|schedule|book|find|search/i.test(query);
 
-    // If no domains matched, default to workflow for process-related queries
-    if (domains.length === 0) {
-      console.log("[LLM-PLANNER:FALLBACK] No keywords matched, checking for generic process indicators");
-      if (/create|build|make|design|implement/i.test(query)) {
-        console.log("[LLM-PLANNER:FALLBACK] Defaulting to workflow for creation query");
+    // Action domain matching (only for creation/modification queries)
+    if (isCreationQuery) {
+      if (/workflow|process|procedure|automation|sequence|steps/i.test(query)) {
+        console.log("[LLM-PLANNER:FALLBACK] Matched workflow keywords");
         domains.push('workflow');
       }
+      if (/calendar|appointment|meeting|schedule|book/i.test(query)) {
+        console.log("[LLM-PLANNER:FALLBACK] Matched calendar keywords");
+        domains.push('calendar');
+      }
+      if (/task|todo|to-do|reminder|action item/i.test(query)) {
+        console.log("[LLM-PLANNER:FALLBACK] Matched task keywords");
+        domains.push('task');
+      }
+      // Very conservative contact matching - only explicit searches
+      if (/(?:find|search|look up|lookup|get|search for)\s+(?:contact|person)/i.test(query)) {
+        console.log("[LLM-PLANNER:FALLBACK] Matched contact keywords");
+        domains.push('contact');
+      }
+    }
+
+    // If no action domains matched, default to general
+    if (domains.length === 0) {
+      console.log("[LLM-PLANNER:FALLBACK] No action keywords matched, defaulting to general agent");
+      domains.push('general');
     }
 
     console.log("[LLM-PLANNER:FALLBACK] Final domains:", domains);
@@ -276,7 +342,7 @@ function validateExecutionPlan(plan) {
   }
 
   // Check for unknown domains
-  const validDomains = ['calendar', 'task', 'workflow', 'contact'];
+  const validDomains = ['calendar', 'task', 'workflow', 'contact', 'general'];
   const allDomains = [
     ...plan.parallel || [],
     ...(plan.sequential?.map(s => s.domain) || [])

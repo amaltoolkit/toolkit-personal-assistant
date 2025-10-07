@@ -77,12 +77,38 @@ class Mem0Service {
    */
   async synthesize(messages, orgId, userId, metadata = {}) {
     if (!this.client) return null;
-    
+
     const memoryId = `${orgId}:${userId}`;
-    
+
     try {
+      // Ensure messages are in the correct format for Mem0
+      // Mem0 expects an array of message objects with 'role' and 'content' fields
+      const formattedMessages = Array.isArray(messages)
+        ? messages.map(msg => {
+            // Handle different message formats
+            if (typeof msg === 'string') {
+              return { role: 'user', content: msg };
+            }
+            if (msg.role && msg.content) {
+              return { role: msg.role, content: msg.content };
+            }
+            // Skip invalid messages
+            return null;
+          }).filter(Boolean)
+        : [];
+
+      if (formattedMessages.length === 0) {
+        console.warn('[MEM0:SYNTHESIZE] No valid messages to synthesize');
+        return null;
+      }
+
+      console.log('[MEM0:SYNTHESIZE] Synthesizing with formatted messages:', {
+        count: formattedMessages.length,
+        firstMessage: formattedMessages[0]?.content?.substring(0, 50)
+      });
+
       const result = await this.retryWithBackoff(async () => {
-        return await this.client.add(messages, {
+        return await this.client.add(formattedMessages, {
           user_id: memoryId,
           metadata: {
             ...metadata,
@@ -92,11 +118,12 @@ class Mem0Service {
           }
         });
       });
-      
+
       console.log(`[MEM0:SYNTHESIZE] Stored ${result.results?.length || 1} memories`);
       return result;
     } catch (error) {
       console.error('[MEM0:SYNTHESIZE] Error:', error.message);
+      console.error('[MEM0:SYNTHESIZE] Error details:', error);
       return null;
     }
   }

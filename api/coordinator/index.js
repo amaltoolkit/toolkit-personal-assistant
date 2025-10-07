@@ -12,6 +12,7 @@ const { getPassKeyManager } = require("../services/passKeyManager");
 const { getErrorHandler } = require("../services/errorHandler");
 const { getPerformanceMetrics } = require("./metrics");
 const { createExecutionPlan, validateExecutionPlan } = require("../services/llmPlanner");
+const { getEntityManager } = require("../services/entityManager");
 
 const langSmithEnabled = process.env.LANGCHAIN_TRACING_V2 === 'true' && !!process.env.LANGCHAIN_API_KEY;
 if (langSmithEnabled) {
@@ -43,8 +44,17 @@ const CoordinatorStateChannels = {
     default: () => ({})
   },
   entities: {
-    value: (x, y) => y ? y : x,
-    default: () => ({})
+    value: (x, y) => {
+      // Use EntityManager for smart merging
+      if (!y) return x;
+      const entityManager = getEntityManager();
+      return entityManager.merge(x, y);
+    },
+    default: () => {
+      // Initialize with EntityManager structure
+      const entityManager = getEntityManager();
+      return entityManager.initialize({});
+    }
   },
   final_response: {
     value: (x, y) => y ? y : x,
@@ -111,9 +121,10 @@ class Coordinator {
     this.passKeyManager = getPassKeyManager();
     this.errorHandler = getErrorHandler();
     this.metrics = getPerformanceMetrics();
+    this.entityManager = getEntityManager({ maxHistoryPerType: 10 });
     this.checkpointer = checkpointer;
     this.tracingEnabled = langSmithEnabled;
-    
+
     // Initialize domain subgraphs (will be loaded dynamically)
     this.subgraphs = new Map();
     
@@ -144,6 +155,8 @@ class Coordinator {
       "route_domains",
       (state) => {
         if (state.error) return "handle_error";
+        // With the updated planner, we should always have at least 'general' domain
+        // This fallback is for safety in case of unexpected planner behavior
         if (!state.domains || state.domains.length === 0) return "finalize_response";
         return "execute_subgraphs";
       },
@@ -435,10 +448,26 @@ class Coordinator {
     }
 
     try {
+      // Get entity statistics for context-aware routing
+      const entityStats = state.entities ? this.entityManager.getStats(state.entities) : null;
+
+      // Get recent messages (last 6 messages = 3 turns) for conversation context
+      const recentMessages = state.messages ? state.messages.slice(-6) : [];
+
+      console.log("[COORDINATOR:ROUTER] Context for planner:", {
+        entityStats: entityStats ? {
+          total: entityStats.totalEntities,
+          byType: entityStats.byType
+        } : 'none',
+        recentMessageCount: recentMessages.length
+      });
+
       // Use the lightweight planner to analyze and create execution plan
       const executionPlan = await createExecutionPlan(
         lastMessage.content,
-        state.memory_context
+        state.memory_context,
+        entityStats,
+        recentMessages
       );
 
       // Validate the execution plan
@@ -1114,13 +1143,18 @@ class Coordinator {
         if (asksWho) {
           const names = Array.isArray(apptEntity.participants) ? apptEntity.participants.filter(Boolean) : [];
           if (names.length > 0) {
+            const quickResponse = names.join(', ');
             return {
               ...state,
+              messages: [
+                ...state.messages,
+                { role: "assistant", content: quickResponse }
+              ],
               // Clear approval markers and results as part of end-of-turn hygiene
               approval_decision: null,
               pendingApproval: null,
               subgraph_results: {},
-              final_response: names.join(', ')
+              final_response: quickResponse
             };
           }
         }
@@ -1132,33 +1166,46 @@ class Coordinator {
         // Build lightweight context from entities to help resolve pronouns like "it"
         const entityContext = (() => {
           const appt = state.entities?.appointment;
-          if (!appt) return '';
-          const parts = [
-            `Last appointment: ${appt.name || 'Untitled'}`,
-            appt.time ? `at ${new Date(appt.time).toLocaleString()}` : null,
-            Array.isArray(appt.participants) && appt.participants.length > 0
-              ? `with ${appt.participants.join(', ')}`
-              : null
-          ].filter(Boolean).join('; ');
-          return parts ? `Context: ${parts}` : '';
+          const wf = state.entities?.workflow;
+          const parts = [];
+
+          if (appt) {
+            parts.push(`Last appointment: ${appt.name || 'Untitled'}`);
+            if (appt.time) parts.push(`at ${new Date(appt.time).toLocaleString()}`);
+            if (Array.isArray(appt.participants) && appt.participants.length > 0) {
+              parts.push(`with ${appt.participants.join(', ')}`);
+            }
+          }
+
+          if (wf) {
+            parts.push(`Last workflow: ${wf.name || 'Untitled'} (${wf.stepCount || 0} steps)`);
+          }
+
+          return parts.length > 0 ? `Context: ${parts.join('; ')}` : '';
         })();
 
         // Use LLM to generate a response with entity context
         const response = await this.llm.invoke(`
           User query: "${lastMessage.content}"
           ${entityContext ? `\n${entityContext}` : ''}
-          ${state.memory_context?.recalled_memories ? 
+          ${state.memory_context?.recalled_memories ?
             `\nMemory hint: ${JSON.stringify(state.memory_context.recalled_memories[0]?.content || '')}` : ''}
           \nProvide a concise, direct answer using the context above when relevant.
         `);
-        
+
+        const contextualResponse = response.content;
+
         return {
           ...state,
+          messages: [
+            ...state.messages,
+            { role: "assistant", content: contextualResponse }
+          ],
           // Clear approval markers and results so future turns don't auto-approve or re-aggregate
           approval_decision: null,
           pendingApproval: null,
           subgraph_results: {},
-          final_response: response.content
+          final_response: contextualResponse
         };
       }
       
@@ -1189,27 +1236,29 @@ class Coordinator {
       // If we have results, format them nicely
       if (aggregatedResults.length > 0) {
         const finalResponse = aggregatedResults.join("\n\n");
-        
+
+        // Append assistant response to messages for conversation history
+        const updatedMessages = [
+          ...state.messages,
+          { role: "assistant", content: finalResponse }
+        ];
+
         // Store the interaction in memory
         if (this.mem0.client && state.org_id && state.user_id) {
-          const messages = [
-            ...state.messages,
-            { role: "assistant", content: finalResponse }
-          ];
-          
           await this.mem0.synthesize(
-            messages,
+            updatedMessages,
             state.org_id,
             state.user_id,
-            { 
+            {
               domains: state.domains,
               timestamp: new Date().toISOString()
             }
           );
         }
-        
+
         return {
           ...state,
+          messages: updatedMessages,
           // Clear approval markers and results so future turns don't auto-approve or re-aggregate
           approval_decision: null,
           pendingApproval: null,
@@ -1217,25 +1266,37 @@ class Coordinator {
           final_response: finalResponse
         };
       }
-      
+
+      const fallbackResponse = "I couldn't process your request. Please try again.";
+
       return {
         ...state,
+        messages: [
+          ...state.messages,
+          { role: "assistant", content: fallbackResponse }
+        ],
         // Clear approval markers and results so future turns don't auto-approve or re-aggregate
         approval_decision: null,
         pendingApproval: null,
         subgraph_results: {},
-        final_response: "I couldn't process your request. Please try again."
+        final_response: fallbackResponse
       };
       
     } catch (error) {
       console.error("[COORDINATOR:FINALIZER] Error finalizing response:", error);
+      const errorResponse = `I encountered an error: ${error.message}. Please try again.`;
       return {
         ...state,
+        messages: [
+          ...state.messages,
+          { role: "assistant", content: errorResponse }
+        ],
         // Clear approval markers and results so future turns don't auto-approve or re-aggregate
         approval_decision: null,
         pendingApproval: null,
         subgraph_results: {},
-        error: `Failed to generate response: ${error.message}`
+        error: `Failed to generate response: ${error.message}`,
+        final_response: errorResponse
       };
     }
   }
@@ -1386,9 +1447,50 @@ class Coordinator {
     // Start total execution timer
     this.metrics.startTimer('total');
 
-    // Prepare initial state
+    // Create config with thread_id for checkpointer (REQUIRED by LangGraph)
+    const config = {
+      configurable: {
+        thread_id: context.thread_id || `${context.session_id}:${context.org_id}`,
+        checkpoint_ns: "" // Default namespace
+      }
+    };
+
+    // Retrieve previous conversation history and entities from checkpoint
+    let previousMessages = [];
+    let previousEntities = {};
+
+    if (this.checkpointer) {
+      try {
+        const checkpointState = await this.graph.getState(config);
+
+        if (checkpointState && checkpointState.values) {
+          // Extract previous messages
+          if (Array.isArray(checkpointState.values.messages)) {
+            previousMessages = checkpointState.values.messages;
+            console.log(`[COORDINATOR:HISTORY] Retrieved ${previousMessages.length} previous messages from checkpoint`);
+          }
+
+          // Extract previous entities for context continuity
+          if (checkpointState.values.entities) {
+            previousEntities = checkpointState.values.entities;
+            const stats = this.entityManager.getStats(previousEntities);
+            console.log("[COORDINATOR:HISTORY] Retrieved entities from checkpoint:", {
+              types: stats.types,
+              totalEntities: stats.totalEntities,
+              byType: stats.byType
+            });
+          }
+        }
+      } catch (error) {
+        // If checkpoint retrieval fails, continue with empty history
+        console.warn("[COORDINATOR:HISTORY] Failed to retrieve checkpoint history:", error.message);
+      }
+    }
+
+    // Prepare initial state with accumulated message history
     const initialState = {
       messages: [
+        ...previousMessages,
         { role: "user", content: query }
       ],
       org_id: context.org_id,
@@ -1397,6 +1499,8 @@ class Coordinator {
       thread_id: context.thread_id,
       checkpoint_id: context.checkpoint_id,
       timezone: context.timezone || 'UTC',
+      // Preserve entities from previous turn for context continuity
+      entities: previousEntities,
       // Proactively clear any stale approval markers from previous turns
       approval_decision: null,
       pendingApproval: null,
@@ -1404,14 +1508,13 @@ class Coordinator {
       subgraph_results: {}
     };
 
+    console.log("[COORDINATOR:HISTORY] Initial state prepared with:", {
+      totalMessages: initialState.messages.length,
+      hasEntities: Object.keys(previousEntities).length > 0,
+      entityTypes: Object.keys(previousEntities)
+    });
+
     try {
-      // Create config with thread_id for checkpointer (REQUIRED by LangGraph)
-      const config = {
-        configurable: {
-          thread_id: context.thread_id || `${context.session_id}:${context.org_id}`,
-          checkpoint_ns: "" // Default namespace
-        }
-      };
 
       // DEBUGGING: Log before invoke
       console.log("[COORDINATOR:DEBUG] About to invoke graph with config:", {

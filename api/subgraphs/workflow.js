@@ -11,6 +11,7 @@ const { createWorkflow, addWorkflowStep } = require("../tools/bsa/workflows");
 const { getMem0Service } = require("../services/mem0Service");
 const { getErrorHandler } = require("../services/errorHandler");
 const { getPerformanceMetrics } = require("../coordinator/metrics");
+const { getEntityManager } = require("../services/entityManager");
 
 // Simplified state channels for workflow operations
 const WorkflowStateChannels = {
@@ -109,6 +110,7 @@ class WorkflowSubgraph {
     this.mem0 = getMem0Service();
     this.errorHandler = getErrorHandler();
     this.metrics = getPerformanceMetrics();
+    this.entityManager = getEntityManager();
     this.checkpointer = checkpointer;
 
     this.maxSteps = 22; // BSA constraint
@@ -156,7 +158,23 @@ class WorkflowSubgraph {
 
     // Simple linear flow
     workflow.setEntryPoint("generate_workflow");
-    workflow.addEdge("generate_workflow", "validate_workflow");
+
+    // Route after generate: if we answered a question, skip to format_response
+    workflow.addConditionalEdges(
+      "generate_workflow",
+      (state) => {
+        // If we already have a response (from answering a question), skip workflow creation
+        if (state.response && !state.workflowDesign) {
+          return "format_response";
+        }
+        // Otherwise proceed to validation
+        return "validate_workflow";
+      },
+      {
+        "format_response": "format_response",
+        "validate_workflow": "validate_workflow"
+      }
+    );
 
     // Route based on validation
     workflow.addConditionalEdges(
@@ -217,8 +235,9 @@ class WorkflowSubgraph {
         };
       }
 
-      const userRequest = lastMessage.content;
+      const userRequest = lastMessage.content.toLowerCase();
 
+      // Workflow creation flow - questions about existing workflows are now handled by general agent
       const prompt = `
         You are an assistant at a financial advisory firm, expert in creating workflows for financial advisors and their teams.
 
@@ -581,6 +600,15 @@ class WorkflowSubgraph {
       };
     }
 
+    // If we already have a response without a workflow design, preserve it
+    if (state.response && !state.workflowDesign) {
+      console.log("[WORKFLOW:RESPONSE] Preserving existing response");
+      return {
+        ...state
+        // Keep existing response and all other state
+      };
+    }
+
     // If approval is required, preserve the approval request
     if (state.requiresApproval && state.approvalRequest) {
       console.log("[WORKFLOW:RESPONSE] Approval pending - preserving approval request");
@@ -594,8 +622,33 @@ class WorkflowSubgraph {
 
     if (state.workflowId) {
       const design = state.workflowDesign;
+
+      // Store workflow entity for context continuity using EntityManager
+      const workflowEntity = {
+        id: state.workflowId,
+        name: design.name,
+        description: design.description,
+        stepCount: design.steps?.length || 0,
+        steps: design.steps || [],
+        createdAt: new Date().toISOString()
+      };
+
+      console.log("[WORKFLOW:RESPONSE] Storing workflow entity via EntityManager:", {
+        id: workflowEntity.id,
+        name: workflowEntity.name,
+        stepCount: workflowEntity.stepCount
+      });
+
+      // Use EntityManager to store with history and indexing
+      const updatedEntities = this.entityManager.store(
+        state.entities || {},
+        'workflow',
+        workflowEntity
+      );
+
       return {
         ...state,
+        entities: updatedEntities,
         response: `Successfully created workflow "${design.name}" with ${design.steps?.length || 0} steps. Workflow ID: ${state.workflowId}`
       };
     }

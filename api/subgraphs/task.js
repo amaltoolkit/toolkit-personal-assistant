@@ -765,3 +765,11 @@ module.exports = {
   createSubgraph,
   TaskSubgraph
 };
+
+// Export graph for LangGraph Studio (async initialization)
+module.exports.graph = (async () => {
+  const { getCheckpointer } = require('../graph/state');
+  const checkpointer = await getCheckpointer();
+  const subgraph = new TaskSubgraph(checkpointer);
+  return subgraph.graph;
+})();

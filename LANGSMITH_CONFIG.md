@@ -8,13 +8,19 @@ LangSmith provides comprehensive observability and tracing for the multi-agent o
 Add these environment variables to your Vercel project settings:
 
 ```env
-# Enable LangSmith tracing (LangChain standard)
+# Enable LangSmith tracing
+# NEW (v0.2+): LANGSMITH_TRACING=true
+# LEGACY: LANGCHAIN_TRACING_V2=true
+# Both work, but newer versions prefer LANGSMITH_TRACING
 LANGCHAIN_TRACING_V2=true
 
 # Your LangSmith API key
 LANGCHAIN_API_KEY=your-api-key-here
 
 # Project name in LangSmith
+# NEW (v0.2.16+): LANGSMITH_PROJECT=toolkit-personal-assistant
+# LEGACY: LANGCHAIN_PROJECT=toolkit-personal-assistant
+# Both work, but newer versions prefer LANGSMITH_PROJECT
 LANGCHAIN_PROJECT=toolkit-personal-assistant
 
 # LangSmith API endpoint (optional, defaults to the value below)
@@ -104,6 +110,32 @@ After configuring:
 4. Navigate to your project
 5. View the trace for your request
 
+## Implementation Best Practices
+
+### Ensuring Traces Complete in Serverless
+
+For serverless environments (Vercel, AWS Lambda), traces may not complete if the function terminates before callbacks finish. Our implementation uses two strategies:
+
+1. **Set `LANGCHAIN_CALLBACKS_BACKGROUND=false`** (configured in [api/index.js:8-10](api/index.js#L8-L10))
+   - Forces callbacks to complete synchronously
+   - Set BEFORE any LangChain imports (critical!)
+
+2. **Use `awaitAllCallbacks()` in finally blocks** (implemented in [api/routes/agent.js:499-508](api/routes/agent.js#L499-L508))
+   ```javascript
+   const { awaitAllCallbacks } = require("@langchain/core/callbacks/promises");
+
+   try {
+     // ... agent execution
+   } catch (error) {
+     // ... error handling
+   } finally {
+     // Ensure traces complete even on errors
+     await awaitAllCallbacks();
+   }
+   ```
+
+This ensures traces are captured even when errors occur, which is critical for debugging production issues.
+
 ## Troubleshooting
 
 ### Traces Not Appearing?
@@ -114,12 +146,13 @@ After configuring:
 - **IMPORTANT**: Verify `LANGCHAIN_CALLBACKS_BACKGROUND=false` is set in Vercel
   - Without this, traces may not complete in serverless environments
   - This is the most common cause of missing traces in Vercel deployments
+- Check for `awaitAllCallbacks()` in finally blocks of async handlers
 
 ### Performance Impact
 - With `LANGCHAIN_CALLBACKS_BACKGROUND=false`: Small latency added for trace completion
   - Typically 50-200ms per request
   - Necessary trade-off for serverless reliability
-- Failed trace uploads don't affect requests
+- Failed trace uploads don't affect requests (caught in finally block)
 - Consider using `LANGCHAIN_CALLBACKS_BACKGROUND=true` for long-running servers (non-serverless)
 
 ## Cost Considerations

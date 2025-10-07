@@ -1725,3 +1725,12 @@ module.exports = {
   },
   Coordinator
 };
+
+// Export graph for LangGraph Studio (async initialization)
+// The CLI will await this Promise
+module.exports.graph = (async () => {
+  const { getCheckpointer } = require('../graph/state');
+  const checkpointer = await getCheckpointer();
+  const coordinator = new Coordinator(checkpointer);
+  return coordinator.graph;
+})();

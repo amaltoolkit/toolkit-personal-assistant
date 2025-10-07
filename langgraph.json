@@ -1,0 +1,12 @@
+{
+  "node_version": "20",
+  "dependencies": ["."],
+  "graphs": {
+    "coordinator": "./api/coordinator/index.js:graph",
+    "calendar": "./api/subgraphs/calendar.js:graph",
+    "workflow": "./api/subgraphs/workflow.js:graph",
+    "contact": "./api/subgraphs/contact.js:graph",
+    "general": "./api/subgraphs/general.js:graph"
+  },
+  "env": ".env"
+}

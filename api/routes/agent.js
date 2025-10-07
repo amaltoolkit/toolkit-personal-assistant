@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 const bsaConfig = require('../config/bsa');
+const { awaitAllCallbacks } = require("@langchain/core/callbacks/promises");
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -490,11 +491,20 @@ router.post('/execute', async (req, res) => {
       errorMessage = 'API rate limit exceeded';
     }
     
-    return res.status(statusCode).json({ 
+    return res.status(statusCode).json({
       error: errorMessage,
       details: process.env.NODE_ENV === 'development' ? error.message : undefined,
       requestId
     });
+  } finally {
+    // Ensure all LangSmith callbacks complete before function terminates
+    // Critical for serverless environments to capture traces on errors
+    try {
+      await awaitAllCallbacks();
+    } catch (callbackError) {
+      // Don't fail the request if callback cleanup fails
+      console.error(`[AGENT:EXECUTE:${requestId}] Callback cleanup error:`, callbackError);
+    }
   }
 });
 

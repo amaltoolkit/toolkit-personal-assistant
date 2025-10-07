@@ -695,4 +695,10 @@ async function createSubgraph(checkpointer = null) {
   return new GeneralSubgraph(checkpointer).graph;
 }
 
-module.exports = { createSubgraph, GeneralSubgraph };
+module.exports = {
+  createSubgraph,
+  GeneralSubgraph
+};
+
+// Export graph for LangGraph Studio (synchronous - no checkpointer needed)
+module.exports.graph = new GeneralSubgraph().graph;

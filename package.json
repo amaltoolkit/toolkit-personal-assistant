@@ -5,7 +5,9 @@
   "main": "api/index.js",
   "scripts": {
     "dev": "node api/index.js",
-    "start": "node api/index.js"
+    "start": "node api/index.js",
+    "studio": "langgraph dev",
+    "studio:tunnel": "langgraph dev --tunnel"
   },
   "dependencies": {
     "@langchain/core": "0.3.72",
@@ -34,6 +36,7 @@
     "node": "20.x"
   },
   "devDependencies": {
+    "@langchain/langgraph-cli": "^0.0.69",
     "canvas": "^3.2.0",
     "dotenv": "^17.2.1"
   }

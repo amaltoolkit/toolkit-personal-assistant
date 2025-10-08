@@ -96,22 +96,21 @@ async function searchContacts(query, limit = 50, passKey, orgId) {
  * @param {boolean} includeExtendedProperties - Include custom fields
  * @returns {Promise<Object>} Contact details
  */
-async function getContactDetails(contactId, passKey, orgId, includeExtendedProperties = false) {
+async function getContactDetails(contactId, passKey, orgId, includeExtendedProperties = true) {
   if (!contactId) {
     throw new Error('Contact ID is required');
   }
 
-  console.log(`[BSA:CONTACTS:GET] Fetching contact ${contactId}`);
-  
+  console.log(`[BSA:CONTACTS:GET] Fetching contact ${contactId} (extended properties: ${includeExtendedProperties})`);
+
   const axios = require('axios');
-  
+
   const url = bsaConfig.buildApiEndpoint('com.platform.vc.endpoints.orgdata.VCOrgDataEndpoint/get.json');
   const payload = {
-    entity: "Contact",
-    id: contactId,
-    orgId,
-    PassKey: passKey,
+    ObjectName: "contact",
+    ObjectId: contactId,
     OrganizationId: orgId,
+    PassKey: passKey,
     IncludeExtendedProperties: includeExtendedProperties
   };
 
@@ -126,7 +125,7 @@ async function getContactDetails(contactId, passKey, orgId, includeExtendedPrope
       throw new Error('Contact not found');
     }
 
-    const contact = normalized.Contact || normalized.Result || normalized.data;
+    const contact = normalized.DataObject || normalized.Contact || normalized.Result || normalized.data;
     if (!contact) {
       throw new Error('Contact not found');
     }
@@ -158,7 +157,10 @@ async function getContactDetails(contactId, passKey, orgId, includeExtendedPrope
       maritalStatus: contact.MaritalStatus,
       nickName: contact.NickName,
       clientSince: contact.ClientSince,
-      ...(includeExtendedProperties ? { extended: contact.ExtendedProperties || contact } : {})
+
+      // Store raw BSA response (includes CustomProps for custom fields)
+      _raw: contact,
+      _hasExtendedProps: includeExtendedProperties
     };
     
   } catch (error) {

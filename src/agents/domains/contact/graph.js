@@ -56,6 +56,28 @@ const ContactStateChannels = {
     default: () => false
   },
   
+  // Query processing fields
+  queryType: {
+    value: (x, y) => y || x,
+    default: () => null  // 'search' | 'info' | 'mixed'
+  },
+  requestedField: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  contactDetails: {
+    value: (x, y) => y || x,
+    default: () => null  // Full contact with extended properties
+  },
+  fieldValue: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  isCustomField: {
+    value: (x, y) => y !== undefined ? y : x,
+    default: () => false
+  },
+
   // Output
   entities: {
     value: (x, y) => ({ ...x, ...y }),
@@ -117,6 +139,7 @@ class ContactSubgraph {
     });
 
     // Add nodes
+    workflow.addNode("classify_query", this.classifyQuery.bind(this));
     workflow.addNode("check_cache", this.checkSessionCache.bind(this));
     workflow.addNode("extract_name", this.extractContactName.bind(this));
     workflow.addNode("search_bsa", this.searchBSAContacts.bind(this));
@@ -124,12 +147,32 @@ class ContactSubgraph {
     workflow.addNode("disambiguate", this.disambiguateContact.bind(this));
     workflow.addNode("cache_result", this.cacheContactResult.bind(this));
     workflow.addNode("create_entity", this.createContactEntity.bind(this));
+    workflow.addNode("resolve_contact", this.resolveContact.bind(this));
+    workflow.addNode("fetch_details", this.fetchContactDetails.bind(this));
+    workflow.addNode("extract_field", this.extractField.bind(this));
+    workflow.addNode("answer_query", this.answerQuery.bind(this));
     workflow.addNode("format_response", this.formatResponse.bind(this));
 
     // Define flow
-    workflow.setEntryPoint("check_cache");
-    
-    // Route from cache check
+    workflow.setEntryPoint("classify_query");
+
+    // Route from query classification
+    workflow.addConditionalEdges(
+      "classify_query",
+      (state) => {
+        if (state.error) return "format_response";
+        if (state.queryType === 'info') return "resolve_contact";
+        // Default: 'search' or null goes to normal search flow
+        return "check_cache";
+      },
+      {
+        "format_response": "format_response",
+        "resolve_contact": "resolve_contact",
+        "check_cache": "check_cache"
+      }
+    );
+
+    // Route from cache check (existing search flow)
     workflow.addConditionalEdges(
       "check_cache",
       (state) => {
@@ -171,6 +214,13 @@ class ContactSubgraph {
     workflow.addEdge("disambiguate", "cache_result");
     workflow.addEdge("cache_result", "create_entity");
     workflow.addEdge("create_entity", "format_response");
+
+    // Info query flow
+    workflow.addEdge("resolve_contact", "fetch_details");
+    workflow.addEdge("fetch_details", "extract_field");
+    workflow.addEdge("extract_field", "answer_query");
+    workflow.addEdge("answer_query", "create_entity");
+
     workflow.addEdge("format_response", END);
 
     // Always compile WITHOUT checkpointer - subgraphs are stateless
@@ -179,6 +229,96 @@ class ContactSubgraph {
     console.log("[CONTACT] Compiling graph in STATELESS mode (no checkpointer)");
 
     return workflow.compile(compileOptions);
+  }
+
+  /**
+   * Classify the query type: search vs. information request
+   */
+  async classifyQuery(state) {
+    console.log("[CONTACT:CLASSIFY] Classifying query type");
+    this.metrics.startTimer("contact_classify");
+
+    try {
+      // Extract query
+      let query = state.query;
+      if (!query && state.messages?.length > 0) {
+        const lastMessage = state.messages[state.messages.length - 1];
+        query = lastMessage.content;
+      }
+
+      if (!query) {
+        this.metrics.endTimer("contact_classify", false, { reason: "no_query" });
+        return {
+          ...state,
+          queryType: 'search',  // Default to search
+          error: null
+        };
+      }
+
+      // Use LLM to classify the query
+      const prompt = `
+        You are classifying a contact-related query.
+
+        Query: "${query}"
+
+        Classification types:
+        - "search": User wants to find/resolve a contact by name (e.g., "Find Norman", "Who is Sarah")
+        - "info": User wants specific information about a contact (e.g., "When is Norman's birthday?", "What's his email?")
+        - "mixed": Both (e.g., "Find Norman and tell me his email")
+
+        Return ONLY JSON (no markdown, no explanation):
+        {
+          "type": "search|info|mixed",
+          "contactName": "extracted name or null",
+          "fieldRequested": "field being asked about or null"
+        }
+
+        Examples:
+        - "Find Norman" → {"type": "search", "contactName": "Norman", "fieldRequested": null}
+        - "When is Norman's birthday?" → {"type": "info", "contactName": "Norman", "fieldRequested": "birthday"}
+        - "What's his email?" → {"type": "info", "contactName": null, "fieldRequested": "email"}
+        - "Find Sarah and get her phone number" → {"type": "mixed", "contactName": "Sarah", "fieldRequested": "phone"}
+      `;
+
+      const response = await this.llm.invoke(prompt);
+      let content = response.content;
+
+      // Strip markdown formatting if present
+      if (content.includes('```json')) {
+        content = content.split('```json')[1].split('```')[0].trim();
+      } else if (content.includes('```')) {
+        content = content.split('```')[1].split('```')[0].trim();
+      }
+
+      const classification = JSON.parse(content);
+
+      console.log("[CONTACT:CLASSIFY] Classification result:", {
+        type: classification.type,
+        contactName: classification.contactName,
+        fieldRequested: classification.fieldRequested
+      });
+
+      this.metrics.endTimer("contact_classify", true, { type: classification.type });
+
+      return {
+        ...state,
+        queryType: classification.type,
+        searchQuery: classification.contactName || query,
+        requestedField: classification.fieldRequested,
+        error: null
+      };
+
+    } catch (error) {
+      console.error("[CONTACT:CLASSIFY] Error classifying query:", error);
+      this.metrics.endTimer("contact_classify", false, { error: error.message });
+
+      // Fallback to search on error
+      return {
+        ...state,
+        queryType: 'search',
+        error: null  // Don't fail the whole flow
+      };
+    }
   }
 
   /**
@@ -571,7 +711,400 @@ class ContactSubgraph {
       };
     }
   }
-  
+
+  /**
+   * Resolve contact from entities, cache, or search
+   */
+  async resolveContact(state) {
+    console.log("[CONTACT:RESOLVE] Resolving contact for info query");
+    this.metrics.startTimer("contact_resolve");
+
+    try {
+      const contactName = state.searchQuery;
+
+      // Step 1: Check if contact is in entities (from previous query in session)
+      if (state.entities) {
+        // Look for last_contact if no name specified (pronoun reference)
+        if (!contactName || contactName === state.query) {
+          if (state.entities.last_contact) {
+            console.log("[CONTACT:RESOLVE] Using last_contact from entities");
+            this.metrics.endTimer("contact_resolve", true, { source: "entity_last" });
+            return {
+              ...state,
+              selectedContact: {
+                id: state.entities.last_contact.data.id,
+                name: state.entities.last_contact.data.name,
+                ...state.entities.last_contact.data
+              }
+            };
+          }
+        }
+
+        // Search entities by name
+        for (const [key, entity] of Object.entries(state.entities)) {
+          if (entity.type === 'contact' && entity.name) {
+            const entityNameLower = entity.name.toLowerCase();
+            const searchLower = contactName?.toLowerCase() || '';
+            if (entityNameLower.includes(searchLower) || searchLower.includes(entityNameLower)) {
+              console.log(`[CONTACT:RESOLVE] Found contact in entities: ${entity.name}`);
+              this.metrics.endTimer("contact_resolve", true, { source: "entity_match" });
+              return {
+                ...state,
+                selectedContact: {
+                  id: entity.data.id,
+                  name: entity.data.name,
+                  ...entity.data
+                }
+              };
+            }
+          }
+        }
+      }
+
+      // Step 2: Check session cache
+      const cacheKey = this.normalizeCacheKey(contactName);
+      const cached = state.sessionCache?.[cacheKey];
+      if (cached && (Date.now() - cached.timestamp) < this.cacheTTL) {
+        console.log(`[CONTACT:RESOLVE] Found contact in cache: ${cached.contact.name}`);
+        this.metrics.endTimer("contact_resolve", true, { source: "cache" });
+        return {
+          ...state,
+          selectedContact: cached.contact
+        };
+      }
+
+      // Step 3: Search BSA - delegate to existing search flow
+      console.log("[CONTACT:RESOLVE] Contact not in entities/cache, searching BSA");
+      this.metrics.endTimer("contact_resolve", true, { source: "bsa_search_needed" });
+
+      // Trigger search by going through normal flow
+      return {
+        ...state,
+        selectedContact: null,
+        // The graph will need to route through search if no contact found
+        error: null
+      };
+
+    } catch (error) {
+      console.error("[CONTACT:RESOLVE] Error resolving contact:", error);
+      this.metrics.endTimer("contact_resolve", false, { error: error.message });
+      return {
+        ...state,
+        error: `Failed to resolve contact: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Fetch full contact details with extended properties
+   */
+  async fetchContactDetails(state, config) {
+    console.log("[CONTACT:FETCH] Fetching full contact details with extended properties");
+    this.metrics.startTimer("contact_fetch_details");
+
+    try {
+      // Validate we have a selected contact
+      if (!state.selectedContact || !state.selectedContact.id) {
+        console.error("[CONTACT:FETCH] No selected contact to fetch details for");
+        return {
+          ...state,
+          error: "No contact selected for fetching details"
+        };
+      }
+
+      // Check if we already have extended properties in the contact
+      if (state.selectedContact._raw && state.selectedContact._hasExtendedProps) {
+        console.log("[CONTACT:FETCH] Contact already has extended properties, skipping fetch");
+        this.metrics.endTimer("contact_fetch_details", true, { cached: true });
+        return {
+          ...state,
+          contactDetails: state.selectedContact
+        };
+      }
+
+      // Validate config
+      if (!config?.configurable) {
+        console.error("[CONTACT:FETCH] Missing config or configurable");
+        return {
+          ...state,
+          error: "Authentication configuration missing"
+        };
+      }
+
+      const passKey = await config.configurable.getPassKey();
+      const orgId = config.configurable.org_id;
+      const contactId = state.selectedContact.id;
+
+      if (!passKey || !orgId) {
+        console.error("[CONTACT:FETCH] Missing PassKey or OrgId");
+        return {
+          ...state,
+          error: "Missing authentication credentials"
+        };
+      }
+
+      console.log(`[CONTACT:FETCH] Fetching details for contact ${contactId}`);
+
+      // Import getContactDetails
+      const { getContactDetails } = require('../../../integrations/bsa/tools/contacts');
+
+      // Fetch with extended properties
+      const fullContact = await this.errorHandler.executeWithRetry(
+        async () => await getContactDetails(
+          contactId,
+          passKey,
+          orgId,
+          true  // IncludeExtendedProperties = true
+        ),
+        {
+          operation: "contact_fetch_details",
+          maxRetries: 2,
+          circuitBreakerKey: "bsa_contacts"
+        }
+      );
+
+      console.log("[CONTACT:FETCH] Successfully fetched contact details");
+      this.metrics.endTimer("contact_fetch_details", true, { hasExtended: !!fullContact._raw });
+
+      return {
+        ...state,
+        contactDetails: fullContact
+      };
+
+    } catch (error) {
+      console.error("[CONTACT:FETCH] Error fetching contact details:", error);
+      this.metrics.endTimer("contact_fetch_details", false, { error: error.message });
+      return {
+        ...state,
+        error: `Failed to fetch contact details: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Extract requested field from contact (supports custom fields)
+   */
+  async extractField(state) {
+    console.log("[CONTACT:EXTRACT_FIELD] Extracting requested field");
+    this.metrics.startTimer("contact_extract_field");
+
+    try {
+      const query = state.query || (state.messages?.[state.messages.length - 1]?.content);
+      const requestedField = state.requestedField;
+      const contact = state.contactDetails;
+
+      if (!contact) {
+        return {
+          ...state,
+          error: "No contact details available for field extraction"
+        };
+      }
+
+      // Build list of standard fields
+      const standardFields = {
+        birthDate: contact.birthDate,
+        birthday: contact.birthDate,
+        anniversary: contact.anniversary,
+        email: contact.email,
+        'email address': contact.email,
+        phone: contact.phone,
+        'phone number': contact.phone,
+        mobile: contact.mobile,
+        'mobile phone': contact.mobile,
+        fax: contact.fax,
+        company: contact.company,
+        title: contact.title,
+        'job title': contact.title,
+        department: contact.department,
+        address: contact.address,
+        city: contact.city,
+        state: contact.state,
+        'postal code': contact.postalCode,
+        'zip code': contact.postalCode,
+        country: contact.country,
+        notes: contact.notes,
+        maritalStatus: contact.maritalStatus,
+        'marital status': contact.maritalStatus,
+        nickName: contact.nickName,
+        nickname: contact.nickName,
+        clientSince: contact.clientSince,
+        'client since': contact.clientSince
+      };
+
+      // Extract custom fields from CustomProps
+      const customFields = {};
+      if (contact._raw?.CustomProps?.props) {
+        contact._raw.CustomProps.props.forEach(prop => {
+          if (prop.name) {
+            customFields[prop.name] = prop.value;
+            // Also add with spaces replaced by underscores
+            customFields[prop.name.replace(/_/g, ' ')] = prop.value;
+          }
+        });
+      }
+
+      // Use LLM to match query to field
+      const prompt = `
+        User query: "${query}"
+        Hint about requested field: "${requestedField || 'unknown'}"
+        Contact name: "${contact.name}"
+
+        Available standard fields:
+        ${JSON.stringify(standardFields, null, 2)}
+
+        Available custom fields:
+        ${JSON.stringify(customFields, null, 2)}
+
+        Which field is the user asking about?
+        Return ONLY JSON (no markdown):
+        {
+          "fieldType": "standard|custom|unknown",
+          "fieldName": "exact_field_name",
+          "value": <the actual value from the fields above>
+        }
+
+        If the field doesn't exist or is null, return:
+        {
+          "fieldType": "unknown",
+          "fieldName": "${requestedField || 'unknown'}",
+          "value": null
+        }
+      `;
+
+      const response = await this.llm.invoke(prompt);
+      let content = response.content;
+
+      // Strip markdown formatting
+      if (content.includes('```json')) {
+        content = content.split('```json')[1].split('```')[0].trim();
+      } else if (content.includes('```')) {
+        content = content.split('```')[1].split('```')[0].trim();
+      }
+
+      const extraction = JSON.parse(content);
+
+      console.log("[CONTACT:EXTRACT_FIELD] Extraction result:", {
+        fieldType: extraction.fieldType,
+        fieldName: extraction.fieldName,
+        hasValue: extraction.value !== null && extraction.value !== undefined
+      });
+
+      this.metrics.endTimer("contact_extract_field", true, {
+        fieldType: extraction.fieldType,
+        fieldFound: extraction.value !== null
+      });
+
+      return {
+        ...state,
+        isCustomField: extraction.fieldType === 'custom',
+        requestedField: extraction.fieldName,
+        fieldValue: extraction.value
+      };
+
+    } catch (error) {
+      console.error("[CONTACT:EXTRACT_FIELD] Error extracting field:", error);
+      this.metrics.endTimer("contact_extract_field", false, { error: error.message });
+      return {
+        ...state,
+        error: `Failed to extract field: ${error.message}`
+      };
+    }
+  }
+
+  /**
+   * Generate natural language answer for the field query
+   */
+  async answerQuery(state) {
+    console.log("[CONTACT:ANSWER] Generating answer for field query");
+    this.metrics.startTimer("contact_answer");
+
+    try {
+      const contact = state.selectedContact || state.contactDetails;
+      const fieldName = state.requestedField;
+      const fieldValue = state.fieldValue;
+      const isCustomField = state.isCustomField;
+
+      if (!contact) {
+        return {
+          ...state,
+          response: "Could not find contact information"
+        };
+      }
+
+      // Handle null/missing fields
+      if (fieldValue === null || fieldValue === undefined || fieldValue === '') {
+        const friendlyFieldName = fieldName || 'that information';
+        this.metrics.endTimer("contact_answer", true, { hasValue: false });
+        return {
+          ...state,
+          response: `${contact.name}'s ${friendlyFieldName} is not recorded in the system.`
+        };
+      }
+
+      // Format based on field type
+      let formattedResponse;
+      const { formatHumanReadableDate, formatCustomFieldValue, getFriendlyFieldName } = require('../../../utils/contactFieldFormatter');
+
+      // Date fields
+      if (fieldName === 'birthDate' || fieldName === 'birthday') {
+        const formattedDate = formatHumanReadableDate(fieldValue);
+        formattedResponse = `${contact.name}'s birthday is ${formattedDate}.`;
+      }
+      else if (fieldName === 'anniversary') {
+        const formattedDate = formatHumanReadableDate(fieldValue);
+        formattedResponse = `${contact.name}'s anniversary is ${formattedDate}.`;
+      }
+      // Contact info fields
+      else if (fieldName === 'email' || fieldName === 'email address') {
+        formattedResponse = `${contact.name}'s email is ${fieldValue}.`;
+      }
+      else if (fieldName === 'phone' || fieldName === 'phone number') {
+        formattedResponse = `${contact.name}'s phone number is ${fieldValue}.`;
+      }
+      else if (fieldName === 'mobile' || fieldName === 'mobile phone') {
+        formattedResponse = `${contact.name}'s mobile phone is ${fieldValue}.`;
+      }
+      // Address fields
+      else if (fieldName === 'address') {
+        formattedResponse = `${contact.name}'s address is ${fieldValue}.`;
+      }
+      else if (fieldName === 'city') {
+        formattedResponse = `${contact.name} is located in ${fieldValue}.`;
+      }
+      // Custom fields
+      else if (isCustomField) {
+        const formattedValue = formatCustomFieldValue(fieldValue);
+        const friendlyName = getFriendlyFieldName(fieldName);
+        formattedResponse = `${contact.name}'s ${friendlyName}: ${formattedValue}`;
+      }
+      // Generic formatting for other standard fields
+      else {
+        const friendlyName = getFriendlyFieldName(fieldName);
+        formattedResponse = `${contact.name}'s ${friendlyName}: ${fieldValue}`;
+      }
+
+      console.log("[CONTACT:ANSWER] Generated answer");
+      this.metrics.endTimer("contact_answer", true, { hasValue: true });
+
+      return {
+        ...state,
+        response: formattedResponse
+      };
+
+    } catch (error) {
+      console.error("[CONTACT:ANSWER] Error generating answer:", error);
+      this.metrics.endTimer("contact_answer", false, { error: error.message });
+
+      // Fallback to simple response
+      const contact = state.selectedContact || state.contactDetails;
+      const fieldValue = state.fieldValue;
+      return {
+        ...state,
+        response: `${contact?.name}: ${fieldValue}`
+      };
+    }
+  }
+
   /**
    * Get initials from name for avatar display
    */
@@ -685,20 +1218,57 @@ class ContactSubgraph {
     }
     
     try {
-      const contact = state.selectedContact;
-      
-      // Create entity with multiple references
+      // Use contactDetails if available (from info query), otherwise selectedContact
+      const contact = state.contactDetails || state.selectedContact;
+      const hasExtendedProps = !!state.contactDetails;
+
+      // Create entity with multiple references and FULL contact data
       const entity = {
         id: `contact_${contact.id}`,
         type: "contact",
         name: contact.name,
         data: {
+          // Basic info
           id: contact.id,
           name: contact.name,
+          firstName: contact.firstName,
+          lastName: contact.lastName,
+
+          // Contact info
           email: contact.email,
           phone: contact.phone,
+          mobile: contact.mobile,
+          fax: contact.fax,
+
+          // Professional info
           company: contact.company,
-          title: contact.title
+          title: contact.title,
+          department: contact.department,
+
+          // Address
+          address: contact.address,
+          city: contact.city,
+          state: contact.state,
+          postalCode: contact.postalCode,
+          country: contact.country,
+
+          // Personal info
+          birthDate: contact.birthDate,
+          anniversary: contact.anniversary,
+          maritalStatus: contact.maritalStatus,
+          nickName: contact.nickName,
+          clientSince: contact.clientSince,
+
+          // Additional info
+          notes: contact.notes,
+          lastModified: contact.lastModified,
+          createdDate: contact.createdDate,
+          ownerId: contact.ownerId,
+
+          // Raw BSA response (includes CustomProps for custom fields)
+          _raw: contact._raw || null,
+          _hasExtendedProps: hasExtendedProps,
+          _fetchedAt: Date.now()
         },
         references: [
           contact.name,

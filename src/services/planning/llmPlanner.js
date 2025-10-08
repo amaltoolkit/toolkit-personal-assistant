@@ -61,7 +61,7 @@ class LLMPlanner {
         - calendar: Creating appointments, meetings, scheduling events with specific times/dates [ACTION]
         - task: Creating/managing tasks, todos, action items, reminders [ACTION]
         - workflow: Creating multi-step processes, automation sequences, business workflows, procedures [ACTION]
-        - contact: Finding/searching for SPECIFIC people by name in the contact database [ACTION]
+        - contact: ALL contact operations - search, information queries, updates [ACTION + READ]
         - general: Answering questions, viewing/reading existing entities, conversations, greetings, system queries [INFORMATIONAL]
 
         ${entityStats && entityStats.totalEntities > 0 ? `
@@ -97,21 +97,31 @@ class LLMPlanner {
         CRITICAL ROUTING RULES:
         1. ACTION DOMAINS (calendar, task, workflow, contact):
            - Use when creating, modifying, or deleting BSA entities
-           - Use contact only if searching for SPECIFIC person by name
+           - Use contact for BOTH searching AND asking about contact information
            - Generic terms like "client", "customer", "prospect" in process contexts = workflow only (NOT contact)
 
-        2. GENERAL DOMAIN (informational, read-only):
+        2. CONTACT DOMAIN (search + read):
+           - Searching for specific people by name ("Find Norman", "Who is Sarah")
+           - Asking about contact information ("When is Norman's birthday?", "What's his email?")
+           - Asking about custom contact fields ("What's Norman's coffee preference?")
+           - INCLUDE pronoun references if context is about a contact ("What's his email?" after finding Norman)
+
+        3. GENERAL DOMAIN (informational, read-only):
            - Questions about existing entities ("What was step 2?", "Show all workflows")
            - Greetings/farewells ("Hey, what's up?", "Thanks, bye")
            - System state queries ("How many workflows did I create?")
            - Acknowledgments ("ok", "got it", "yes")
-           - Follow-up questions about recently created entities
+           - List operations ("Show all contacts", "How many contacts do I have")
 
-        3. ROUTING EXAMPLES:
+        4. ROUTING EXAMPLES:
            - "Create a client outreach process" = workflow only (NOT contact, NOT general)
            - "What was the second step?" = general only (NOT workflow)
            - "Show all my workflows" = general only (NOT workflow)
            - "Find contact John Smith" = contact only
+           - "When is Norman's birthday?" = contact only
+           - "What's his email?" = contact only (if context available)
+           - "What's Norman's coffee preference?" = contact only
+           - "Show all contacts" = general only (list operation)
            - "Schedule meeting with Sarah" = calendar + contact (sequential)
            - "Hey, what's up?" = general only
            - "Create appointment then add task" = calendar, task (sequential)
@@ -237,9 +247,21 @@ class LLMPlanner {
         console.log("[LLM-PLANNER:FALLBACK] Matched task keywords");
         domains.push('task');
       }
-      // Very conservative contact matching - only explicit searches
+      // Conservative contact matching - explicit searches
       if (/(?:find|search|look up|lookup|get|search for)\s+(?:contact|person)/i.test(query)) {
         console.log("[LLM-PLANNER:FALLBACK] Matched contact keywords");
+        domains.push('contact');
+      }
+    }
+
+    // Contact info queries (questions about contact fields)
+    if (isQuestion) {
+      // Check for contact-related questions (birthday, email, phone, etc.)
+      const contactInfoPattern = /(?:birthday|email|phone|address|city|anniversary|company|job|title|mobile|when is|what'?s)\s+.+\s+(?:birthday|email|phone|address|city)/i;
+      const pronounPattern = /(?:his|her|their)\s+(?:birthday|email|phone|address|city|anniversary|company|job|title|mobile)/i;
+
+      if (contactInfoPattern.test(query) || pronounPattern.test(query)) {
+        console.log("[LLM-PLANNER:FALLBACK] Matched contact info query keywords");
         domains.push('contact');
       }
     }

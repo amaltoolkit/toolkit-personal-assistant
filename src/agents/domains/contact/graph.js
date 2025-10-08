@@ -78,6 +78,24 @@ const ContactStateChannels = {
     default: () => false
   },
 
+  // Clarification fields (for stateless subgraph pattern)
+  needsClarification: {
+    value: (x, y) => y !== undefined ? y : x,
+    default: () => false
+  },
+  clarificationType: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  clarificationData: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+  contact_clarification_response: {
+    value: (x, y) => y || x,
+    default: () => null
+  },
+
   // Output
   entities: {
     value: (x, y) => ({ ...x, ...y }),
@@ -186,8 +204,22 @@ class ContactSubgraph {
         "extract_name": "extract_name"
       }
     );
-    
-    workflow.addEdge("extract_name", "search_bsa");
+
+    // Route from extract_name - if user selected contact from clarification, skip search
+    workflow.addConditionalEdges(
+      "extract_name",
+      (state) => {
+        if (state.error) return "format_response";
+        if (state.selectedContact) return "cache_result"; // Already have contact from clarification
+        return "search_bsa"; // Normal flow - need to search
+      },
+      {
+        "format_response": "format_response",
+        "cache_result": "cache_result",
+        "search_bsa": "search_bsa"
+      }
+    );
+
     workflow.addEdge("search_bsa", "score_matches");
     
     // Route from scoring
@@ -210,8 +242,20 @@ class ContactSubgraph {
         "disambiguate": "disambiguate"
       }
     );
-    
-    workflow.addEdge("disambiguate", "cache_result");
+
+    // Route from disambiguate based on whether clarification is needed
+    workflow.addConditionalEdges(
+      "disambiguate",
+      (state) => {
+        if (state.needsClarification) return "format_response"; // Return to coordinator with clarification request
+        if (state.selectedContact) return "cache_result"; // User responded on re-entry, continue
+        return "format_response"; // Fallback
+      },
+      {
+        "format_response": "format_response",
+        "cache_result": "cache_result"
+      }
+    );
 
     // After caching search results, check if this was an info query
     workflow.addConditionalEdges(
@@ -416,7 +460,36 @@ class ContactSubgraph {
    */
   async extractContactName(state) {
     console.log("[CONTACT:EXTRACT] Extracting contact name from query");
-    
+
+    // Check if we're resuming from a disambiguation clarification
+    if (state.contact_clarification_response) {
+      console.log("[CONTACT:EXTRACT] Resuming with clarification:", state.contact_clarification_response);
+
+      const selectedContact = state.contact_clarification_response.selected_contact;
+      const skipSearch = state.contact_clarification_response.skip;
+
+      if (skipSearch) {
+        console.log("[CONTACT:EXTRACT] User chose to skip");
+        return {
+          ...state,
+          error: "Contact search was skipped by user",
+          contact_clarification_response: null
+        };
+      }
+
+      if (selectedContact) {
+        console.log("[CONTACT:EXTRACT] Using selected contact from disambiguation");
+        // User selected a contact from disambiguation - use it directly
+        return {
+          ...state,
+          selectedContact: selectedContact,
+          searchQuery: selectedContact.name,
+          contact_clarification_response: null,
+          needsClarification: false // Clear the flag
+        };
+      }
+    }
+
     try {
       const query = state.searchQuery || state.query;
       
@@ -687,55 +760,45 @@ class ContactSubgraph {
   }
 
   /**
-   * Trigger disambiguation interrupt for user selection
+   * Handle disambiguation by setting state (stateless subgraph pattern)
    */
   async disambiguateContact(state) {
     console.log("[CONTACT:DISAMBIGUATE] Multiple matches, requesting user selection");
-    
-    try {
-      // Format candidates for UI with enhanced display data
-      const formattedCandidates = state.candidates.slice(0, 5).map(c => ({
-        id: c.id,
-        name: c.name,
-        role: c.title || c.role || '',
-        company: c.company || '',
-        email: c.email || '',
-        phone: c.phone || '',
-        score: Math.round(c.score || 0),
-        initials: this.getInitials(c.name),
-        avatarColor: this.getAvatarColor(c.name),
-        lastInteraction: this.formatLastInteraction(c, state.memory_context),
-        metadata: {
-          department: c.department,
-          location: c.location,
-          linkedin: c.linkedin
-        }
-      }));
-      
-      // Throw interrupt for user selection
-      throw interrupt({
-        value: {
-          type: "contact_disambiguation",
-          message: `Multiple contacts found for "${state.searchQuery}". Please select the correct one:`,
-          query: state.searchQuery,
-          candidates: formattedCandidates,
-          allowCreate: false, // Don't allow creating new contacts for now
-          allowSearch: true   // Allow searching if none match
-        }
-      });
-      
-    } catch (error) {
-      // If it's an interrupt, re-throw it
-      if (error.name === "Interrupt") {
-        throw error;
+
+    // Format candidates for UI with enhanced display data
+    const formattedCandidates = state.candidates.slice(0, 5).map(c => ({
+      id: c.id,
+      name: c.name,
+      role: c.title || c.role || '',
+      company: c.company || '',
+      email: c.email || '',
+      phone: c.phone || '',
+      score: Math.round(c.score || 0),
+      initials: this.getInitials(c.name),
+      avatarColor: this.getAvatarColor(c.name),
+      lastInteraction: this.formatLastInteraction(c, state.memory_context),
+      metadata: {
+        department: c.department,
+        location: c.location,
+        linkedin: c.linkedin
       }
-      
-      console.error("[CONTACT:DISAMBIGUATE] Error:", error);
-      return {
-        ...state,
-        error: `Disambiguation failed: ${error.message}`
-      };
-    }
+    }));
+
+    // Don't throw interrupt - let coordinator handle it (subgraphs are stateless)
+    console.log("[CONTACT:DISAMBIGUATE] Setting needsClarification for coordinator");
+    return {
+      ...state,
+      needsClarification: true,
+      clarificationType: 'contact_disambiguation',
+      clarificationData: {
+        type: 'contact_disambiguation',
+        message: `Multiple contacts found for "${state.searchQuery}". Please select the correct one:`,
+        query: state.searchQuery,
+        candidates: formattedCandidates,
+        allowCreate: false,
+        allowSearch: true
+      }
+    };
   }
 
   /**

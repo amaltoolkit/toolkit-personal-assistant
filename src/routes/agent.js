@@ -193,6 +193,17 @@ function formatResponse(state, status) {
     if (state.ui) {
       response.ui = state.ui;
     }
+  } else if (status === 'PENDING_CLARIFICATION') {
+    response.thread_id = state.thread_id;
+    response.requiresClarification = true;
+
+    // Include clarification data from state.interrupt
+    if (state.interrupt) {
+      response.clarification = state.interrupt;
+      response.message = state.interrupt.message || 'Please provide clarification:';
+    } else {
+      response.message = 'Please provide clarification:';
+    }
   } else if (status === 'COMPLETED') {
     response.response = responseText;
     
@@ -368,9 +379,14 @@ router.post('/execute', async (req, res) => {
             domain: interruptData.domain
           });
 
+          // Determine interrupt type for proper formatting
+          const isClarification = interruptData.type === 'contact_disambiguation' ||
+                                 interruptData.type === 'contact_clarification' ||
+                                 interruptData.type === 'user_clarification';
+
           // Structure the interrupt data properly
           state = {
-            interruptMarker: 'PENDING_APPROVAL',
+            interruptMarker: isClarification ? 'PENDING_CLARIFICATION' : 'PENDING_APPROVAL',
             thread_id: config.configurable.thread_id
           };
 
@@ -411,7 +427,40 @@ router.post('/execute', async (req, res) => {
       }
     
     // Step 6: Check for interruption
-    if (state.interruptMarker === 'PENDING_APPROVAL') {
+    if (state.interruptMarker === 'PENDING_CLARIFICATION') {
+      console.log(`[AGENT:EXECUTE:${requestId}] Clarification required, returning interrupt data`);
+
+      // Store thread_id in response for resumption
+      state.thread_id = config.configurable.thread_id;
+
+      // Send interrupt via WebSocket or polling service
+      try {
+        const interruptData = {
+          type: state.interrupt.type,
+          threadId: config.configurable.thread_id,
+          ...state.interrupt, // Include all clarification data (candidates, message, etc.)
+          requestId
+        };
+
+        // Check if we're in development (WebSocket) or production (polling)
+        if (process.env.NODE_ENV !== 'production') {
+          const { getInterruptWebSocketServer } = require('../core/websocket/interrupts');
+          const wsServer = getInterruptWebSocketServer();
+          await wsServer.sendInterrupt(session_id, interruptData);
+        } else {
+          const { getInterruptPollingService } = require('../core/websocket/pollingFallback');
+          const pollingService = getInterruptPollingService();
+          pollingService.storeInterrupt(session_id, interruptData);
+        }
+
+        console.log(`[AGENT:EXECUTE:${requestId}] Clarification interrupt sent to client`);
+      } catch (error) {
+        console.error(`[AGENT:EXECUTE:${requestId}] Failed to send clarification interrupt:`, error);
+      }
+
+      const response = formatResponse(state, 'PENDING_CLARIFICATION');
+      return res.status(202).json(response);
+    } else if (state.interruptMarker === 'PENDING_APPROVAL') {
       console.log(`[AGENT:EXECUTE:${requestId}] Approval required, returning previews`);
       
       // Store thread_id in response for resumption

@@ -1338,14 +1338,21 @@ class ContactSubgraph {
    */
   async formatResponse(state) {
     console.log("[CONTACT:RESPONSE] Formatting response");
-    
+
     if (state.error) {
       return {
         ...state,
         response: `Error resolving contact: ${state.error}`
       };
     }
-    
+
+    // Info queries already have a response from answer_query - don't overwrite
+    if (state.response && state.queryType === 'info') {
+      console.log("[CONTACT:RESPONSE] Using existing response from info query");
+      return state;
+    }
+
+    // Search queries need a response generated
     if (state.selectedContact) {
       return {
         ...state,
@@ -1354,7 +1361,7 @@ class ContactSubgraph {
         }`
       };
     }
-    
+
     return {
       ...state,
       response: "No matching contacts found"

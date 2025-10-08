@@ -715,9 +715,10 @@ class Coordinator {
             if (error && error.name === 'GraphInterrupt') {
               const interruptValue = error.value?.value || error.value;
 
-              // Check if it's a clarification interrupt (contact or user)
+              // Check if it's a clarification interrupt (contact disambiguation, contact clarification, or user clarification)
               if (interruptValue?.type === 'contact_clarification' ||
-                  interruptValue?.type === 'user_clarification') {
+                  interruptValue?.type === 'user_clarification' ||
+                  interruptValue?.type === 'contact_disambiguation') {
                 console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph needs clarification:`, interruptValue.type);
 
                 // Return special result indicating clarification needed

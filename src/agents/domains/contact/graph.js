@@ -212,11 +212,37 @@ class ContactSubgraph {
     );
     
     workflow.addEdge("disambiguate", "cache_result");
-    workflow.addEdge("cache_result", "create_entity");
+
+    // After caching search results, check if this was an info query
+    workflow.addConditionalEdges(
+      "cache_result",
+      (state) => {
+        if (state.queryType === 'info') return "fetch_details";
+        return "create_entity";
+      },
+      {
+        "fetch_details": "fetch_details",
+        "create_entity": "create_entity"
+      }
+    );
+
     workflow.addEdge("create_entity", "format_response");
 
-    // Info query flow
-    workflow.addEdge("resolve_contact", "fetch_details");
+    // Info query flow - conditional routing based on whether contact was resolved
+    workflow.addConditionalEdges(
+      "resolve_contact",
+      (state) => {
+        if (state.error) return "format_response";
+        if (state.selectedContact) return "fetch_details";
+        // Contact not found - route to search flow
+        return "extract_name";
+      },
+      {
+        "format_response": "format_response",
+        "fetch_details": "fetch_details",
+        "extract_name": "extract_name"
+      }
+    );
     workflow.addEdge("fetch_details", "extract_field");
     workflow.addEdge("extract_field", "answer_query");
     workflow.addEdge("answer_query", "create_entity");

@@ -199,7 +199,14 @@ async function createAppointment(data, passKey, orgId) {
 
     // Response contains DataObject, not Activity
     const appointment = normalized.DataObject;
-    console.log("[BSA:APPOINTMENTS] Created appointment ID:", appointment.Id);
+    console.log("[BSA:APPOINTMENTS] Created appointment - Full response:", JSON.stringify({
+      hasDataObject: !!normalized.DataObject,
+      appointmentKeys: appointment ? Object.keys(appointment) : [],
+      Id: appointment?.Id,
+      id: appointment?.id,
+      Subject: appointment?.Subject,
+      subject: appointment?.subject
+    }, null, 2));
 
     // Link contacts if provided
     if (contactIds.length > 0 && appointment.Id) {

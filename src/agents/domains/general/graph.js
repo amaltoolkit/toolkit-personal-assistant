@@ -529,13 +529,37 @@ Answer:`;
     // Appointment context
     if (entities.appointment) {
       const appt = entities.appointment;
-      parts.push(`\n**Appointment**: "${appt.name}"`);
-      parts.push(`- Time: ${new Date(appt.time).toLocaleString()}`);
+      const appointmentName = appt.name || appt.subject || appt.Subject || 'Untitled Appointment';
+      parts.push(`\n**Appointment**: "${appointmentName}"`);
+
+      if (appt.time || appt.startTime || appt.StartTime) {
+        const timeValue = appt.time || appt.startTime || appt.StartTime;
+        try {
+          const timeStr = new Date(timeValue).toLocaleString();
+          parts.push(`- Time: ${timeStr}`);
+        } catch (e) {
+          parts.push(`- Time: ${timeValue}`);
+        }
+      }
+
       if (appt.participants && appt.participants.length > 0) {
         parts.push(`- Participants: ${appt.participants.join(', ')}`);
+      } else if (appt.externalAttendees || appt.internalAttendees) {
+        const attendees = [
+          ...(appt.externalAttendees || []),
+          ...(appt.internalAttendees || [])
+        ];
+        if (attendees.length > 0) {
+          parts.push(`- Participants: ${attendees.join(', ')}`);
+        }
       }
-      if (appt.location) {
-        parts.push(`- Location: ${appt.location}`);
+
+      if (appt.location || appt.Location) {
+        parts.push(`- Location: ${appt.location || appt.Location}`);
+      }
+
+      if (appt.id) {
+        parts.push(`- ID: ${appt.id}`);
       }
     }
 

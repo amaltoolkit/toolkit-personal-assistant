@@ -1370,9 +1370,18 @@ class CalendarSubgraph {
         const participants = [...contactNames, ...userNames];
 
         if (!state.entities) state.entities = {};
+
+        // Extract ID with fallback - generate temporary ID if BSA doesn't provide one
+        const rawId = state.appointments?.[0]?.Id || state.appointments?.[0]?.id;
+        const appointmentId = rawId || `temp_appt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+        if (!rawId) {
+          console.warn('[CALENDAR:ATTENDEES] No ID found in appointment response - using generated ID:', appointmentId);
+        }
+
         const existing = state.entities.appointment || {
           type: 'appointment',
-          id: state.appointments?.[0]?.Id || state.appointments?.[0]?.id,
+          id: appointmentId,
           name: state.appointments?.[0]?.Subject || state.appointments?.[0]?.subject,
           time: state.appointments?.[0]?.StartTime || state.appointments?.[0]?.startTime
         };
@@ -1383,6 +1392,12 @@ class CalendarSubgraph {
           externalAttendees: contactNames,
           internalAttendees: userNames
         };
+
+        console.log('[CALENDAR:ATTENDEES] Stored appointment entity:', {
+          id: state.entities.appointment.id,
+          name: state.entities.appointment.name,
+          participantCount: participants.length
+        });
       } catch (e) {
         console.warn('[CALENDAR:ATTENDEES] Failed to enrich entities with participants:', e?.message);
       }

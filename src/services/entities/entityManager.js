@@ -48,6 +48,18 @@ class EntityManager {
   store(entities, type, entity, options = {}) {
     entities = this.initialize(entities);
 
+    // Validate entity has ID - generate one if missing
+    if (!entity.id || entity.id === 'undefined' || entity.id === null) {
+      const generatedId = `temp_${type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.warn(`[ENTITY_MANAGER] Entity missing ID - generating temporary ID:`, {
+        type,
+        originalId: entity.id,
+        generatedId,
+        entityName: entity.name || entity.title || 'unnamed'
+      });
+      entity.id = generatedId;
+    }
+
     // Add timestamp if not present
     if (!entity.createdAt) {
       entity.createdAt = new Date().toISOString();

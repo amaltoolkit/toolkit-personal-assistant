@@ -253,20 +253,36 @@ vercel --prod          # Deploy to production
 
 ```
 /
-├── api/
-│   ├── index.js          # Main Express server with all endpoints
-│   └── lib/
-│       └── dateParser.js # Reusable date parsing module (Day.js)
-├── extension/
-│   ├── manifest.json     # Chrome Extension Manifest V3
-│   ├── sidepanel.html    # Main UI
-│   ├── sidepanel.js      # Frontend logic
-│   ├── sidepanel.css     # Styles
-│   └── icons/           # Extension icons
-├── .claude/
-│   └── tasks/           # Task documentation
-├── package.json         # Dependencies and scripts
-└── vercel.json         # Deployment configuration
+├── src/                          # Backend source code
+│   ├── agents/                   # Multi-agent system
+│   │   ├── coordinator/          # Main orchestrator
+│   │   └── domains/              # Domain agents (calendar, contact, task, workflow, general)
+│   ├── core/                     # Core infrastructure
+│   │   ├── state/                # State management & persistence
+│   │   ├── memory/               # Memory system
+│   │   ├── auth/                 # Authentication & PassKey management
+│   │   └── websocket/            # Real-time communication
+│   ├── services/                 # Business logic services (grouped by domain)
+│   ├── integrations/bsa/         # BlueSquare Apps integration
+│   ├── utils/                    # Utility functions (date parsing, etc.)
+│   ├── routes/                   # HTTP routes
+│   ├── database/                 # Migrations & scripts
+│   └── server.js                 # Main Express server
+├── client/                       # Chrome Extension frontend
+│   ├── sidepanel/                # Side panel UI (index.html, index.js, styles.css)
+│   ├── components/               # UI components
+│   ├── lib/                      # Third-party libraries (marked, purify)
+│   ├── services/                 # Client services (websocket)
+│   ├── styles/                   # Stylesheets
+│   └── assets/                   # Static assets (icons)
+├── tests/                        # Test suite (unit, integration, e2e, debug)
+├── docs/                         # Documentation
+│   ├── architecture/             # Architecture docs
+│   ├── api/                      # API docs
+│   └── agents/                   # Agent docs
+├── package.json                  # Dependencies and scripts
+├── langgraph.json                # LangGraph Studio configuration
+└── vercel.json                   # Deployment configuration
 ```
 
 ## Current Implementation Status
@@ -279,11 +295,14 @@ vercel --prod          # Deploy to production
 - Rate limiting and input validation
 - Production deployment on Vercel
 
-### Phase 2 Ready (Not Started)
+### Phase 2 Complete ✅
 - Task Agent for todo management
-- LangGraph orchestration for multi-agent coordination
+- LangGraph orchestration with multi-agent coordinator
 - Contact Agent for advanced contact search
-- Cross-agent data sharing
+- Workflow Agent for process automation
+- General Agent for conversational queries
+- Cross-agent data sharing via EntityManager
+- V2 architecture with domain-specific agents
 
 ## Testing Considerations
 

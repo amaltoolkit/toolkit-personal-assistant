@@ -2,10 +2,10 @@
   "name": "bluesquare-assistant-backend",
   "version": "1.0.0",
   "description": "OAuth backend for BlueSquare Assistant Chrome extension",
-  "main": "api/index.js",
+  "main": "src/server.js",
   "scripts": {
-    "dev": "node api/index.js",
-    "start": "node api/index.js",
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
     "studio": "langgraph dev",
     "studio:tunnel": "langgraph dev --tunnel"
   },

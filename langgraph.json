@@ -2,11 +2,11 @@
   "node_version": "20",
   "dependencies": ["."],
   "graphs": {
-    "coordinator": "./api/coordinator/index.js:graph",
-    "calendar": "./api/subgraphs/calendar.js:graph",
-    "workflow": "./api/subgraphs/workflow.js:graph",
-    "contact": "./api/subgraphs/contact.js:graph",
-    "general": "./api/subgraphs/general.js:graph"
+    "coordinator": "./src/agents/coordinator/index.js:graph",
+    "calendar": "./src/agents/domains/calendar/graph.js:graph",
+    "workflow": "./src/agents/domains/workflow/graph.js:graph",
+    "contact": "./src/agents/domains/contact/graph.js:graph",
+    "general": "./src/agents/domains/general/graph.js:graph"
   },
   "env": ".env"
 }

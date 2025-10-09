@@ -547,8 +547,10 @@ async function handleSendMessage() {
     
     // Handle V2 architecture response format
     if (USE_V2_ARCHITECTURE) {
-      if (data.status === 'PENDING_APPROVAL' || data.status === 'PENDING_INTERRUPT') {
-        // Handle approval/interrupt request
+      if (data.status === 'PENDING_APPROVAL' ||
+          data.status === 'PENDING_INTERRUPT' ||
+          data.status === 'PENDING_CLARIFICATION') {
+        // Handle approval/interrupt/clarification request
         console.log('[CHAT] Interrupt required:', data);
         
         // Show message if provided
@@ -571,6 +573,8 @@ async function handleSendMessage() {
         // If previews are immediately available, show them
         if (data.previews) {
           showApprovalUI(data.previews, data.thread_id);
+        } else if (data.clarification) {
+          handleInterruptReceived(data.clarification);
         } else if (data.interrupt) {
           handleInterruptReceived(data.interrupt);
         }
@@ -1254,7 +1258,7 @@ function showContactDisambiguationUI(contacts, threadId) {
   
   // Create disambiguation container
   const disambigDiv = document.createElement('div');
-  disambigDiv.className = 'disambiguation-container';
+  disambigDiv.className = 'disambiguation-container contact-disambiguation';
   disambigDiv.id = `disambig-${Date.now()}`;
   
   // Add title
@@ -1269,14 +1273,22 @@ function showContactDisambiguationUI(contacts, threadId) {
   explainDiv.textContent = 'Multiple contacts match your search. Please select the correct one:';
   disambigDiv.appendChild(explainDiv);
   
-  // Create contact cards
+  // Cards wrapper for responsive layout
+  const cardsWrapper = document.createElement('div');
+  cardsWrapper.className = 'contact-list';
+
+  // Create contact cards (immediate confirm on click)
   let selectedContactId = null;
-  
-  contacts.forEach((contact, index) => {
-    const card = document.createElement('div');
-    card.className = 'contact-card';
+
+  contacts.forEach((contact) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'contact-card contact-card--modern';
     // Handle both old and new field names
     card.dataset.contactId = contact.Id || contact.id;
+    // Store full contact object for submission
+    card.dataset.contactData = JSON.stringify(contact);
+    card.setAttribute('aria-label', 'Use contact');
 
     // Contact info
     const infoDiv = document.createElement('div');
@@ -1291,23 +1303,18 @@ function showContactDisambiguationUI(contacts, threadId) {
     nameDiv.textContent = fullName;
     infoDiv.appendChild(nameDiv);
 
-    // Company - handle BSA field names
-    const companyName = contact.company || contact.Company || contact.CompanyName;
-    if (companyName) {
-      const companyDiv = document.createElement('div');
-      companyDiv.className = 'contact-company';
-      companyDiv.textContent = companyName;
-      infoDiv.appendChild(companyDiv);
-    }
-
-    // Role/Title - handle BSA field names
+    // Role/Title + Company (single meta line)
     const jobTitle = contact.title || contact.Title || contact.role ||
                     contact.JobTitle || contact.Role;
-    if (jobTitle) {
-      const roleDiv = document.createElement('div');
-      roleDiv.className = 'contact-role';
-      roleDiv.textContent = jobTitle;
-      infoDiv.appendChild(roleDiv);
+    const companyName = contact.company || contact.Company || contact.CompanyName;
+    if (jobTitle || companyName) {
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'contact-meta';
+      const parts = [];
+      if (jobTitle) parts.push(jobTitle);
+      if (companyName) parts.push(companyName);
+      metaDiv.textContent = parts.join(' • ');
+      infoDiv.appendChild(metaDiv);
     }
     
     // Email - handle BSA field names
@@ -1319,73 +1326,25 @@ function showContactDisambiguationUI(contacts, threadId) {
       infoDiv.appendChild(emailDiv);
     }
 
-    // Phone - handle BSA field names
-    const phone = contact.phone || contact.Phone || contact.Telephone1 ||
-                 contact.mobile || contact.Mobile || contact.MobilePhone;
-    if (phone) {
-      const phoneDiv = document.createElement('div');
-      phoneDiv.className = 'contact-phone';
-      phoneDiv.textContent = phone;
-      infoDiv.appendChild(phoneDiv);
-    }
-
-    // Score indicator (if available)
-    if (contact.score !== undefined) {
-      const scoreDiv = document.createElement('div');
-      scoreDiv.className = 'contact-score';
-      scoreDiv.innerHTML = `Match: ${Math.round(contact.score)}%`;
-      infoDiv.appendChild(scoreDiv);
-    }
-
-    // Recent interaction indicator (if available)
-    const lastInteraction = contact.lastInteraction || contact.ClientSince;
-    if (lastInteraction) {
-      const interactionDiv = document.createElement('div');
-      interactionDiv.className = 'contact-interaction';
-      const dateStr = new Date(lastInteraction).toLocaleDateString();
-      interactionDiv.innerHTML = `Client since: ${dateStr}`;
-      infoDiv.appendChild(interactionDiv);
-    }
+    // Simplified card: omit phone, score, interaction
     
     card.appendChild(infoDiv);
     
-    // Selection state
-    card.onclick = () => {
-      // Clear previous selection
-      disambigDiv.querySelectorAll('.contact-card').forEach(c => {
-        c.classList.remove('selected');
-      });
-      // Set new selection
-      card.classList.add('selected');
-      selectedContactId = card.dataset.contactId;
-      
-      // Enable submit button
-      const submitBtn = disambigDiv.querySelector('.submit-disambiguation-btn');
-      if (submitBtn) {
-        submitBtn.disabled = false;
+    // Immediate confirm on click or Enter/Space
+    const submitSelection = () => handleContactSelection(card.dataset.contactId, disambigDiv.id);
+    card.onclick = submitSelection;
+    card.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        submitSelection();
       }
     };
-    
-    // Auto-select first contact
-    if (index === 0) {
-      card.classList.add('selected');
-      selectedContactId = card.dataset.contactId;
-    }
-    
-    disambigDiv.appendChild(card);
+
+    cardsWrapper.appendChild(card);
   });
+  disambigDiv.appendChild(cardsWrapper);
   
-  // Submit button
-  const submitDiv = document.createElement('div');
-  submitDiv.className = 'disambiguation-submit';
-  
-  const submitBtn = document.createElement('button');
-  submitBtn.className = 'submit-disambiguation-btn';
-  submitBtn.textContent = 'Use Selected Contact';
-  submitBtn.onclick = () => handleContactSelection(selectedContactId, disambigDiv.id);
-  
-  submitDiv.appendChild(submitBtn);
-  disambigDiv.appendChild(submitDiv);
+  // No submit button; selection happens on card click
   
   // Add to chat
   elements.chatMessages?.appendChild(disambigDiv);
@@ -1394,21 +1353,35 @@ function showContactDisambiguationUI(contacts, threadId) {
 
 async function handleContactSelection(contactId, containerId) {
   console.log('[DISAMBIGUATION] Selected contact:', contactId);
-  
+
   if (!currentThreadId || !contactId) {
     console.error('[DISAMBIGUATION] Missing thread ID or contact ID');
     addMessageToChat('Error: Missing required information', false);
     return;
   }
-  
-  // Disable submit button
+
+  // Get the full contact object from the card
   const container = document.getElementById(containerId);
+  const selectedCard = container?.querySelector(`[data-contact-id="${contactId}"]`);
+  const contactData = selectedCard?.dataset?.contactData;
+  let selectedContact = null;
+
+  if (contactData) {
+    try {
+      selectedContact = JSON.parse(contactData);
+      console.log('[DISAMBIGUATION] Retrieved full contact object:', selectedContact);
+    } catch (error) {
+      console.error('[DISAMBIGUATION] Failed to parse contact data:', error);
+    }
+  }
+
+  // Disable submit button
   const submitBtn = container?.querySelector('.submit-disambiguation-btn');
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.textContent = 'Processing...';
   }
-  
+
   try {
     // Use approve endpoint for V2 architecture with contact resolution
     const endpoint = USE_V2_ARCHITECTURE
@@ -1428,7 +1401,8 @@ async function handleContactSelection(contactId, containerId) {
         decision: 'continue',
         interrupt_response: {
           type: 'contact_selected',
-          selected_contact_id: contactId
+          selected_contact_id: contactId,
+          selected_contact: selectedContact // Send full contact object
         }
       })
     });

@@ -1835,3 +1835,137 @@ body {
   color: var(--text) !important;
   opacity: 1 !important;
 }
+
+/* ============================================ */
+/* CONTACT DISAMBIGUATION – MODERN (polished)   */
+/* ============================================ */
+
+.contact-disambiguation {
+  margin: 24px auto;
+  padding: 20px 20px 22px 20px;
+  max-width: 840px;
+  width: calc(100% - 40px);
+  align-self: stretch;
+  background: var(--surface-translucent);
+  backdrop-filter: saturate(120%) blur(10px);
+  -webkit-backdrop-filter: saturate(120%) blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.contact-disambiguation .disambiguation-title {
+  margin-bottom: 8px;
+  color: #ffffff !important;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.contact-disambiguation .disambiguation-explain {
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.contact-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px; /* tighter spacing between mini cards */
+}
+
+@media (min-width: 640px) {
+  .contact-list { grid-template-columns: 1fr 1fr; }
+}
+
+.contact-card--modern {
+  display: block;
+  width: 100%;
+  text-align: left !important; /* ensure left text in button */
+  padding: 0 12px 10px 0; /* remove left padding entirely */
+  background: var(--surface); /* match workflow card */
+  border: 1px solid var(--border); /* match workflow card */
+  border-radius: 8px;
+  box-shadow: none; /* match workflow item */
+  color: var(--text);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.contact-card--modern:hover {
+  transform: translateY(-1px);
+  border-color: rgba(120, 129, 246, 0.45);
+  background: rgba(120, 129, 246, 0.14); /* lighter #7881F6 */
+  box-shadow: var(--shadow-sm);
+  color: #0f172a; /* ensure contrast in light mode */
+}
+.contact-card--modern:hover .contact-name,
+.contact-card--modern:hover .contact-meta,
+.contact-card--modern:hover .contact-email { color: #0f172a; }
+
+.contact-card--modern:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), var(--shadow-sm);
+}
+
+.contact-card--modern .contact-info {
+  align-items: flex-start; /* force left alignment */
+  text-align: left !important;
+  gap: 2px; /* compress vertical rhythm */
+  line-height: 1.25; /* tighter line height */
+  margin: 0; padding: 0; /* remove any inner offsets */
+  width: 100%;
+}
+
+/* absolutely remove any left offset on first child */
+.contact-card--modern .contact-info > *:first-child { margin-left: 0 !important; padding-left: 0 !important; }
+
+.contact-card--modern .contact-name {
+  font-weight: 700;
+  color: var(--text);
+  font-size: 13px; /* smaller */
+}
+
+.contact-card--modern .contact-meta {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 11px; /* smaller */
+}
+
+.contact-card--modern .contact-email {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px; /* smaller */
+}
+
+/* Ensure legacy .contact-card white background doesn't apply inside the new UI */
+.contact-disambiguation .contact-card { background: transparent !important; }
+
+@media (prefers-color-scheme: dark) {
+  .contact-card--modern { background: rgba(255, 255, 255, 0.06); }
+  .contact-card--modern:hover {
+    background: rgba(120, 129, 246, 0.22);
+    border-color: rgba(120, 129, 246, 0.55);
+    color: #e5e7eb; /* high contrast in dark */
+  }
+  .contact-card--modern:hover .contact-name,
+  .contact-card--modern:hover .contact-meta,
+  .contact-card--modern:hover .contact-email { color: #e5e7eb; }
+}
+
+@media (prefers-color-scheme: light) {
+  .contact-card--modern { background: rgba(0, 0, 0, 0.03); }
+  .contact-card--modern:hover {
+    background: rgba(120, 129, 246, 0.14);
+    border-color: rgba(120, 129, 246, 0.45);
+  }
+}
+
+/* Remove any residual margins/indent on inner text */
+.contact-card--modern .contact-name,
+.contact-card--modern .contact-meta,
+.contact-card--modern .contact-email {
+  margin-left: 0 !important;
+  padding-left: 0 !important;
+}

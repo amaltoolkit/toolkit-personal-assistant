@@ -715,14 +715,19 @@ router.post('/approve', async (req, res) => {
 
         // Handle contact selection
         if (interrupt_response?.type === 'contact_selected' || contact_id) {
+          // Use full contact object if available, otherwise fallback to ID only
+          const selectedContact = interrupt_response?.selected_contact || {
+            id: contact_id || interrupt_response?.selected_contact_id,
+            name: interrupt_response?.selected_contact_name
+          };
+
           resumeData = {
-            resolved_contacts: [{
-              id: contact_id || interrupt_response?.selected_contact_id,
-              name: interrupt_response?.selected_contact_name
-            }],
+            contact_clarification_response: {
+              selected_contact: selectedContact
+            },
             contact_selected: true
           };
-          console.log(`[AGENT:APPROVE:${requestId}] Resuming with selected contact:`, resumeData.resolved_contacts[0]);
+          console.log(`[AGENT:APPROVE:${requestId}] Resuming with selected contact:`, selectedContact.name || selectedContact.id);
         }
         // Handle approval/rejection
         else if (decision) {

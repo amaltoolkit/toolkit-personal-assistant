@@ -2,6 +2,50 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚀 Quick Start for New Claude Sessions
+
+**When asked to debug or fix something:**
+
+1. **User has server running** - They run `npm run dev` in Terminal 1 (and that's ALL they do!)
+2. **YOU run tests** - Use `Bash("npm test 'query'")` to run tests yourself
+3. **YOU check logs** - Use `BashOutput(bash_id: "9b6a7a")` to read server logs
+4. **YOU verify fixes** - Check logs for patterns (see [Testing & Debugging Guide](#testing--debugging-guide))
+
+**IMPORTANT:** The user just keeps the server running. YOU do all the testing, verification, and iteration!
+
+**Key Files:**
+- `CLAUDE.md` (this file) - Complete project documentation
+- `LOCAL_TESTING.md` - Quick testing guide for user
+- `tests/local/` - Test utilities you can use
+
+**Your Testing Workflow:**
+```javascript
+// 1. Make a fix
+Edit(file_path: "...", ...)
+
+// 2. Run test yourself
+Bash("npm test 'query to test the fix'")
+
+// 3. Check server logs while test runs
+BashOutput(bash_id: "9b6a7a", filter: "(ERROR|CALENDAR|CONTACT)")
+
+// 4. Verify the fix worked
+// Look for expected patterns in logs
+```
+
+**Log Access:**
+```javascript
+// Method 1: Read running server logs (preferred - real-time)
+BashOutput(bash_id: "9b6a7a", filter: "(ERROR|CALENDAR|CONTACT)")
+
+// Method 2: Read log files (detailed analysis - optional)
+Read(file_path: "logs/test-session.log")
+```
+
+See full details in [Testing & Debugging Guide](#testing--debugging-guide) below.
+
+---
+
 ## Plan & Review
 
 ### Before starting work
@@ -304,7 +348,215 @@ vercel --prod          # Deploy to production
 - Cross-agent data sharing via EntityManager
 - V2 architecture with domain-specific agents
 
-## Testing Considerations
+## Testing & Debugging Guide
+
+### Local Testing Setup
+
+**Quick Start:**
+```bash
+# Terminal 1: Start backend server
+npm run dev
+
+# Terminal 2: Setup test session (once per hour)
+npm run test:setup
+
+# Terminal 2: Run tests
+npm test "your query here"
+```
+
+**IMPORTANT: Thread Resets for Clean Testing**
+
+When testing features that depend on conversation state (like multi-person queries), always reset the conversation thread before running new tests:
+
+```bash
+# Create a fresh test session with new thread
+npm run test:setup
+
+# This ensures:
+# - No conversation history from previous tests
+# - No cached entities or context
+# - Clean state for testing new features
+```
+
+**Why this matters:**
+- Some features work differently with vs without conversation history
+- Multi-person queries rely on LLM extraction without prior context
+- Testing with stale threads may give false positives/negatives
+- Always test critical features with BOTH fresh threads AND threads with history
+
+**Credentials Location:**
+- Stored in `.test-credentials.json` (git-ignored)
+- Username: `amal@bluesquareapps.com`
+- Org ID: `f4116de7-df5f-4b50-ae2c-f5d7bfa74afd`
+- BSA Production URL: `https://toolkit.bluesquareapps.com`
+
+**Test Files:**
+- `tests/local/setupTestSession.js` - Creates test sessions with PassKeys
+- `tests/local/testClient.js` - Interactive test client
+- `tests/local/testWithLogs.js` - Enhanced test with log capture
+- `tests/local/analyzeLogs.js` - Automated log analysis
+
+### Accessing Logs for Debugging
+
+**Method 1: Background Server Logs (Preferred)**
+
+When the server is running via `npm run dev` in the background, Claude can access logs using `BashOutput` tool:
+
+```javascript
+// Example: Claude checking logs
+BashOutput(bash_id: "9b6a7a", filter: "(CALENDAR|CONTACT|ERROR)")
+```
+
+**Key Log Patterns to Search:**
+- `contactsToResolve: 0` - Verify arrays cleared (idempotent resolution)
+- `Restoring partial state` - Verify state restoration after approval
+- `Contact already resolved, skipping` - Verify skip logic working
+- `Successfully linked using linker` - Verify correct attendee linking
+- `Resolved (\d+) contacts` - Track resolution counts
+- `[ERROR]|Error:|Failed` - Find errors
+
+**Method 2: Log Files (For Detailed Analysis)**
+
+Enhanced test client writes logs to `logs/` directory:
+
+```bash
+# Run test with log capture
+npm run test:logs "book meeting with norman and clara tomorrow 3pm"
+
+# Analyze logs
+npm run test:analyze  # Summary
+npm run test:report   # Detailed report
+npm run test:verify   # Verify fixes working
+```
+
+**Log Files:**
+- `logs/test-session.log` - Full test session with timestamps
+- `logs/last-query.log` - Last query details (JSON format)
+- `logs/analysis-report.md` - Automated analysis report
+
+**Claude Reading Logs:**
+```javascript
+// Read test session logs
+Read(file_path: "/Users/defender/.../logs/test-session.log")
+
+// Read last query details
+Read(file_path: "/Users/defender/.../logs/last-query.log")
+```
+
+### Verifying Bug Fixes
+
+**Example: Duplicate Attendees Bug**
+
+When testing appointment creation with multiple attendees, verify these log patterns:
+
+1. **Initial Resolution:**
+   ```
+   [CALENDAR:CONTACTS] Contacts to resolve: [ 'norman', 'clara' ]
+   [CALENDAR:CONTACTS] Resolved 2 contacts, 0 unresolved
+   contactsToResolve: 0  ← Arrays cleared!
+   ```
+
+2. **State Restoration After Approval:**
+   ```
+   [COORDINATOR:EXECUTOR] Restoring partial state for calendar: {
+     resolvedContacts: 2,
+     contactsToResolve: 0  ← Cleared array restored!
+   }
+   ```
+
+3. **Skip Logic Preventing Re-Resolution:**
+   ```
+   [CALENDAR:CONTACTS] Contact already resolved, skipping: Norman Albertson
+   [CALENDAR:CONTACTS] Contact already resolved, skipping: Clara Basile
+   ```
+
+4. **Correct Linking:**
+   ```
+   [CONTACT:LINK] Successfully linked using linker: linker_appointments_contacts
+   [CONTACT:LINK] Successfully linked using linker: linker_appointments_contacts
+   [CALENDAR:ATTENDEES] Linked 2 of 2 contacts
+   [CALENDAR:ATTENDEES] Total 2 attendees linked
+   ```
+
+**Automated Verification:**
+```bash
+# Run test and verify automatically
+npm run test:logs "book meeting with norman and clara tomorrow 3pm"
+npm run test:verify  # Returns exit code 0 if all checks pass
+```
+
+### Common Debugging Scenarios
+
+**Scenario 1: Need to verify a fix is working**
+```bash
+# 1. Ensure server is running
+npm run dev  # Terminal 1
+
+# 2. Run test
+npm test "query that tests the fix"  # Terminal 2
+
+# 3. Claude checks logs
+BashOutput(bash_id: "server_bash_id", filter: "pattern_to_verify")
+```
+
+**Scenario 2: Need detailed analysis**
+```bash
+# 1. Run test with log capture
+npm run test:logs "complex query"
+
+# 2. Analyze results
+npm run test:analyze
+
+# 3. Claude reads detailed logs
+Read(file_path: "logs/test-session.log")
+```
+
+**Scenario 3: Continuous testing during development**
+```bash
+# Keep server running, run tests repeatedly
+npm test "query 1"
+npm test "query 2"
+npm test "query 3"
+
+# Claude monitors all logs via BashOutput
+```
+
+### Testing Workflow for Future Claude Sessions
+
+**When asked to fix a bug:**
+
+1. **Understand the issue** - Read relevant code files
+2. **Plan the fix** - Create implementation plan
+3. **Implement the fix** - Make code changes
+4. **Test the fix:**
+   ```bash
+   npm run test:logs "query that reproduces bug"
+   ```
+5. **Verify via logs:**
+   - Use `BashOutput` to check server logs
+   - Use `Read` to analyze `logs/test-session.log`
+   - Use `npm run test:verify` for automated checks
+6. **Confirm fix working** - Look for expected log patterns
+
+### Log Analysis Tips
+
+**Finding Issues:**
+- Search for `[ERROR]` to find errors
+- Search for duplicate entries in resolution logs
+- Check array counts: `contactsToResolve: (\d+)`
+- Verify link counts match attendee counts
+
+**Performance Issues:**
+- Look for `[Metrics].*took.*threshold` warnings
+- Check for excessive API calls
+- Monitor checkpoint save times
+
+**Approval Flow:**
+- Track `pendingApproval` state changes
+- Verify `processed: true` is set
+- Check partial state restoration logs
+
+### Production Testing Considerations
 
 - OAuth flow requires production URLs (BSA redirects)
 - Use Vercel preview deployments for testing

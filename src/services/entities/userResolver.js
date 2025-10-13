@@ -150,10 +150,11 @@ class UserResolver {
     // Otherwise, require user selection
     console.log(`[USER_RESOLVER] Multiple candidates require user selection`);
 
-    return {
-      needsDisambiguation: true,
-      topCandidate: scored[0],
-      alternatives: scored.slice(0, 5).map((u, i) => ({
+    // Structure data for LangGraph interrupt (matches contact pattern)
+    const disambiguationData = {
+      type: 'user_disambiguation',
+      message: 'Multiple team members found. Please select the correct one:',
+      candidates: scored.slice(0, 5).map((u, i) => ({
         index: i + 1,
         id: u.id,
         name: u.name,
@@ -162,6 +163,14 @@ class UserResolver {
         score: Math.round(u.score),
         isCurrentUser: u.isCurrentUser
       }))
+    };
+
+    // Return structured data for interrupt handling
+    return {
+      needsDisambiguation: true,
+      topCandidate: scored[0],
+      alternatives: disambiguationData.candidates,
+      interruptData: disambiguationData
     };
   }
 

@@ -35,6 +35,9 @@ extension/icons/*.png
 # Testing
 coverage/
 .nyc_output/
+tests/
+test-*.js
+test-*.json
 
 # Temporary files
 tmp/
@@ -43,3 +46,25 @@ temp/
 
 # LangGraph API
 .langgraph_api
+
+# Local testing
+.test-session.json
+.test-credentials.json
+*test-credentials*
+*test-session*
+
+# Test logs (entire logs folder)
+logs/
+
+# Documentation (entire docs folder)
+docs/
+
+# Testing documentation files
+LOCAL_TESTING.md
+TESTING.md
+TESTING_WITH_APPROVALS.md
+*TESTING*.md
+*TEST*.md
+
+# Claude Code files (entire .claude folder)
+.claude/

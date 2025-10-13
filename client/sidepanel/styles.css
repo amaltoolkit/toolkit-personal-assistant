@@ -119,6 +119,71 @@ body {
   gap: 0.75rem;
 }
 
+/* Header kebab menu */
+.header-menu-container {
+  position: relative;
+}
+
+.menu-btn {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.menu-btn:hover {
+  transform: translateY(-1px);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+.icon-menu-dots {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 220px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  z-index: 2000;
+  animation: dropdownIn 160ms ease-out;
+  transform-origin: top right;
+}
+
+.menu-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+.menu-item:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  transform: translateY(-1px);
+}
+
+.menu-item-danger {
+  color: #dc2626;
+}
+
+.menu-item-danger:hover {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
 /* Organization Dropdown */
 .org-dropdown-container {
   position: relative;
@@ -1869,7 +1934,7 @@ body {
 .contact-list {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 6px; /* tighter spacing between mini cards */
+  gap: 10px; /* comfortable spacing between options */
 }
 
 @media (min-width: 640px) {
@@ -1880,11 +1945,11 @@ body {
   display: block;
   width: 100%;
   text-align: left !important; /* ensure left text in button */
-  padding: 0 12px 10px 0; /* remove left padding entirely */
+  padding: 12px 14px; /* larger hit target with even insets */
   background: var(--surface); /* match workflow card */
-  border: 1px solid var(--border); /* match workflow card */
-  border-radius: 8px;
-  box-shadow: none; /* match workflow item */
+  border: 1px solid transparent; /* no visible border at rest */
+  border-radius: 10px;
+  box-shadow: none; /* calm default */
   color: var(--text);
   cursor: pointer;
   appearance: none;
@@ -1894,9 +1959,9 @@ body {
 
 .contact-card--modern:hover {
   transform: translateY(-1px);
-  border-color: rgba(120, 129, 246, 0.45);
+  border-color: var(--primary);
   background: rgba(120, 129, 246, 0.14); /* lighter #7881F6 */
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.14), var(--shadow-sm); /* soft glow */
   color: #0f172a; /* ensure contrast in light mode */
 }
 .contact-card--modern:hover .contact-name,
@@ -1909,11 +1974,19 @@ body {
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), var(--shadow-sm);
 }
 
+/* Selected/active state mirrors focus with a bit more presence */
+.contact-card--modern.selected,
+.contact-card--modern:active {
+  border-color: var(--primary);
+  background: rgba(120, 129, 246, 0.18);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.18), var(--shadow-sm);
+}
+
 .contact-card--modern .contact-info {
   align-items: flex-start; /* force left alignment */
   text-align: left !important;
-  gap: 2px; /* compress vertical rhythm */
-  line-height: 1.25; /* tighter line height */
+  gap: 4px; /* clearer separation between lines */
+  line-height: 1.35; /* comfortable reading */
   margin: 0; padding: 0; /* remove any inner offsets */
   width: 100%;
 }
@@ -1924,23 +1997,23 @@ body {
 .contact-card--modern .contact-name {
   font-weight: 700;
   color: var(--text);
-  font-size: 13px; /* smaller */
+  font-size: 14px;
 }
 
 .contact-card--modern .contact-meta {
   margin-top: 0;
   color: var(--muted);
-  font-size: 11px; /* smaller */
+  font-size: 12px;
 }
 
 .contact-card--modern .contact-email {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 11px; /* smaller */
+  font-size: 12px;
 }
 
-/* Ensure legacy .contact-card white background doesn't apply inside the new UI */
-.contact-disambiguation .contact-card { background: transparent !important; }
+/* Ensure legacy defaults don't leak into modern card inside this UI */
+.contact-disambiguation .contact-card { background: transparent !important; border-color: transparent !important; }
 
 @media (prefers-color-scheme: dark) {
   .contact-card--modern { background: rgba(255, 255, 255, 0.06); }

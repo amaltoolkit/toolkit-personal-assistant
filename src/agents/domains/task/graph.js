@@ -17,7 +17,7 @@ const { searchContacts, linkContactToActivity } = require("../../../integrations
 const { parseTaskDueDate } = require("../../../utils/chronoParser");
 
 // Import services
-const { getContactResolver } = require("../../../services/entities/contactResolver");
+const { getContactResolver } = require("../../../services/entities/contactResolverCompat");
 const { getApprovalBatcher } = require("../../../services/approval/approvalBatcher");
 const { getMem0Service } = require("../../../services/memory/mem0Service");
 

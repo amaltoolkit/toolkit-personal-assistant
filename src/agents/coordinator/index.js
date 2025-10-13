@@ -8,6 +8,7 @@
 const { StateGraph, END, interrupt } = require("@langchain/langgraph");
 const { ChatOpenAI } = require("@langchain/openai");
 const { getMem0Service } = require("../../services/memory/mem0Service");
+const { getConversationSummarizer } = require("../../services/memory/conversationSummarizer");
 const { getPassKeyManager } = require("../../core/auth/passkey");
 const { getErrorHandler } = require("../../services/errors/errorHandler");
 const { getPerformanceMetrics } = require("./metrics");
@@ -55,6 +56,10 @@ const CoordinatorStateChannels = {
       const entityManager = getEntityManager();
       return entityManager.initialize({});
     }
+  },
+  conversation_summary: {
+    value: (x, y) => y ? y : x,
+    default: () => null
   },
   final_response: {
     value: (x, y) => y ? y : x,
@@ -121,7 +126,7 @@ class Coordinator {
     this.passKeyManager = getPassKeyManager();
     this.errorHandler = getErrorHandler();
     this.metrics = getPerformanceMetrics();
-    this.entityManager = getEntityManager({ maxHistoryPerType: 10 });
+    this.entityManager = getEntityManager({ maxHistoryPerType: 50 }); // Increased for long rolling memory
     this.checkpointer = checkpointer;
     this.tracingEnabled = langSmithEnabled;
 
@@ -225,6 +230,8 @@ class Coordinator {
         // so they can process the approved action
         if (state.approval_decision && state.pendingApproval) {
           console.log("[COORDINATOR:ROUTER] Approval decision received, re-executing subgraphs");
+          // Mark approval as processed before re-executing
+          state.pendingApproval.processed = true;
           return "execute_subgraphs";
         }
         // Otherwise go to finalize (shouldn't normally happen)
@@ -350,15 +357,25 @@ class Coordinator {
    */
   async recallMemory(state) {
     console.log("[COORDINATOR:MEMORY] Recalling memories");
-    
+
+    // CRITICAL: Clear the 'fresh' flag from any existing pendingClarification
+    // When a NEW user query arrives, old clarifications are no longer fresh
+    if (state.pendingClarification && state.pendingClarification.fresh) {
+      console.log("[COORDINATOR:MEMORY] Clearing 'fresh' flag from stale clarification");
+      state.pendingClarification = {
+        ...state.pendingClarification,
+        fresh: false
+      };
+    }
+
     // Start performance timer
     this.metrics.startTimer('memory_recall');
-    
+
     if (!state.messages || state.messages.length === 0) {
       this.metrics.endTimer('memory_recall', true, { skipped: 'no_messages' });
       return state;
     }
-    
+
     const lastMessage = state.messages[state.messages.length - 1];
     if (!lastMessage || lastMessage.role !== "user") {
       this.metrics.endTimer('memory_recall', true, { skipped: 'no_user_message' });
@@ -409,15 +426,13 @@ class Coordinator {
       }
       
       this.metrics.endTimer('memory_recall', true, { count: memories.length });
-      
+
       return {
         ...state,
-        memory_context: memoryContext,
-        // Clear stale state from previous queries
-        pendingClarification: null,
-        pendingApproval: null,
-        contact_clarification_response: null,
-        user_clarification_response: null
+        memory_context: memoryContext
+        // NOTE: Don't clear pendingClarification/pendingApproval here!
+        // They need to persist so router can detect and handle them
+        // They'll be cleared in finalize_response after processing
       };
       
     } catch (error) {
@@ -429,19 +444,112 @@ class Coordinator {
   }
 
   /**
+   * Build clarification response from user's text input
+   * Detects "skip", corrections, or natural language responses
+   * @param {Object} clarificationRequest - The original clarification request
+   * @param {string} userText - User's response text
+   * @returns {Object} Clarification response structure for the appropriate domain
+   */
+  buildClarificationResponse(clarificationRequest, userText) {
+    const text = userText.toLowerCase().trim();
+    const type = clarificationRequest.type;
+    const originalQuery = clarificationRequest.original_query || 'unknown';
+
+    console.log("[COORDINATOR:CLARIFICATION_PARSER] Parsing user response:", {
+      type,
+      originalQuery,
+      userText: userText.substring(0, 50)
+    });
+
+    // Detect ambiguous responses (too vague to process)
+    const ambiguousResponses = ['yes', 'yeah', 'yep', 'ok', 'okay', 'sure', 'no'];
+    if (ambiguousResponses.includes(text)) {
+      console.log("[COORDINATOR:CLARIFICATION_PARSER] Detected ambiguous response - need more specifics");
+      // Return empty to signal this should be handled conversationally
+      return {};
+    }
+
+    // Detect skip
+    if (text === 'skip' || text.includes('skip')) {
+      console.log("[COORDINATOR:CLARIFICATION_PARSER] Detected skip request");
+      if (type === 'contact_clarification') {
+        return {
+          contact_clarification_response: {
+            skip: true,
+            original_query: originalQuery
+          }
+        };
+      } else if (type === 'user_clarification') {
+        return {
+          user_clarification_response: {
+            skip: true,
+            original_query: originalQuery
+          }
+        };
+      }
+    }
+
+    // Detect correction patterns: "i meant X", "I mean X", "it's X", "actually X"
+    let clarifiedName = userText;
+
+    // Strip common correction phrases
+    const correctionPatterns = [
+      /^i\s+meant?\s+/i,
+      /^it'?s\s+/i,
+      /^actually\s+/i,
+      /^i\s+think\s+/i,
+      /^the\s+correct\s+name\s+is\s+/i
+    ];
+
+    for (const pattern of correctionPatterns) {
+      clarifiedName = clarifiedName.replace(pattern, '').trim();
+    }
+
+    console.log("[COORDINATOR:CLARIFICATION_PARSER] Extracted clarified name:", clarifiedName);
+
+    // Validate we have actual content after stripping
+    if (!clarifiedName || clarifiedName.length === 0) {
+      console.log("[COORDINATOR:CLARIFICATION_PARSER] Empty clarified name after stripping - treating as ambiguous");
+      return {};
+    }
+
+    // Build response
+    if (type === 'contact_clarification') {
+      return {
+        contact_clarification_response: {
+          clarified_name: clarifiedName,
+          original_query: originalQuery,
+          skip: false
+        }
+      };
+    } else if (type === 'user_clarification') {
+      return {
+        user_clarification_response: {
+          clarified_name: clarifiedName,
+          original_query: originalQuery,
+          skip: false
+        }
+      };
+    }
+
+    console.warn("[COORDINATOR:CLARIFICATION_PARSER] Unknown clarification type:", type);
+    return {};
+  }
+
+  /**
    * Route query to appropriate domain subgraphs
    */
   async routeDomains(state) {
     console.log("[COORDINATOR:ROUTER] Analyzing query for domain routing");
-    
+
     // Start performance timer
     this.metrics.startTimer('router');
-    
+
     if (!state.messages || state.messages.length === 0) {
       this.metrics.endTimer('router', true, { skipped: 'no_messages' });
       return state;
     }
-    
+
     const lastMessage = state.messages[state.messages.length - 1];
     if (!lastMessage || lastMessage.role !== "user") {
       return state;
@@ -454,21 +562,165 @@ class Coordinator {
       // Get recent messages (last 6 messages = 3 turns) for conversation context
       const recentMessages = state.messages ? state.messages.slice(-6) : [];
 
+      // CRITICAL: Pass clarification context if we have pending clarification
+      // ONLY for FRESH clarifications (not stale ones from previous queries)
+      let clarificationContext = null;
+      if (state.pendingClarification &&
+          state.pendingClarification.fresh &&  // ← ADDED: Only use fresh clarifications
+          !state.pendingClarification.processed &&
+          state.pendingClarification.requests?.length > 0) {
+
+        const clarification = state.pendingClarification.requests[0];
+        clarificationContext = {
+          type: clarification.type || clarification.data?.type,
+          domain: clarification.domain,
+          original_query: clarification.data?.original_query,
+          message: clarification.data?.message || clarification.data?.prompt,
+          suggestions: clarification.data?.suggestions || []
+        };
+
+        console.log("[COORDINATOR:ROUTER] Detected FRESH pending clarification:", {
+          type: clarificationContext.type,
+          domain: clarificationContext.domain,
+          original_query: clarificationContext.original_query
+        });
+      }
+
       console.log("[COORDINATOR:ROUTER] Context for planner:", {
         entityStats: entityStats ? {
           total: entityStats.totalEntities,
           byType: entityStats.byType
         } : 'none',
-        recentMessageCount: recentMessages.length
+        recentMessageCount: recentMessages.length,
+        hasClarificationContext: !!clarificationContext
       });
 
-      // Use the lightweight planner to analyze and create execution plan
+      // TODO: Re-enable conversation summarization when working properly
+      // Currently disabled - agents use full message window (50 messages) instead
+      // Summarization code was not executing properly, causing confusion
+      //
+      // Generate conversation summary if needed (for long conversations)
+      // Trigger at 7+ messages so summary is ready before complex queries
+      let updatedSummary = state.conversation_summary;
+      /* DISABLED - Summarization not working, using full message window instead
+      if (state.messages && state.messages.length > 6) {
+        try {
+          const summarizer = getConversationSummarizer();
+          const summary = await summarizer.summarize(
+            state.messages,
+            state.conversation_summary
+          );
+
+          if (summary) {
+            console.log('[COORDINATOR:SUMMARY] Updated conversation summary:', {
+              people: summary.people_mentioned?.length || 0,
+              facts: summary.key_facts?.length || 0,
+              turns: summary.summarized_turns
+            });
+            updatedSummary = summary;
+          }
+        } catch (error) {
+          console.error('[COORDINATOR:SUMMARY] Error creating summary:', error.message);
+          // Continue without summary - not critical
+        }
+      }
+      */
+
+      // Let LLM planner decide what to do (including handling clarifications intelligently)
       const executionPlan = await createExecutionPlan(
         lastMessage.content,
         state.memory_context,
         entityStats,
-        recentMessages
+        recentMessages,
+        clarificationContext  // PASS THE CONTEXT
       );
+
+      // Smart continuation detection: If LLM routes to domain that requested clarification,
+      // user is continuing the original task with clarified information
+      if (clarificationContext &&
+          executionPlan.parallel?.includes(clarificationContext.domain)) {
+
+        console.log("[COORDINATOR:ROUTER] LLM routed to clarifying domain - user continuing original task");
+
+        // Build clarification response from user's message
+        const clarificationResponse = this.buildClarificationResponse(
+          { type: clarificationContext.type, original_query: clarificationContext.original_query },
+          lastMessage.content
+        );
+
+        // Validate we got a valid response
+        if (Object.keys(clarificationResponse).length === 0) {
+          console.log("[COORDINATOR:ROUTER] Ambiguous or invalid clarification response - routing to general for help");
+          // If LLM routed to clarifying domain but response is ambiguous,
+          // override to general so user gets conversational help
+          return {
+            ...state,
+            domains: ['general'],
+            execution_plan: {
+              ...executionPlan,
+              parallel: ['general'],
+              analysis: {
+                ...executionPlan.analysis,
+                intent: 'clarify_ambiguous_response',
+                reasoning: 'User provided ambiguous response to clarification - needs conversational guidance'
+              }
+            },
+            error: null
+          };
+        }
+
+        // Mark clarification as processed
+        const updatedPendingClarification = {
+          ...state.pendingClarification,
+          processed: true
+        };
+
+        console.log("[COORDINATOR:ROUTER] Continuing to domain with clarification response:", {
+          domain: clarificationContext.domain,
+          responseType: clarificationContext.type
+        });
+
+        // Continue to domain with clarification response
+        return {
+          ...state,
+          ...clarificationResponse,
+          pendingClarification: updatedPendingClarification,
+          domains: executionPlan.parallel,
+          execution_plan: executionPlan,
+          error: null
+        };
+      }
+
+      // If LLM routes to different domain while clarification pending, abandon it
+      if (clarificationContext &&
+          !executionPlan.parallel?.includes(clarificationContext.domain)) {
+
+        console.log("[COORDINATOR:ROUTER] LLM routed to different domain - abandoning pending clarification");
+
+        // Extract entities from new query
+        const updatedEntities = executionPlan.analysis?.entities
+          ? {
+              ...(state.entities || {}),
+              extracted: executionPlan.analysis.entities
+            }
+          : state.entities;
+
+        // Clear clarification and route to new domain
+        return {
+          ...state,
+          pendingClarification: null,
+          contact_clarification_response: null,
+          user_clarification_response: null,
+          entities: updatedEntities,
+          conversation_summary: updatedSummary,
+          domains: [
+            ...executionPlan.parallel || [],
+            ...(executionPlan.sequential?.map(s => s.domain) || [])
+          ],
+          execution_plan: executionPlan,
+          error: null
+        };
+      }
 
       // Validate the execution plan
       const validation = validateExecutionPlan(executionPlan);
@@ -491,19 +743,24 @@ class Coordinator {
         domains,
         parallel: executionPlan.parallel,
         sequential: executionPlan.sequential?.length || 0,
-        hasEntities: executionPlan.metadata?.entities_found || 0
+        hasEntities: executionPlan.metadata?.entities_found || 0,
+        hadClarificationContext: !!clarificationContext
       });
 
-      // Store entity information if present
-      if (executionPlan.analysis?.entities) {
-        state.entities = state.entities || {};
-        state.entities.extracted = executionPlan.analysis.entities;
-      }
+      // Store entity information if present (immutable update)
+      const finalEntities = executionPlan.analysis?.entities
+        ? {
+            ...(state.entities || {}),
+            extracted: executionPlan.analysis.entities
+          }
+        : state.entities;
 
       this.metrics.endTimer('router', true, { domains: domains.length });
 
       return {
         ...state,
+        entities: finalEntities,
+        conversation_summary: updatedSummary,
         domains,
         execution_plan: executionPlan,
         error: null
@@ -625,10 +882,10 @@ class Coordinator {
       // Execute parallel subgraphs
       if (execution_plan?.parallel?.length > 0) {
         console.log("[COORDINATOR:EXECUTOR] Running parallel subgraphs:", execution_plan.parallel);
-        
+
         // Use Promise.allSettled to handle interrupts properly
         // Promise.all would reject immediately on first error, losing other results
-        const parallelPromises = execution_plan.parallel.map(async (domain) => {
+        const parallelPromises = execution_plan.parallel.map(async (domain, globalIndex) => {
           const subgraph = await this.loadSubgraph(domain, config);
           if (!subgraph) {
             console.warn(`[COORDINATOR:EXECUTOR] Subgraph not found: ${domain}`);
@@ -639,22 +896,110 @@ class Coordinator {
             };
           }
           
+          // Track per-domain invocation index for duplicate domains (multi-person queries)
+          const domainInvocations = execution_plan.parallel.slice(0, globalIndex + 1)
+            .filter(d => d === domain).length;
+          const totalDomainInvocations = execution_plan.parallel.filter(d => d === domain).length;
+          const isDuplicateDomain = totalDomainInvocations > 1;
+
+          if (isDuplicateDomain) {
+            console.log(`[COORDINATOR:EXECUTOR] Multi-invocation detected for ${domain}: invocation ${domainInvocations} of ${totalDomainInvocations}`);
+          }
+
           // Prepare subgraph state with all context fields
           const subgraphState = {
             messages: state.messages,
             memory_context: state.memory_context,
             entities: state.entities || {},
             timezone: state.timezone,
+            // Pass invocation metadata for multi-person queries
+            ...(isDuplicateDomain ? {
+              is_multi_invocation: true,
+              invocation_index: domainInvocations,
+              total_invocations: totalDomainInvocations
+            } : {}),
             // Pass through context fields for authentication
             session_id: state.session_id,
             org_id: state.org_id,
             user_id: state.user_id,
             thread_id: state.thread_id,
-            // Pass clarification responses if resuming from clarification
-            ...(state.contact_clarification_response && state.pendingClarification?.domains?.includes(domain) ? {
+
+            // CRITICAL: Restore partial state from previous invocation when resuming clarification
+            // This preserves domain-specific context (e.g., action, appointment_data, date_range)
+            // for stateless subgraphs that lose state between invocations
+            // processed: true means routeDomains has built the response and we should restore state
+            ...(state.pendingClarification?.results?.[`${domain}_partial`] &&
+                state.pendingClarification?.domains?.includes(domain) &&
+                state.pendingClarification?.processed ?
+              (() => {
+                console.log(`[COORDINATOR:EXECUTOR] Resuming clarification for ${domain} with processed response`);
+
+                const partial = state.pendingClarification.results[`${domain}_partial`];
+                // Extract domain-specific state, excluding system fields we already set above
+                const { messages, memory_context, entities, session_id, org_id,
+                        user_id, thread_id, timezone, needsClarification,
+                        clarificationType, clarificationData, ...domainState } = partial;
+
+                console.log(`[COORDINATOR:EXECUTOR] Restoring partial state for ${domain}:`, {
+                  hasAction: !!domainState.action,
+                  hasAppointmentData: !!domainState.appointment_data,
+                  hasDateRange: !!domainState.date_range,
+                  contactsToResolve: domainState.contacts_to_resolve?.length || 0,
+                  usersToResolve: domainState.users_to_resolve?.length || 0,
+                  partialStateKeys: Object.keys(domainState)
+                });
+
+                return domainState;
+              })()
+            : {}),
+
+            // CRITICAL: Also restore partial state when resuming from approval
+            // The approval node returns full state which includes resolved entities and cleared to-resolve arrays
+            // Without this, the domain would re-execute from scratch and re-resolve everything
+            ...(state.pendingApproval?.results?.[domain] &&
+                state.pendingApproval?.domains?.includes(domain) &&
+                state.pendingApproval?.processed ?
+              (() => {
+                console.log(`[COORDINATOR:EXECUTOR] Resuming approval for ${domain} with processed decision`);
+
+                const partial = state.pendingApproval.results[domain];
+                console.log(`[COORDINATOR:EXECUTOR] partial object keys:`, Object.keys(partial));
+                console.log(`[COORDINATOR:EXECUTOR] partial._pendingData:`, partial._pendingData);
+                console.log(`[COORDINATOR:EXECUTOR] partial.approved:`, partial.approved);
+
+                // Extract domain-specific state, excluding system fields we already set above
+                const { messages, memory_context, entities, session_id, org_id,
+                        user_id, thread_id, timezone, requiresApproval,
+                        approvalRequest, ...domainState } = partial;
+
+                console.log(`[COORDINATOR:EXECUTOR] Restoring partial state for ${domain}:`, {
+                  hasAction: !!domainState.action,
+                  hasAppointmentData: !!domainState.appointment_data,
+                  hasDateRange: !!domainState.date_range,
+                  hasPendingData: !!domainState._pendingData,
+                  resolvedContacts: domainState.resolved_contacts?.length || 0,
+                  resolvedUsers: domainState.resolved_users?.length || 0,
+                  contactsToResolve: domainState.contacts_to_resolve?.length || 0,
+                  usersToResolve: domainState.users_to_resolve?.length || 0,
+                  partialStateKeys: Object.keys(domainState)
+                });
+
+                return domainState;
+              })()
+            : {}),
+
+            // Pass clarification responses ONLY if they're for the current pending clarification
+            // This prevents stale responses from previous queries being reused
+            // These override any values from partial state above
+            // processed: true means routeDomains has built the response and it's ready to use
+            ...(state.contact_clarification_response &&
+                state.pendingClarification?.domains?.includes(domain) &&
+                state.pendingClarification?.processed ? {
               contact_clarification_response: state.contact_clarification_response
             } : {}),
-            ...(state.user_clarification_response && state.pendingClarification?.domains?.includes(domain) ? {
+            ...(state.user_clarification_response &&
+                state.pendingClarification?.domains?.includes(domain) &&
+                state.pendingClarification?.processed ? {
               user_clarification_response: state.user_clarification_response
             } : {}),
             // Pass approval decision if resuming and this domain requested approval
@@ -715,10 +1060,11 @@ class Coordinator {
             if (error && error.name === 'GraphInterrupt') {
               const interruptValue = error.value?.value || error.value;
 
-              // Check if it's a clarification interrupt (contact disambiguation, contact clarification, or user clarification)
+              // Check if it's a clarification interrupt (contact disambiguation, user disambiguation, contact clarification, or user clarification)
               if (interruptValue?.type === 'contact_clarification' ||
                   interruptValue?.type === 'user_clarification' ||
-                  interruptValue?.type === 'contact_disambiguation') {
+                  interruptValue?.type === 'contact_disambiguation' ||
+                  interruptValue?.type === 'user_disambiguation') {
                 console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph needs clarification:`, interruptValue.type);
 
                 // Return special result indicating clarification needed
@@ -769,8 +1115,26 @@ class Coordinator {
         parallelResults.forEach((settledResult) => {
           if (settledResult.status === 'fulfilled') {
             const { domain, result } = settledResult.value;
-            // Ensure result exists before storing
-            results[domain] = result || { error: `No result returned from ${domain} subgraph` };
+            console.log(`[COORDINATOR:EXECUTOR] ${domain} subgraph returned:`, {
+              hasPendingData: !!result?._pendingData,
+              hasApproved: 'approved' in (result || {}),
+              requiresApproval: result?.requiresApproval,
+              keys: result ? Object.keys(result) : []
+            });
+            const resultToStore = result || { error: `No result returned from ${domain} subgraph` };
+
+            // Handle duplicate domains by storing as array (for multi-person queries)
+            if (results[domain]) {
+              console.log(`[COORDINATOR:EXECUTOR] Duplicate domain detected: ${domain}, storing as array`);
+              // Domain already exists, make it an array or append
+              if (Array.isArray(results[domain])) {
+                results[domain].push(resultToStore);
+              } else {
+                results[domain] = [results[domain], resultToStore];
+              }
+            } else {
+              results[domain] = resultToStore;
+            }
 
             // Merge entities from subgraph safely
             if (result && result.entities) {
@@ -782,7 +1146,17 @@ class Coordinator {
             console.error(`[COORDINATOR:EXECUTOR] Parallel subgraph failed:`, error);
             // Try to extract domain from error if available
             const domain = error.domain || 'unknown';
-            results[domain] = { error: error.message || 'Unknown error occurred' };
+
+            // Also handle duplicates for errors
+            if (results[domain]) {
+              if (Array.isArray(results[domain])) {
+                results[domain].push({ error: error.message || 'Unknown error occurred' });
+              } else {
+                results[domain] = [results[domain], { error: error.message || 'Unknown error occurred' }];
+              }
+            } else {
+              results[domain] = { error: error.message || 'Unknown error occurred' };
+            }
           }
         });
       }
@@ -914,8 +1288,11 @@ class Coordinator {
       }
 
       // ONLY check for new approvals if we're not already processing an approval decision
-      // AND if we don't have pending clarifications
-      if (!state.approval_decision && !state.pendingClarification) {
+      // AND if we don't have UNPROCESSED pending clarifications
+      // Processed clarifications should be ignored - they're from a previous step
+      if (!state.approval_decision &&
+          !(state.pendingClarification?.fresh && !state.pendingClarification?.processed)) {
+        console.log("[COORDINATOR:EXECUTOR] Checking for approval requests");
         const approvalRequests = [];
         for (const [domain, result] of Object.entries(results)) {
           if (result && result.requiresApproval && result.approvalRequest) {
@@ -942,7 +1319,12 @@ class Coordinator {
           console.log("[COORDINATOR:EXECUTOR] Approval requests stored - will route to approval_handler");
         }
       } else {
-        console.log("[COORDINATOR:EXECUTOR] Skipping approval check - processing approval decision");
+        // Log why approval check was skipped for debugging
+        if (state.approval_decision) {
+          console.log("[COORDINATOR:EXECUTOR] Skipping approval check - processing existing approval decision");
+        } else if (state.pendingClarification?.fresh && !state.pendingClarification?.processed) {
+          console.log("[COORDINATOR:EXECUTOR] Skipping approval check - unprocessed clarification pending");
+        }
         // Clear the requiresApproval flag from results since we're processing the decision
         for (const [domain, result] of Object.entries(results)) {
           if (result && result.requiresApproval) {
@@ -991,10 +1373,14 @@ class Coordinator {
       const clarificationType = state.contact_clarification_response ? 'contact' : 'user';
       console.log(`[COORDINATOR:CLARIFICATION] Processing ${clarificationType} clarification`);
 
-      // Clear clarification after processing (will re-execute subgraphs)
+      // Mark clarification as processed instead of clearing it
+      // Router needs pendingClarification to decide whether to re-execute
       return {
         ...state,
-        pendingClarification: null
+        pendingClarification: {
+          ...state.pendingClarification,
+          processed: true
+        }
       };
     }
 
@@ -1151,9 +1537,12 @@ class Coordinator {
                 ...state.messages,
                 { role: "assistant", content: quickResponse }
               ],
-              // Clear approval markers and results as part of end-of-turn hygiene
+              // Clear ALL ephemeral state as part of end-of-turn hygiene
               approval_decision: null,
               pendingApproval: null,
+              pendingClarification: null,
+              contact_clarification_response: null,
+              user_clarification_response: null,
               subgraph_results: {},
               final_response: quickResponse
             };
@@ -1202,9 +1591,12 @@ class Coordinator {
             ...state.messages,
             { role: "assistant", content: contextualResponse }
           ],
-          // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+          // Clear ALL ephemeral state so future turns start clean
           approval_decision: null,
           pendingApproval: null,
+          pendingClarification: null,
+          contact_clarification_response: null,
+          user_clarification_response: null,
           subgraph_results: {},
           final_response: contextualResponse
         };
@@ -1221,16 +1613,22 @@ class Coordinator {
           continue;
         }
 
-        if (result.error) {
-          aggregatedResults.push(`${domain}: Error - ${result.error}`);
-        } else if (result.response) {
-          aggregatedResults.push(result.response);
-        } else if (result.data) {
-          aggregatedResults.push(`${domain}: ${JSON.stringify(result.data)}`);
-        } else {
-          // Handle case where result exists but has no recognized properties
-          console.warn(`[COORDINATOR:FINALIZER] Unexpected result structure for ${domain}:`, result);
-          aggregatedResults.push(`${domain}: Processing incomplete`);
+        // Handle array of results from duplicate domains (multi-person queries)
+        const results = Array.isArray(result) ? result : [result];
+        console.log(`[COORDINATOR:FINALIZER] Processing ${results.length} result(s) for ${domain}`);
+
+        for (const res of results) {
+          if (res.error) {
+            aggregatedResults.push(`${domain}: Error - ${res.error}`);
+          } else if (res.response) {
+            aggregatedResults.push(res.response);
+          } else if (res.data) {
+            aggregatedResults.push(`${domain}: ${JSON.stringify(res.data)}`);
+          } else {
+            // Handle case where result exists but has no recognized properties
+            console.warn(`[COORDINATOR:FINALIZER] Unexpected result structure for ${domain}:`, res);
+            aggregatedResults.push(`${domain}: Processing incomplete`);
+          }
         }
       }
       
@@ -1260,9 +1658,12 @@ class Coordinator {
         return {
           ...state,
           messages: updatedMessages,
-          // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+          // Clear ALL ephemeral interrupt state so future turns start clean
           approval_decision: null,
           pendingApproval: null,
+          pendingClarification: null,
+          contact_clarification_response: null,
+          user_clarification_response: null,
           subgraph_results: {},
           final_response: finalResponse
         };
@@ -1276,9 +1677,12 @@ class Coordinator {
           ...state.messages,
           { role: "assistant", content: fallbackResponse }
         ],
-        // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+        // Clear ALL ephemeral state so future turns start clean
         approval_decision: null,
         pendingApproval: null,
+        pendingClarification: null,
+        contact_clarification_response: null,
+        user_clarification_response: null,
         subgraph_results: {},
         final_response: fallbackResponse
       };
@@ -1292,9 +1696,12 @@ class Coordinator {
           ...state.messages,
           { role: "assistant", content: errorResponse }
         ],
-        // Clear approval markers and results so future turns don't auto-approve or re-aggregate
+        // Clear ALL ephemeral state so future turns start clean
         approval_decision: null,
         pendingApproval: null,
+        pendingClarification: null,
+        contact_clarification_response: null,
+        user_clarification_response: null,
         subgraph_results: {},
         error: `Failed to generate response: ${error.message}`,
         final_response: errorResponse
@@ -1502,9 +1909,9 @@ class Coordinator {
       timezone: context.timezone || 'UTC',
       // Preserve entities from previous turn for context continuity
       entities: previousEntities,
-      // Proactively clear any stale approval markers from previous turns
-      approval_decision: null,
-      pendingApproval: null,
+      // NOTE: Don't clear pendingClarification or pendingApproval here!
+      // These need to persist from checkpoint so we can detect and resume interrupts
+      // They will be cleared AFTER being processed, not BEFORE
       // Ensure stale results aren't re-aggregated
       subgraph_results: {}
     };

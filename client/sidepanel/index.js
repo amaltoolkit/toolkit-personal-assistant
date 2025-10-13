@@ -23,6 +23,8 @@ let currentOrgName = null;
 let organizations = [];
 let chatMessages = [];
 let isProcessing = false;
+let isSubmittingContactSelection = false; // Guard against duplicate contact selections
+let isSubmittingUserSelection = false; // Guard against duplicate user selections
 
 // DOM Elements - Cache references
 let elements = {};
@@ -49,8 +51,15 @@ function cacheElements() {
     // Buttons
     getStartedBtn: document.getElementById('get-started-btn'),
     continueBtn: document.getElementById('continue-btn'),
+    // legacy: logout/reset buttons removed; keep references null-safe
     logoutBtn: document.getElementById('logout-btn'),
     resetBtn: document.getElementById('reset-btn'),
+    // Header kebab menu
+    headerMenuContainer: document.querySelector('.header-menu-container'),
+    headerMenuBtn: document.getElementById('header-menu-btn'),
+    headerMenu: document.getElementById('header-menu'),
+    menuResetBtn: document.getElementById('menu-reset'),
+    menuLogoutBtn: document.getElementById('menu-logout'),
     sendBtn: document.getElementById('send-btn'),
     
     // Chat elements
@@ -91,12 +100,18 @@ function setupEventListeners() {
   // Organization dropdown
   elements.orgDropdownBtn?.addEventListener('click', toggleOrgDropdown);
   document.addEventListener('click', handleOutsideClick);
+  document.addEventListener('keydown', handleGlobalKeydown);
   
   // Logout
   elements.logoutBtn?.addEventListener('click', handleLogout);
   
   // Reset conversation
   elements.resetBtn?.addEventListener('click', handleResetConversation);
+
+  // Header kebab menu
+  elements.headerMenuBtn?.addEventListener('click', toggleHeaderMenu);
+  elements.menuResetBtn?.addEventListener('click', () => { closeHeaderMenu(); handleResetConversation(); });
+  elements.menuLogoutBtn?.addEventListener('click', () => { closeHeaderMenu(); handleLogout(); });
 }
 
 // Initialize the application
@@ -338,7 +353,6 @@ function displayOrganizations() {
     orgItem.className = 'org-item-onboarding';
     orgItem.innerHTML = `
       <span class="org-name">${escapeHtml(orgName)}</span>
-      <span class="org-id">ID: ${escapeHtml(orgId)}</span>
     `;
     
     orgItem.addEventListener('click', () => selectOrganization(orgId, orgName, orgItem));
@@ -419,7 +433,6 @@ function populateOrgDropdown() {
     
     item.innerHTML = `
       <span class="org-dropdown-item-name">${escapeHtml(orgName)}</span>
-      <span class="org-dropdown-item-id">ID: ${escapeHtml(orgId)}</span>
     `;
     
     item.addEventListener('click', () => {
@@ -457,11 +470,48 @@ function toggleOrgDropdown() {
   }
 }
 
-function handleOutsideClick(event) {
-  const container = elements.orgDropdownBtn?.parentElement;
-  if (container && !container.contains(event.target)) {
+// Header kebab menu controls
+function toggleHeaderMenu() {
+  const menu = elements.headerMenu;
+  const btn = elements.headerMenuBtn;
+  if (!menu || !btn) return;
+  const isHidden = menu.classList.contains('hidden');
+  if (isHidden) {
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+  } else {
+    closeHeaderMenu();
+  }
+}
+
+function closeHeaderMenu() {
+  const menu = elements.headerMenu;
+  const btn = elements.headerMenuBtn;
+  if (!menu || !btn) return;
+  menu.classList.add('hidden');
+  btn.setAttribute('aria-expanded', 'false');
+}
+
+function handleGlobalKeydown(e) {
+  if (e.key === 'Escape') {
+    // Close any open overlays/menus
     elements.orgDropdownMenu?.classList.add('hidden');
     elements.orgDropdownBtn?.classList.remove('active');
+    closeHeaderMenu();
+  }
+}
+
+function handleOutsideClick(event) {
+  const orgContainer = elements.orgDropdownBtn?.parentElement;
+  if (orgContainer && !orgContainer.contains(event.target)) {
+    elements.orgDropdownMenu?.classList.add('hidden');
+    elements.orgDropdownBtn?.classList.remove('active');
+  }
+
+  // Close header kebab menu when clicking outside
+  const headerMenuContainer = elements.headerMenuContainer;
+  if (headerMenuContainer && !headerMenuContainer.contains(event.target)) {
+    closeHeaderMenu();
   }
 }
 
@@ -772,16 +822,30 @@ function handleInterruptReceived(interrupt) {
   } else if (interruptType === 'contact_disambiguation') {
     // Show contact disambiguation UI
     // Handle different data structures
-    const contacts = interrupt.contacts || 
+    const contacts = interrupt.contacts ||
                      (interrupt.value && interrupt.value.candidates) ||
                      (interrupt.candidates);
     const threadId = interrupt.threadId || interrupt.thread_id;
-    
+
     if (contacts) {
       console.log('[INTERRUPT] Showing contact disambiguation with', contacts.length, 'candidates');
       showContactDisambiguationUI(contacts, threadId);
     } else {
       console.error('[INTERRUPT] No contacts found in interrupt data');
+    }
+  } else if (interruptType === 'user_disambiguation') {
+    // Show user disambiguation UI
+    // Handle different data structures
+    const users = interrupt.users ||
+                  (interrupt.value && interrupt.value.candidates) ||
+                  (interrupt.candidates);
+    const threadId = interrupt.threadId || interrupt.thread_id;
+
+    if (users) {
+      console.log('[INTERRUPT] Showing user disambiguation with', users.length, 'candidates');
+      showUserDisambiguationUI(users, threadId);
+    } else {
+      console.error('[INTERRUPT] No users found in interrupt data');
     }
   } else if (interruptType === 'workflow_guidance') {
     // Show workflow guidance UI
@@ -1252,10 +1316,17 @@ function showContactDisambiguationUI(contacts, threadId) {
     console.error('[DISAMBIGUATION] No contacts to show');
     return;
   }
-  
+
+  // Remove any existing disambiguation cards to prevent duplicates
+  const existingCards = document.querySelectorAll('.contact-disambiguation');
+  if (existingCards.length > 0) {
+    console.log('[DISAMBIGUATION] Removing', existingCards.length, 'existing card(s)');
+    existingCards.forEach(card => card.remove());
+  }
+
   currentThreadId = threadId;
   console.log('[DISAMBIGUATION] Showing contact selection for thread:', threadId);
-  
+
   // Create disambiguation container
   const disambigDiv = document.createElement('div');
   disambigDiv.className = 'disambiguation-container contact-disambiguation';
@@ -1329,14 +1400,31 @@ function showContactDisambiguationUI(contacts, threadId) {
     // Simplified card: omit phone, score, interaction
     
     card.appendChild(infoDiv);
-    
-    // Immediate confirm on click or Enter/Space
-    const submitSelection = () => handleContactSelection(card.dataset.contactId, disambigDiv.id);
-    card.onclick = submitSelection;
+
+    // Two-step: first select (visual), then submit
+    const handleCardClick = (e) => {
+      // Prevent multiple selections
+      const alreadySelected = card.classList.contains('selected');
+      if (alreadySelected) return; // Already processing this card
+
+      // Clear any previous selections
+      const allCards = cardsWrapper.querySelectorAll('.contact-card');
+      allCards.forEach(c => c.classList.remove('selected'));
+
+      // Mark this card as selected (visual feedback)
+      card.classList.add('selected');
+
+      // Submit after a brief delay for visual feedback
+      setTimeout(() => {
+        handleContactSelection(card.dataset.contactId, disambigDiv.id);
+      }, 150); // 150ms delay allows user to see the border activate
+    };
+
+    card.onclick = handleCardClick;
     card.onkeydown = (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        submitSelection();
+        handleCardClick(e);
       }
     };
 
@@ -1351,14 +1439,158 @@ function showContactDisambiguationUI(contacts, threadId) {
   disambigDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
+function showUserDisambiguationUI(users, threadId) {
+  if (!users || users.length === 0) {
+    console.error('[USER_DISAMBIGUATION] No users to show');
+    return;
+  }
+
+  // Remove any existing user disambiguation cards
+  const existingCards = document.querySelectorAll('.user-disambiguation');
+  if (existingCards.length > 0) {
+    console.log('[USER_DISAMBIGUATION] Removing', existingCards.length, 'existing card(s)');
+    existingCards.forEach(card => card.remove());
+  }
+
+  currentThreadId = threadId;
+  console.log('[USER_DISAMBIGUATION] Showing user selection for thread:', threadId);
+
+  // Create disambiguation container
+  const disambigDiv = document.createElement('div');
+  disambigDiv.className = 'disambiguation-container user-disambiguation';
+  disambigDiv.id = `user-disambig-${Date.now()}`;
+
+  // Add title
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'disambiguation-title';
+  titleDiv.innerHTML = '<strong>🤔 Which team member did you mean?</strong>';
+  disambigDiv.appendChild(titleDiv);
+
+  // Add explanation
+  const explainDiv = document.createElement('div');
+  explainDiv.className = 'disambiguation-explain';
+  explainDiv.textContent = 'Multiple team members match your search. Please select the correct one:';
+  disambigDiv.appendChild(explainDiv);
+
+  // Cards wrapper for responsive layout
+  const cardsWrapper = document.createElement('div');
+  cardsWrapper.className = 'contact-list';  // Reuse same styling as contacts
+
+  users.forEach((user) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'contact-card contact-card--modern';
+    // Handle both old and new field names
+    card.dataset.userId = user.Id || user.id;
+    // Store full user object for submission
+    card.dataset.userData = JSON.stringify(user);
+    card.setAttribute('aria-label', 'Use team member');
+
+    // User info
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'contact-info';
+
+    // Name - handle various field formats
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'contact-name';
+    const fullName = user.name || user.Name || user.FullName ||
+                    (user.FirstName && user.LastName ?
+                     `${user.FirstName} ${user.LastName}` : 'Unknown');
+    nameDiv.textContent = fullName;
+    infoDiv.appendChild(nameDiv);
+
+    // Title/Role + Company + Current User indicator (meta line)
+    const jobTitle = user.title || user.Title || user.role ||
+                    user.JobTitle || user.Role;
+    const companyName = user.company || user.Company || user.CompanyName;
+    const isCurrentUser = user.isCurrentUser;
+
+    // Build meta line parts (title, company, current user indicator)
+    if (jobTitle || companyName || isCurrentUser) {
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'contact-meta';
+      const parts = [];
+
+      // Add title if present and not 'N/A'
+      if (jobTitle && jobTitle !== 'N/A') parts.push(jobTitle);
+
+      // Add company if present and not 'N/A'
+      if (companyName && companyName !== 'N/A') parts.push(companyName);
+
+      // Add current user indicator
+      if (isCurrentUser) parts.push('You');
+
+      metaDiv.textContent = parts.join(' • ');
+      infoDiv.appendChild(metaDiv);
+    }
+
+    // Email - handle BSA field names
+    const email = user.email || user.Email || user.EMailAddress1;
+    if (email && email !== 'N/A') {
+      const emailDiv = document.createElement('div');
+      emailDiv.className = 'contact-email';
+      emailDiv.textContent = email;
+      infoDiv.appendChild(emailDiv);
+    }
+
+    card.appendChild(infoDiv);
+
+    // Two-step: first select (visual), then submit
+    const handleCardClick = (e) => {
+      // Prevent multiple selections
+      const alreadySelected = card.classList.contains('selected');
+      if (alreadySelected) return;
+
+      // Clear any previous selections
+      const allCards = cardsWrapper.querySelectorAll('.contact-card');
+      allCards.forEach(c => c.classList.remove('selected'));
+
+      // Mark this card as selected (visual feedback)
+      card.classList.add('selected');
+
+      // Submit after a brief delay for visual feedback
+      setTimeout(() => {
+        handleUserSelection(card.dataset.userId, disambigDiv.id);
+      }, 150); // 150ms delay allows user to see the border activate
+    };
+
+    card.onclick = handleCardClick;
+    card.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleCardClick(e);
+      }
+    };
+
+    cardsWrapper.appendChild(card);
+  });
+
+  disambigDiv.appendChild(cardsWrapper);
+
+  // No submit button; selection happens on card click
+
+  // Add to chat
+  elements.chatMessages?.appendChild(disambigDiv);
+  disambigDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
 async function handleContactSelection(contactId, containerId) {
   console.log('[DISAMBIGUATION] Selected contact:', contactId);
+
+  // Prevent duplicate submissions
+  if (isSubmittingContactSelection) {
+    console.log('[DISAMBIGUATION] Already submitting, ignoring duplicate click');
+    return;
+  }
 
   if (!currentThreadId || !contactId) {
     console.error('[DISAMBIGUATION] Missing thread ID or contact ID');
     addMessageToChat('Error: Missing required information', false);
     return;
   }
+
+  // Set flag to prevent concurrent submissions
+  isSubmittingContactSelection = true;
 
   // Get the full contact object from the card
   const container = document.getElementById(containerId);
@@ -1375,12 +1607,15 @@ async function handleContactSelection(contactId, containerId) {
     }
   }
 
-  // Disable submit button
-  const submitBtn = container?.querySelector('.submit-disambiguation-btn');
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Processing...';
+  // Remove card immediately and show loading message
+  if (container) {
+    container.remove();
   }
+
+  // Show loading message with contact name for context
+  const contactName = selectedContact?.name || selectedContact?.Name || 'contact';
+  const loadingMsg = addMessageToChat(`Looking up ${contactName}'s information...`, false);
+  loadingMsg.classList.add('loading');
 
   try {
     // Use approve endpoint for V2 architecture with contact resolution
@@ -1406,16 +1641,20 @@ async function handleContactSelection(contactId, containerId) {
         }
       })
     });
-    
+
     if (!response.ok) {
+      // Remove loading message on error
+      if (loadingMsg) {
+        loadingMsg.remove();
+      }
       throw new Error('Failed to submit contact selection');
     }
-    
+
     const data = await response.json();
-    
-    // Remove disambiguation UI
-    if (container) {
-      container.remove();
+
+    // Remove loading message before showing actual response
+    if (loadingMsg) {
+      loadingMsg.remove();
     }
     
     // Handle response
@@ -1427,26 +1666,136 @@ async function handleContactSelection(contactId, containerId) {
       if (data.interrupt) {
         handleInterruptReceived(data.interrupt);
       }
+      // Reset flag since we're showing a new interrupt
+      isSubmittingContactSelection = false;
     } else if (data.status === 'COMPLETED') {
       // Show completion message
       const responseText = data.response || 'Contact selected successfully.';
       addMessageToChat(responseText, false);
-      
+
       // Show follow-ups if available
       if (data.followups && data.followups.length > 0) {
         showFollowUpQuestions(data.followups);
       }
+
+      // Reset flag after successful completion
+      isSubmittingContactSelection = false;
     }
     
   } catch (error) {
     console.error('[DISAMBIGUATION] Error submitting selection:', error);
-    addMessageToChat('Failed to submit contact selection. Please try again.', false);
-    
-    // Re-enable submit button
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Use Selected Contact';
+
+    // Remove loading message if it exists
+    if (loadingMsg) {
+      loadingMsg.remove();
     }
+
+    addMessageToChat('Failed to submit contact selection. Please try again.', false);
+
+    // Reset flag to allow retry
+    isSubmittingContactSelection = false;
+  }
+}
+
+async function handleUserSelection(userId, containerId) {
+  console.log('[USER_DISAMBIGUATION] Selected user:', userId);
+
+  // Prevent duplicate submissions
+  if (isSubmittingUserSelection) {
+    console.log('[USER_DISAMBIGUATION] Already submitting, ignoring duplicate click');
+    return;
+  }
+
+  if (!currentThreadId || !userId) {
+    console.error('[USER_DISAMBIGUATION] Missing thread ID or user ID');
+    addMessageToChat('Error: Missing required information', false);
+    return;
+  }
+
+  // Set flag to prevent concurrent submissions
+  isSubmittingUserSelection = true;
+
+  // Get the full user object from the card
+  const container = document.getElementById(containerId);
+  const selectedCard = container?.querySelector(`[data-user-id="${userId}"]`);
+  const userData = selectedCard ? JSON.parse(selectedCard.dataset.userData) : null;
+
+  if (!userData) {
+    console.error('[USER_DISAMBIGUATION] Could not find user data');
+    isSubmittingUserSelection = false;
+    return;
+  }
+
+  // Show loading message
+  const loadingMsg = addMessageToChat(`Adding ${userData.name}...`, false);
+  loadingMsg.classList.add('loading');
+
+  try {
+    console.log('[USER_DISAMBIGUATION] Submitting user selection to backend:', {
+      session_id: currentSessionId,
+      thread_id: currentThreadId,
+      user_id: userId,
+      user_name: userData.name
+    });
+
+    const response = await fetch(`${API_BASE}/api/agent/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        org_id: currentOrgId,
+        thread_id: currentThreadId,
+        user_id: userId,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to submit user selection');
+    }
+
+    const data = await response.json();
+
+    // Remove loading message
+    if (loadingMsg) {
+      loadingMsg.remove();
+    }
+
+    // Remove disambiguation UI
+    if (container) {
+      container.remove();
+    }
+
+    // Handle response
+    if (data.status === 'PENDING_APPROVAL' || data.status === 'PENDING_INTERRUPT') {
+      console.log('[USER_DISAMBIGUATION] Further interaction required:', data.status);
+      handleResponseWithInterrupt(data);
+    } else if (data.status === 'COMPLETED' || data.response) {
+      // Show final response
+      if (data.response) {
+        addMessageToChat(data.response, false);
+      }
+    } else {
+      addMessageToChat('Team member added successfully', false);
+    }
+
+    // Reset flag after successful submission
+    isSubmittingUserSelection = false;
+
+  } catch (error) {
+    console.error('[USER_DISAMBIGUATION] Error submitting selection:', error);
+
+    // Remove loading message
+    if (loadingMsg) {
+      loadingMsg.remove();
+    }
+
+    addMessageToChat('Failed to submit user selection. Please try again.', false);
+
+    // Reset flag to allow retry
+    isSubmittingUserSelection = false;
   }
 }
 

@@ -97,7 +97,7 @@ async function getAppointments(params, passKey, orgId) {
   // We no longer need to handle single dates here as they've been properly expanded
 
   console.log("[BSA:APPOINTMENTS] Fetching with date range:", { effectiveFrom, effectiveTo });
-  
+
   const endpoint = '/endpoints/ajax/com.platform.vc.endpoints.calendar.VCCalendarEndpoint/getActivities.json';
   const payload = {
     OrganizationId: orgId,  // Changed from orgId to OrganizationId
@@ -110,7 +110,9 @@ async function getAppointments(params, passKey, orgId) {
     IncludeAttendees: includeAttendees,
     IncludeExtendedProperties: includeExtendedProperties
   };
-  
+
+  console.log("[BSA:APPOINTMENTS:DEBUG] getActivities payload:", JSON.stringify(payload, null, 2));
+
   try {
     const response = await axios.post(
       bsaConfig.buildEndpoint(endpoint),
@@ -123,12 +125,20 @@ async function getAppointments(params, passKey, orgId) {
         timeout: 10000
       }
     );
-    
+
+    console.log("[BSA:APPOINTMENTS:DEBUG] Raw BSA response:", JSON.stringify(response.data, null, 2));
+
     const normalized = normalizeBSAResponse(response.data);
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Invalid BSA response');
     }
-    
+
+    console.log("[BSA:APPOINTMENTS:DEBUG] Normalized response:", {
+      valid: normalized.valid,
+      activitiesCount: normalized.activities?.length || 0,
+      firstActivityKeys: normalized.activities?.[0] ? Object.keys(normalized.activities[0]) : []
+    });
+
     return {
       appointments: normalized.activities || [],
       count: normalized.activities?.length || 0
@@ -179,6 +189,8 @@ async function createAppointment(data, passKey, orgId) {
     ObjectName: "appointment"
   };
 
+  console.log("[BSA:APPOINTMENTS:DEBUG] create payload:", JSON.stringify(payload, null, 2));
+
   try {
     const response = await axios.post(
       bsaConfig.buildEndpoint(endpoint),
@@ -192,6 +204,8 @@ async function createAppointment(data, passKey, orgId) {
       }
     );
 
+    console.log("[BSA:APPOINTMENTS:DEBUG] Raw create response:", JSON.stringify(response.data, null, 2));
+
     const normalized = normalizeBSAResponse(response.data);
     if (!normalized.valid) {
       throw new Error(normalized.error || 'Failed to create appointment');
@@ -199,14 +213,7 @@ async function createAppointment(data, passKey, orgId) {
 
     // Response contains DataObject, not Activity
     const appointment = normalized.DataObject;
-    console.log("[BSA:APPOINTMENTS] Created appointment - Full response:", JSON.stringify({
-      hasDataObject: !!normalized.DataObject,
-      appointmentKeys: appointment ? Object.keys(appointment) : [],
-      Id: appointment?.Id,
-      id: appointment?.id,
-      Subject: appointment?.Subject,
-      subject: appointment?.subject
-    }, null, 2));
+    console.log("[BSA:APPOINTMENTS:DEBUG] Created appointment - All fields:", JSON.stringify(appointment, null, 2));
 
     // Link contacts if provided
     if (contactIds.length > 0 && appointment.Id) {

@@ -7,7 +7,18 @@
     "dev": "node src/server.js",
     "start": "node src/server.js",
     "studio": "langgraph dev",
-    "studio:tunnel": "langgraph dev --tunnel"
+    "studio:tunnel": "langgraph dev --tunnel",
+    "test:setup": "node tests/local/setupTestSession.js",
+    "test": "node tests/local/testClient.js",
+    "test:approvals": "node tests/local/testClientWithApprovals.js",
+    "test:memory": "node tests/local/testMemorySimple.js",
+    "test:memory:rolling": "node tests/local/testRollingMemoryWithApprovals.js",
+    "test:memory:10": "node tests/local/testRollingMemory10Queries.js",
+    "test:reset": "node tests/local/resetTestConversation.js",
+    "test:logs": "node tests/local/testWithLogs.js",
+    "test:analyze": "node tests/local/analyzeLogs.js summary",
+    "test:report": "node tests/local/analyzeLogs.js report",
+    "test:verify": "node tests/local/analyzeLogs.js verify"
   },
   "dependencies": {
     "@langchain/core": "0.3.72",

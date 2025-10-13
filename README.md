@@ -69,6 +69,8 @@ A Chrome extension that authenticates with BlueSquareApps via OAuth 2.0 and prov
 
 ## 🚀 Setup Instructions
 
+> **💡 Local Development:** For testing without deployment, see [Local Testing Guide](tests/local/README.md)
+
 ### 1. Database Setup (Supabase)
 
 Create the following tables in your Supabase database:

@@ -6,7 +6,6 @@
   <title>Toolkit Co-pilot</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="../styles/approvalUI.css">
-  <link rel="stylesheet" href="../styles/contactDisambiguation.css">
 </head>
 <body>
   <div class="app-container">
@@ -59,14 +58,16 @@
               <div id="org-dropdown-list"></div>
             </div>
           </div>
-          <!-- Reset Button -->
-          <button id="reset-btn" class="btn-icon-header reset-btn" title="Start new conversation" aria-label="Reset conversation">
-            <span class="icon-reset" aria-hidden="true">🔄</span>
-          </button>
-          <!-- Logout Button -->
-          <button id="logout-btn" class="btn-icon-header" title="Logout" aria-label="Logout">
-            <span class="icon-logout" aria-hidden="true"></span>
-          </button>
+          <!-- Header Menu (kebab) -->
+          <div class="header-menu-container">
+            <button id="header-menu-btn" class="btn-icon-header menu-btn" title="Menu" aria-label="Open menu" aria-haspopup="true" aria-expanded="false">
+              <span class="icon-menu-dots" aria-hidden="true">⋯</span>
+            </button>
+            <div id="header-menu" class="menu-dropdown hidden" role="menu" aria-labelledby="header-menu-btn">
+              <button id="menu-reset" class="menu-item" role="menuitem">Reset current conversation</button>
+              <button id="menu-logout" class="menu-item menu-item-danger" role="menuitem">Log out</button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -84,9 +85,6 @@
           </div>
         </div>
       </div>
-
-      <!-- UI Component Containers for Interrupts -->
-      <div id="contact-disambiguation-container" class="contact-disambiguation-container"></div>
 
       <!-- Chat Input Area -->
       <div class="chat-input-container">
@@ -114,7 +112,6 @@
   <script src="../lib/marked.min.js"></script>
   <script src="../lib/purify.min.js"></script>
   <script src="../components/approvalUI.js"></script>
-  <script src="../components/contactDisambiguation.js"></script>
   <script src="index.js"></script>
 </body>
 </html>

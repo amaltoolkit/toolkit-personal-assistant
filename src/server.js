@@ -3,6 +3,38 @@ if (process.env.NODE_ENV !== 'production') {
   require('dotenv').config();
 }
 
+// ===== SUPPRESS VERBOSE TRACING LOGS =====
+// Filter out OpenTelemetry baggage context and HTTP body warnings from console
+// LangSmith traces still work properly - this only affects console output
+const originalLog = console.log;
+const originalWarn = console.warn;
+const originalError = console.error;
+
+function shouldSuppressLog(args) {
+  const msg = args.join(' ');
+  return (
+    msg.startsWith('Context: trace=') ||      // OpenTelemetry baggage context
+    msg.includes('Body is unusable') ||       // HTTP body read warnings
+    msg.includes('Body has already been read') // HTTP body read warnings (variant)
+  );
+}
+
+console.log = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalLog.apply(console, args);
+};
+
+console.warn = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalWarn.apply(console, args);
+};
+
+console.error = (...args) => {
+  if (shouldSuppressLog(args)) return;
+  originalError.apply(console, args);
+};
+// ===== END LOG FILTERING =====
+
 // Ensure LangSmith callbacks complete in serverless environment
 // This MUST be set before any LangChain imports for proper tracing
 if (!process.env.LANGCHAIN_CALLBACKS_BACKGROUND) {

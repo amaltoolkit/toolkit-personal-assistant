@@ -4,10 +4,11 @@
 
 /**
  * Normalize BSA API responses
- * BSA responses have two formats:
- * 1. Most endpoints: Array wrapper [{ Results: [...], Valid: true }]
- * 2. PassKey endpoint: Plain object { passkey: "...", expires_in: 3600 }
- * 
+ * BSA responses have three formats:
+ * 1. Array wrapper: [{ Results: [...], Valid: true }]
+ * 2. Plain object with Valid flag: { Activities: [...], Valid: true }
+ * 3. Plain object without Valid flag: { passkey: "...", expires_in: 3600 }
+ *
  * @param {any} response - Raw BSA API response
  * @returns {Object} Normalized response with consistent structure
  */
@@ -15,7 +16,7 @@ function normalizeBSAResponse(response) {
   // Handle array-wrapped responses (most endpoints)
   if (Array.isArray(response) && response.length > 0) {
     const firstItem = response[0];
-    
+
     // Check for Valid flag
     if ('Valid' in firstItem) {
       if (!firstItem.Valid) {
@@ -24,16 +25,19 @@ function normalizeBSAResponse(response) {
           error: firstItem.ErrorMessage || 'BSA API returned Valid: false'
         };
       }
-      
+
       // Extract results based on known patterns
-      if (firstItem.Results) {
+      // Different BSA endpoints use different field names:
+      // - Most endpoints: Results
+      // - getActivities endpoint: Activities
+      if (firstItem.Results || firstItem.Activities) {
         return {
           valid: true,
-          activities: firstItem.Results,
+          activities: firstItem.Results || firstItem.Activities,
           ...firstItem // Include other fields
         };
       }
-      
+
       // Some endpoints return the data directly in the first item
       return {
         valid: true,
@@ -41,15 +45,41 @@ function normalizeBSAResponse(response) {
       };
     }
   }
-  
-  // Handle plain object responses (e.g., PassKey endpoint)
+
+  // Handle plain object responses with Valid flag (e.g., getActivities endpoint)
   if (response && typeof response === 'object' && !Array.isArray(response)) {
+    // Check if it has Valid flag (BSA API response)
+    if ('Valid' in response) {
+      if (!response.Valid) {
+        return {
+          valid: false,
+          error: response.ErrorMessage || 'BSA API returned Valid: false'
+        };
+      }
+
+      // Extract activities if present
+      if (response.Activities || response.Results) {
+        return {
+          valid: true,
+          activities: response.Activities || response.Results,
+          ...response
+        };
+      }
+
+      // Valid response but no activities/results field
+      return {
+        valid: true,
+        ...response
+      };
+    }
+
+    // Plain object without Valid flag (e.g., PassKey endpoint)
     return {
       valid: true,
       ...response
     };
   }
-  
+
   // Handle empty or null responses
   if (!response) {
     return {
@@ -57,7 +87,7 @@ function normalizeBSAResponse(response) {
       error: 'Empty response from BSA API'
     };
   }
-  
+
   // Fallback for unexpected formats
   return {
     valid: true,

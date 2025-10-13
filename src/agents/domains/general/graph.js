@@ -114,6 +114,7 @@ class GeneralSubgraph {
     workflow.addNode("fetch_bsa_data", this.fetchBSAData.bind(this));
     workflow.addNode("retrieve_context", this.retrieveContext.bind(this));
     workflow.addNode("generate_answer", this.generateAnswer.bind(this));
+    workflow.addNode("extract_entities", this.extractEntities.bind(this));
     workflow.addNode("format_response", this.formatResponse.bind(this));
 
     // Define edges
@@ -132,7 +133,8 @@ class GeneralSubgraph {
 
     workflow.addEdge("fetch_bsa_data", "retrieve_context");
     workflow.addEdge("retrieve_context", "generate_answer");
-    workflow.addEdge("generate_answer", "format_response");
+    workflow.addEdge("generate_answer", "extract_entities");
+    workflow.addEdge("extract_entities", "format_response");
     workflow.addEdge("format_response", END);
 
     // Compile without checkpointer (stateless)
@@ -446,7 +448,7 @@ class GeneralSubgraph {
       const bsaContext = this.buildBSAContext(state.context.bsa);
       const memoryContext = this.buildMemoryContext(state.context.memory);
       const statsContext = this.buildStatsContext(state.context.stats);
-      const conversationContext = this.buildConversationContext(state.messages);
+      const conversationContext = this.buildConversationContext(state.messages, state.entities);
 
       const prompt = `
 You are a helpful AI assistant for a business automation system that helps financial advisors manage workflows, appointments, and tasks.
@@ -472,6 +474,12 @@ INSTRUCTIONS:
 - If context is empty, politely explain what you can help with
 - Use markdown formatting for better readability (**bold** for emphasis, lists, etc.)
 - For step questions, extract the step number even if spelled out ("two" = 2, "second" = 2, etc.)
+- **IMPORTANT: If the query contains pronouns (they, them, both, first person, etc.), search through ALL numbered messages in the Recent Conversation above to determine who they refer to**
+
+PRONOUN RESOLUTION EXAMPLES:
+- "remind me who they are" → Look through numbered messages, find all people mentioned, list them
+- "who is the first person I mentioned" → Find the EARLIEST person name in the numbered messages
+- "both of them" → Find the two most recently mentioned people
 
 Answer:`;
 
@@ -672,24 +680,42 @@ Answer:`;
   }
 
   /**
-   * Build conversation context from recent messages
+   * Build conversation context - full message window (no artificial limits)
    */
-  buildConversationContext(messages) {
-    if (!messages || messages.length <= 1) {
-      return "";
+  buildConversationContext(messages, entities) {
+    const parts = [];
+
+    // RECENT CONVERSATION: Last 50 messages (25 turns)
+    if (messages && messages.length > 1) {
+      parts.push("\n**Recent Conversation (for pronoun resolution):**");
+      const recentMessages = messages.slice(-50); // Increased from 10 to 50
+      recentMessages.forEach((msg, idx) => {
+        const role = msg.role === 'user' ? 'User' : 'Assistant';
+        parts.push(`${idx + 1}. ${role}: ${msg.content}`);
+      });
     }
 
-    // Include last 3 messages for context (excluding current)
-    const recentMessages = messages.slice(-4, -1);
-    if (recentMessages.length === 0) {
-      return "";
+    // ENTITY CONTEXT: Track people mentioned
+    parts.push('\n**Entity Context:**');
+    if (entities?.last_contact) {
+      const contactName = entities.last_contact.name || entities.last_contact.data?.name;
+      parts.push(`Last Mentioned: ${contactName}`);
+    }
+    if (entities?.conversation_context?.data?.people_mentioned?.length > 0) {
+      const peopleMentioned = entities.conversation_context.data.people_mentioned;
+      parts.push(`All Mentioned: ${peopleMentioned.join(', ')}`);
+    }
+    if (!entities?.last_contact && !entities?.conversation_context) {
+      parts.push('(no entity context)');
     }
 
-    const parts = ["\n**Recent Conversation:**"];
-    recentMessages.forEach(msg => {
-      const role = msg.role === 'user' ? 'User' : 'Assistant';
-      parts.push(`${role}: ${msg.content}`);
-    });
+    // Enhanced pronoun resolution instructions
+    parts.push(`\n**IMPORTANT PRONOUN RESOLUTION:**
+- You have access to the FULL conversation history above (all numbered messages)
+- "first person mentioned" = find earliest name in numbered messages (lowest number)
+- "both of them" / "they" / "them" = find ALL people mentioned in conversation
+- "he/she/him/her" = check Last Mentioned and recent context
+- Search through ALL messages, not just recent ones`);
 
     return parts.join('\n');
   }
@@ -697,6 +723,123 @@ Answer:`;
   /**
    * Format final response
    */
+  /**
+   * Extract entities (contacts/people) mentioned in the user's query
+   * Store them in entities state for future pronoun resolution
+   */
+  async extractEntities(state) {
+    console.log("[GENERAL:EXTRACT] Extracting mentioned entities");
+
+    const lastMessage = state.messages[state.messages.length - 1];
+    const userQuery = lastMessage.content;
+
+    try {
+      // Use LLM to extract people/contact names from the query
+      const extractPrompt = `
+Analyze this user message and extract any person names or contacts mentioned.
+
+User message: "${userQuery}"
+
+Instructions:
+- Extract FULL NAMES of people mentioned (first name + last name if available)
+- Include anyone the user says they're "working with", "meeting with", "talking to", etc.
+- Include anyone mentioned in the context of appointments, tasks, or collaborations
+- Do NOT extract pronouns (he, she, they, his, her, etc.)
+- Do NOT extract "me", "I", "myself" (self-references)
+
+Return JSON:
+{
+  "people": ["Full Name 1", "Full Name 2", ...],
+  "hasPronouns": boolean  // true if query contains pronouns like "his", "her", "their", "him", "them"
+}
+
+Examples:
+- "I'm working with Norman Albertson today" → {"people": ["Norman Albertson"], "hasPronouns": false}
+- "Schedule meeting with John Smith and Sarah Jones" → {"people": ["John Smith", "Sarah Jones"], "hasPronouns": false}
+- "what's his email address?" → {"people": [], "hasPronouns": true}
+- "tell me about Clara" → {"people": ["Clara"], "hasPronouns": false}
+`;
+
+      const response = await this.llm.invoke(extractPrompt);
+
+      // Extract JSON from response
+      let jsonContent = response.content;
+      if (jsonContent.includes('```json')) {
+        jsonContent = jsonContent.split('```json')[1].split('```')[0].trim();
+      } else if (jsonContent.includes('```')) {
+        jsonContent = jsonContent.split('```')[1].split('```')[0].trim();
+      }
+
+      const extracted = JSON.parse(jsonContent);
+      console.log("[GENERAL:EXTRACT] Extracted:", extracted);
+
+      // Store mentioned contacts in entities for pronoun resolution
+      const updatedEntities = { ...state.entities };
+
+      if (extracted.people && extracted.people.length > 0) {
+        // Store the most recently mentioned person as last_contact
+        const lastPerson = extracted.people[extracted.people.length - 1];
+
+        updatedEntities.last_contact = {
+          type: 'contact',
+          name: lastPerson,
+          data: {
+            id: `mentioned_${Date.now()}`,  // Temporary ID
+            name: lastPerson,
+            source: 'general_conversation',
+            mentionedAt: new Date().toISOString()
+          },
+          timestamp: Date.now()
+        };
+
+        console.log(`[GENERAL:EXTRACT] Stored last_contact: ${lastPerson}`);
+
+        // Track conversation context for cross-turn memory
+        const conversationContext = updatedEntities.conversation_context || {
+          type: 'conversation_context',
+          data: {
+            people_mentioned: [],  // Simple list - LLM handles order from numbered history
+            lastUpdated: null
+          }
+        };
+
+        console.log(`[GENERAL:EXTRACT] Processing ${extracted.people.length} people for conversation context`);
+
+        // Add new people (avoid duplicates)
+        for (const person of extracted.people) {
+          // Check if person is already in the list (case-insensitive)
+          const existing = conversationContext.data.people_mentioned.find(
+            p => p.toLowerCase() === person.toLowerCase()
+          );
+
+          if (!existing) {
+            conversationContext.data.people_mentioned.push(person);
+            console.log(`[GENERAL:EXTRACT] Added to conversation context: ${person}`);
+          } else {
+            console.log(`[GENERAL:EXTRACT] Person already in conversation context: ${person}`);
+          }
+        }
+
+        conversationContext.data.lastUpdated = new Date().toISOString();
+        updatedEntities.conversation_context = conversationContext;
+        console.log(`[GENERAL:EXTRACT] Final conversation_context:`, JSON.stringify(conversationContext.data));
+
+      } else if (extracted.hasPronouns) {
+        console.log("[GENERAL:EXTRACT] Query contains pronouns but no person names - will rely on existing entities");
+      }
+
+      return {
+        ...state,
+        entities: updatedEntities
+      };
+
+    } catch (error) {
+      console.error("[GENERAL:EXTRACT] Error extracting entities:", error);
+      // Continue without entity extraction rather than failing
+      return state;
+    }
+  }
+
   async formatResponse(state) {
     console.log("[GENERAL:RESPONSE] Formatting response");
 

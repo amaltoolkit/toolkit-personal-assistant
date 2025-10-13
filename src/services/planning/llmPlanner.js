@@ -43,19 +43,27 @@ class LLMPlanner {
     return cleaned.trim();
   }
 
-  async createExecutionPlan(query, memoryContext = null, entityStats = null, recentMessages = []) {
+  async createExecutionPlan(query, memoryContext = null, entityStats = null, recentMessages = [], clarificationContext = null) {
     console.log("[LLM-PLANNER:MAIN] Creating execution plan for query:", query);
 
-    // Check cache first (include entity stats in cache key for context-aware caching)
+    // Generate cache key BEFORE checking clarification context (need it later for caching result)
     const cacheKey = `${query.toLowerCase().trim()}_${JSON.stringify(entityStats?.byType || {})}`;
-    if (this.cache.has(cacheKey)) {
-      console.log("[LLM-PLANNER:CACHE] Cache hit");
-      return this.cache.get(cacheKey);
+
+    // Skip cache lookup if we have clarification context (need fresh analysis)
+    if (!clarificationContext) {
+      if (this.cache.has(cacheKey)) {
+        console.log("[LLM-PLANNER:CACHE] Cache hit");
+        return this.cache.get(cacheKey);
+      }
+    } else {
+      console.log("[LLM-PLANNER:CLARIFICATION] Clarification context detected - skipping cache lookup");
     }
 
     try {
       const prompt = `
         You are a routing assistant for a business automation system.
+
+        Your task is to analyze the FULL CONVERSATION CONTEXT to determine the user's current intent and route to the appropriate domain(s).
 
         Available domains and their purposes:
         - calendar: Creating appointments, meetings, scheduling events with specific times/dates [ACTION]
@@ -63,17 +71,6 @@ class LLMPlanner {
         - workflow: Creating multi-step processes, automation sequences, business workflows, procedures [ACTION]
         - contact: ALL contact operations - search, information queries, updates [ACTION + READ]
         - general: Answering questions, viewing/reading existing entities, conversations, greetings, system queries [INFORMATIONAL]
-
-        ${entityStats && entityStats.totalEntities > 0 ? `
-        Current session state (entities created so far):
-        - Workflows: ${entityStats.byType?.workflow || 0} created
-        - Appointments: ${entityStats.byType?.appointment || 0} created
-        - Tasks: ${entityStats.byType?.task || 0} created
-
-        IMPORTANT: If user asks about entities that don't exist yet (count = 0), route to general for helpful response.
-        ` : `
-        Current session state: No entities created yet in this session.
-        `}
 
         ${recentMessages && recentMessages.length > 0 ? `
         Recent conversation (for context):
@@ -86,6 +83,30 @@ class LLMPlanner {
         Use this conversation history to resolve pronouns ("it", "that", "the workflow") and implicit references.
         ` : ''}
 
+        ${clarificationContext ? `
+        ═══════════════════════════════════════════════════════════════
+        PENDING CLARIFICATION
+        ═══════════════════════════════════════════════════════════════
+
+        The system previously asked the user to clarify "${clarificationContext.original_query}"
+        System message: "${clarificationContext.message}"
+        Original intent: ${clarificationContext.domain} domain
+        ${clarificationContext.suggestions?.length > 0 ? `Suggestions offered: ${clarificationContext.suggestions.join(', ')}` : 'No suggestions provided'}
+
+        ═══════════════════════════════════════════════════════════════
+        ` : ''}
+
+        ${entityStats && entityStats.totalEntities > 0 ? `
+        Current session state (entities created so far):
+        - Workflows: ${entityStats.byType?.workflow || 0} created
+        - Appointments: ${entityStats.byType?.appointment || 0} created
+        - Tasks: ${entityStats.byType?.task || 0} created
+
+        IMPORTANT: If user asks about entities that don't exist yet (count = 0), route to general for helpful response.
+        ` : `
+        Current session state: No entities created yet in this session.
+        `}
+
         ${memoryContext?.recalled_memories?.length > 0 ? `
         Long-term memory context:
         ${memoryContext.recalled_memories.map(m => m.content).join('\n')}
@@ -93,6 +114,69 @@ class LLMPlanner {
 
         User query to route:
         "${query}"
+
+        YOUR ROUTING PROCESS:
+        1. Read the FULL CONVERSATION CONTEXT above (recent messages + clarification context if present)
+        2. Determine the user's CURRENT INTENT:
+           - Are they continuing a previous conversation/task?
+           - Are they answering a clarification question?
+           - Are they asking something completely new?
+           - What are they ultimately trying to accomplish RIGHT NOW?
+        3. Route to the domain(s) that will accomplish that intent
+        4. DO NOT route based on keywords alone - route based on CONVERSATIONAL INTENT
+
+        INTENT ANALYSIS EXAMPLES:
+
+        Example 1: Clarification Flow (Typo Correction)
+        Conversation:
+          User: "create appointment with Nomran"
+          Assistant: "I couldn't find anyone named 'Nomran'"
+          User: "i meant norman"
+
+        Intent Analysis:
+        - Original intent: Create appointment (calendar domain)
+        - Clarification needed: Contact name spelling
+        - User provided: "norman" as correction
+        - Current intent: STILL creating appointment, now with clarified contact "norman"
+        - Route to: calendar (to complete the original task)
+
+        Example 2: Edge Case - Simple Acknowledgment During Clarification
+        Conversation:
+          User: "schedule meeting with john"
+          Assistant: "Multiple people named 'John'. Did you mean: John Smith or John Doe?"
+          User: "yes"
+
+        Intent Analysis:
+        - Original intent: Schedule meeting (calendar domain)
+        - Clarification needed: Ambiguous contact
+        - User said: "yes" (ambiguous acknowledgment, not a selection)
+        - Current intent: STILL trying to schedule meeting, but needs proper selection
+        - Route to: general (to prompt user for specific selection)
+
+        Example 3: Edge Case - Skip Clarification
+        Conversation:
+          User: "create task with contact sarah"
+          Assistant: "I couldn't find Sarah. Did you mean: Sarah Jones, Sarah Lee?"
+          User: "skip"
+
+        Intent Analysis:
+        - Original intent: Create task (task domain)
+        - Clarification offered: Contact suggestions
+        - User said: "skip" (wants to proceed without contact)
+        - Current intent: STILL creating task, but skip contact linking
+        - Route to: task (to complete task creation without contact)
+
+        Example 4: New Query During Clarification
+        Conversation:
+          User: "create appointment with norman"
+          Assistant: "I couldn't find Norman. Could you check the spelling?"
+          User: "what workflows do i have"
+
+        Intent Analysis:
+        - Original intent: Create appointment (calendar domain)
+        - User CHANGED topic entirely to ask about workflows
+        - Current intent: View workflows (completely different from appointment)
+        - Route to: general (abandon clarification, answer new query)
 
         CRITICAL ROUTING RULES:
         1. ACTION DOMAINS (calendar, task, workflow, contact):
@@ -110,8 +194,9 @@ class LLMPlanner {
            - Questions about existing entities ("What was step 2?", "Show all workflows")
            - Greetings/farewells ("Hey, what's up?", "Thanks, bye")
            - System state queries ("How many workflows did I create?")
-           - Acknowledgments ("ok", "got it", "yes")
+           - Ambiguous acknowledgments during clarification ("ok", "yes" without specifics)
            - List operations ("Show all contacts", "How many contacts do I have")
+           - New queries that abandon pending clarifications
 
         4. ROUTING EXAMPLES:
            - "Create a client outreach process" = workflow only (NOT contact, NOT general)
@@ -125,18 +210,100 @@ class LLMPlanner {
            - "Schedule meeting with Sarah" = calendar + contact (sequential)
            - "Hey, what's up?" = general only
            - "Create appointment then add task" = calendar, task (sequential)
+           - "i meant norman" (after clarification) = calendar (continue original intent)
+           - "skip" (during clarification) = original domain (e.g., calendar/task, skip contact)
+           - "yes" (ambiguous, during clarification) = general (needs specific answer)
+           - "what workflows do i have" (during clarification) = general (new query, abandon clarification)
+           - "Does Clara work at same company as Norman?" = parallel: ["contact", "contact"]
+           - "What are both their emails?" (context: Norman, Clara) = parallel: ["contact", "contact"]
+           - "Show me their birthdays" (context: 2+ people) = parallel: ["contact", "contact"]
 
-        4. DEFAULT BEHAVIOR:
+        5. MULTI-PERSON QUERIES (Parallel Orchestration - CRITICAL):
+           ═══════════════════════════════════════════════════════════════
+           IMPORTANT: Use CONVERSATION CONTEXT to detect multi-person queries
+           ═══════════════════════════════════════════════════════════════
+
+           When user query involves comparing or asking about MULTIPLE PEOPLE:
+           → Route contact domain MULTIPLE times in parallel: ["contact", "contact"]
+
+           HOW TO DETECT MULTI-PERSON QUERIES:
+           A) Explicit multiple names in current query:
+              - "Does Clara work at same company as Norman?" → 2 people mentioned
+              - "What are Norman and Clara's emails?" → 2 people mentioned
+              → Return: {"parallel": ["contact", "contact"], ...}
+
+           B) Pronouns referring to multiple people from CONVERSATION HISTORY:
+              - Conversation context: User mentioned "Norman" and "Clara" previously
+              - Current query: "Does she work at same company as Norman?"
+                → "she" = Clara (from context), "Norman" = explicit → 2 people total
+              - Current query: "What are their emails?"
+                → "their" = Norman + Clara (from context) → 2 people total
+              - Current query: "Show me both their birthdays"
+                → "both their" = Norman + Clara (from context) → 2 people total
+              → Return: {"parallel": ["contact", "contact"], ...}
+
+           C) Comparison keywords + context clues:
+              - "does she work at same company as" → comparison word + pronoun + explicit name = 2 people
+              - "do they both" → plural pronoun = 2+ people
+              - "compare their" → comparison + plural = 2+ people
+              → Return: {"parallel": ["contact", "contact"], ...}
+
+           WHY THIS WORKS:
+           - Coordinator runs multiple contact subgraphs in parallel
+           - Each contact agent extracts ONE person from query/context
+           - Results aggregated as array: results.contact = [person1Data, person2Data]
+           - Finalizer LLM naturally compares/combines the data
+
+           EXAMPLES WITH FULL CONVERSATION CONTEXT:
+
+           Example A - Explicit Names:
+           User: "Does Clara work at same company as Norman?"
+           Analysis: 2 explicit names (Clara, Norman)
+           Return: {"parallel": ["contact", "contact"], "reasoning": "2 people comparison"}
+
+           Example B - Pronoun + Explicit (CRITICAL):
+           Conversation:
+             User: "I'm working with Norman today"
+             Assistant: "Great!"
+             User: "I also need to work with Clara"
+             Assistant: "Got it!"
+             User: "Does she work at same company as Norman?"
+           Analysis:
+             - "she" = Clara (last mentioned female in context)
+             - "Norman" = explicit name
+             - Total: 2 people
+           Return: {"parallel": ["contact", "contact"], "reasoning": "Pronoun 'she' resolved to Clara + Norman = 2 people"}
+
+           Example C - Plural Pronoun:
+           Conversation:
+             User: "I'm meeting with Norman and Clara"
+             Assistant: "Noted!"
+             User: "What are their email addresses?"
+           Analysis:
+             - "their" = Norman + Clara (plural refers to both)
+             - Total: 2 people
+           Return: {"parallel": ["contact", "contact"], "reasoning": "Plural pronoun 'their' refers to Norman and Clara"}
+
+           SINGLE-PERSON QUERIES (still use one contact call):
+           - "What's Norman's email?" → parallel: ["contact"]
+           - "What's his email?" (context: only Norman mentioned) → parallel: ["contact"]
+
+        6. DEFAULT BEHAVIOR:
            - If query is purely conversational/informational → general
            - If uncertain → default to general
            - Prefer single domain unless multiple explicitly needed
-        5. Consider dependencies (e.g., task after calendar event needs sequential execution)
+        7. Consider dependencies (e.g., task after calendar event needs sequential execution)
 
         Extract any person names (capitalized names), dates, times mentioned.
 
+        JSON OUTPUT EXAMPLES:
+        - Single person query: {"parallel": ["contact"], ...}
+        - Multi-person comparison: {"parallel": ["contact", "contact"], ...}  ← Array with duplicates!
+        - Calendar with contacts: {"parallel": ["calendar", "contact"], ...}
+
         Return JSON only, no other text:
         {
-          "parallel": ["domain1"],
+          "parallel": ["domain1"],  // Array - can have duplicates like ["contact", "contact"] for multi-person queries
           "sequential": [],
           "confidence": "high|medium|low",
           "metadata": {
@@ -210,11 +377,14 @@ class LLMPlanner {
         entities_referenced: plan.analysis.entities_referenced,
         entities: plan.analysis.entities?.length || 0,
         dependencies: plan.analysis.dependencies?.length || 0,
-        reasoning: plan.analysis.reasoning
+        reasoning: plan.analysis.reasoning,
+        hadClarificationContext: !!clarificationContext
       });
 
-      // Cache the result
-      this.addToCache(cacheKey, plan);
+      // Cache the result (but not if there was clarification context - those are one-time decisions)
+      if (!clarificationContext) {
+        this.addToCache(cacheKey, plan);
+      }
 
       return plan;
 

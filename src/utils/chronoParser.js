@@ -59,6 +59,27 @@ function parseDateQuery(query, userTimezone = 'UTC') {
     return rangePatterns[normalized]();
   }
 
+  // Check for month/year patterns like "October 2025", "September", etc.
+  // These should be treated as full month ranges, not single days
+  const monthYearPattern = /^(january|february|march|april|may|june|july|august|september|october|november|december)(\s+\d{4})?$/i;
+  const monthMatch = query.match(monthYearPattern);
+
+  if (monthMatch) {
+    const monthName = monthMatch[1];
+    const year = monthMatch[2] ? parseInt(monthMatch[2].trim()) : dayjs().tz(userTimezone).year();
+
+    // Parse the month name to get month index (0-11)
+    const monthDate = dayjs(`${year}-${monthName}-01`, 'YYYY-MMMM-DD').tz(userTimezone);
+    const startDate = monthDate.startOf('month');
+    const endDate = monthDate.endOf('month');
+
+    return {
+      startDate: startDate.format('YYYY-MM-DD'),
+      endDate: endDate.format('YYYY-MM-DD'),
+      interpreted: `${monthDate.format('MMMM YYYY')} (full month: ${startDate.format('YYYY-MM-DD')} to ${endDate.format('YYYY-MM-DD')})`
+    };
+  }
+
   // Use Chrono for natural language parsing
   // Create reference date in user's timezone to avoid timezone conversion issues
   const now = dayjs().tz(userTimezone);

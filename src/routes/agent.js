@@ -26,6 +26,43 @@ const DEFAULT_TIMEZONE = 'UTC';
 // Rate limiting storage
 const rateLimitWindows = new Map();
 
+// Thread-level locking to prevent concurrent requests on same thread
+const activeThreads = new Map(); // thread_id -> Promise
+
+/**
+ * Execute function with thread-level lock to prevent race conditions
+ * @param {string} threadId - Thread identifier
+ * @param {Function} fn - Async function to execute
+ * @returns {Promise<any>} - Result from function
+ */
+async function executeWithThreadLock(threadId, fn) {
+  const requestId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[THREAD_LOCK:${requestId}] Acquiring lock for thread: ${threadId}`);
+
+  // Wait for any existing request on this thread
+  while (activeThreads.has(threadId)) {
+    console.log(`[THREAD_LOCK:${requestId}] Waiting for existing request to complete...`);
+    await activeThreads.get(threadId);
+  }
+
+  console.log(`[THREAD_LOCK:${requestId}] Lock acquired for thread: ${threadId}`);
+
+  // Create promise for this execution
+  let resolve;
+  const promise = new Promise(r => { resolve = r; });
+  activeThreads.set(threadId, promise);
+
+  try {
+    const result = await fn();
+    console.log(`[THREAD_LOCK:${requestId}] Execution complete for thread: ${threadId}`);
+    return result;
+  } finally {
+    activeThreads.delete(threadId);
+    resolve();
+    console.log(`[THREAD_LOCK:${requestId}] Lock released for thread: ${threadId}`);
+  }
+}
+
 /**
  * Check rate limit for a session
  * @param {string} sessionId - Session identifier
@@ -317,13 +354,17 @@ router.post('/execute', async (req, res) => {
         // Get checkpointer for state persistence
         const checkpointer = await getCheckpointer();
         const coordinator = getCoordinator(checkpointer);
-        const result = await coordinator.processQuery(query, {
-          org_id,
-          user_id,
-          session_id,
-          thread_id: config.configurable.thread_id,
-          checkpoint_id: config.configurable.checkpoint_id,
-          timezone: time_zone || DEFAULT_TIMEZONE
+
+        // Execute with thread-level lock to prevent race conditions
+        const result = await executeWithThreadLock(config.configurable.thread_id, async () => {
+          return await coordinator.processQuery(query, {
+            org_id,
+            user_id,
+            session_id,
+            thread_id: config.configurable.thread_id,
+            checkpoint_id: config.configurable.checkpoint_id,
+            timezone: time_zone || DEFAULT_TIMEZONE
+          });
         });
 
         // DEBUGGING: Log coordinator response
@@ -381,6 +422,7 @@ router.post('/execute', async (req, res) => {
 
           // Determine interrupt type for proper formatting
           const isClarification = interruptData.type === 'contact_disambiguation' ||
+                                 interruptData.type === 'user_disambiguation' ||
                                  interruptData.type === 'contact_clarification' ||
                                  interruptData.type === 'user_clarification';
 
@@ -394,6 +436,13 @@ router.post('/execute', async (req, res) => {
           if (interruptData.type === 'contact_disambiguation') {
             state.interrupt = {
               type: 'contact_disambiguation',
+              candidates: interruptData.candidates,
+              message: interruptData.message,
+              thread_id: config.configurable.thread_id
+            };
+          } else if (interruptData.type === 'user_disambiguation') {
+            state.interrupt = {
+              type: 'user_disambiguation',
               candidates: interruptData.candidates,
               message: interruptData.message,
               thread_id: config.configurable.thread_id
@@ -575,7 +624,8 @@ router.post('/approve', async (req, res) => {
       // V2 Architecture fields
       decision,
       interrupt_response,
-      contact_id
+      contact_id,
+      user_id: provided_user_id  // Rename to avoid conflict with later user_id from getUserId
     } = req.body;
     
     // Step 1: Input validation
@@ -598,7 +648,7 @@ router.post('/approve', async (req, res) => {
     }
 
     // Check if this is V2 architecture (has decision or interrupt_response)
-    const isV2Request = decision || interrupt_response || contact_id;
+    const isV2Request = decision || interrupt_response || contact_id || provided_user_id;
 
     // Validate based on architecture version
     if (!isV2Request && (!approvals || typeof approvals !== 'object')) {
@@ -729,6 +779,22 @@ router.post('/approve', async (req, res) => {
           };
           console.log(`[AGENT:APPROVE:${requestId}] Resuming with selected contact:`, selectedContact.name || selectedContact.id);
         }
+        // Handle user selection
+        else if (interrupt_response?.type === 'user_selected' || provided_user_id) {
+          // Use full user object if available, otherwise fallback to ID only
+          const selectedUser = interrupt_response?.selected_user || {
+            id: provided_user_id || interrupt_response?.selected_user_id,
+            name: interrupt_response?.selected_user_name
+          };
+
+          resumeData = {
+            user_clarification_response: {
+              selected_user: selectedUser
+            },
+            user_selected: true
+          };
+          console.log(`[AGENT:APPROVE:${requestId}] Resuming with selected user:`, selectedUser.name || selectedUser.id);
+        }
         // Handle approval/rejection
         else if (decision) {
           resumeData = {
@@ -783,10 +849,17 @@ router.post('/approve', async (req, res) => {
         const resumeCommand = new Command({
           // Deliver payload to the interrupted node (standard resume semantics)
           resume: resumePayload,
-          // ALSO update coordinator state so approval_handler can detect the decision immediately
+          // ALSO update coordinator state so handlers can detect decisions/responses immediately
           // and avoid throwing another interrupt on resume.
           update: {
-            approval_decision: decision
+            approval_decision: decision,
+            // Also update contact/user clarification responses so handlers can see them
+            ...(resumePayload.contact_clarification_response && {
+              contact_clarification_response: resumePayload.contact_clarification_response
+            }),
+            ...(resumePayload.user_clarification_response && {
+              user_clarification_response: resumePayload.user_clarification_response
+            })
           }
         });
 
@@ -805,10 +878,15 @@ router.post('/approve', async (req, res) => {
           resumeKeys: Object.keys(resumeCommand.resume || {})
         });
         const invokeStart = Date.now();
-        const result = await coordinator.graph.invoke(
-          resumeCommand,
-          resumeConfig  // Use checkpoint's config if available
-        );
+
+        // Execute with thread-level lock to prevent race conditions
+        const result = await executeWithThreadLock(thread_id, async () => {
+          return await coordinator.graph.invoke(
+            resumeCommand,
+            resumeConfig  // Use checkpoint's config if available
+          );
+        });
+
         console.log(`[AGENT:APPROVE:${requestId}] ⏱️ Graph invoke completed in ${Date.now() - invokeStart}ms`);
 
         console.log(`[AGENT:APPROVE:${requestId}] ✅ Resume completed successfully:`, {
@@ -836,6 +914,40 @@ router.post('/approve', async (req, res) => {
         });
 
       } catch (error) {
+        // Check if this is a GraphInterrupt (another interrupt occurred during resume)
+        if (error && error.name === 'GraphInterrupt') {
+          console.log(`[AGENT:APPROVE:${requestId}] Another interrupt during resume`);
+
+          // Extract interrupt data (same pattern as /execute endpoint)
+          const interruptData = error.interrupts?.[0]?.value?.value ||
+                               error.interrupts?.[0]?.value ||
+                               error.value || {};
+
+          console.log(`[AGENT:APPROVE:${requestId}] Interrupt type:`, interruptData.type);
+
+          // Return the new interrupt to the client
+          if (interruptData.type === 'contact_disambiguation') {
+            return res.status(202).json({
+              status: 'PENDING_INTERRUPT',
+              interruptMarker: 'PENDING_CLARIFICATION',
+              interrupt: {
+                type: 'contact_disambiguation',
+                candidates: interruptData.candidates,
+                message: interruptData.message,
+                thread_id: thread_id
+              },
+              thread_id
+            });
+          }
+
+          // Other interrupt types (approval, etc.)
+          return res.status(202).json({
+            status: 'PENDING_INTERRUPT',
+            interrupt: interruptData,
+            thread_id
+          });
+        }
+
         console.error(`[AGENT:APPROVE:${requestId}] ❌ V2 resume error:`, {
           message: error.message,
           name: error.name,
@@ -936,11 +1048,13 @@ router.post('/resolve-contact', async (req, res) => {
     // Step 4: Resume with coordinator
     const coordinator = getCoordinator();
       
-      // Resume with selected contact
-      const result = await coordinator.resume(thread_id, {
-        type: 'contact_selection',
-        selectedContact: contact_data || { id: contact_id }
-      }, session_id, org_id);
+      // Resume with selected contact (with thread lock)
+      const result = await executeWithThreadLock(thread_id, async () => {
+        return await coordinator.resume(thread_id, {
+          type: 'contact_selection',
+          selectedContact: contact_data || { id: contact_id }
+        }, session_id, org_id);
+      });
       
       // Check for additional interrupts
       if (result.status === 'PENDING_INTERRUPT') {
@@ -976,7 +1090,7 @@ router.post('/interrupt-status', async (req, res) => {
     
     // Check polling service for interrupts
     if (process.env.NODE_ENV === 'production') {
-      const { getInterruptPollingService } = require('../websocket/pollingFallback');
+      const { getInterruptPollingService } = require('../core/websocket/pollingFallback');
       const pollingService = getInterruptPollingService();
       const interrupt = pollingService.checkPending(session_id);
 
